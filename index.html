@@ -76,6 +76,7 @@
                 <option value="available">Con horas disponibles</option>
                 <option value="balanced">En objetivo</option>
                 <option value="over">Con exceso de horas</option>
+                <option value="insurance">Seguro / por hora</option>
               </select>
             </div>
           </div>
@@ -122,7 +123,6 @@
                       <th>Diferencia</th>
                       <th>Estado</th>
                       <th>Servicios</th>
-                      <th></th>
                     </tr>
                   </thead>
                   <tbody id="workersTableBody"></tbody>
@@ -170,22 +170,32 @@
   </div>
 
   <dialog id="workerDialog" class="modal">
-    <form method="dialog" id="workerForm" class="modal-card stack-md">
+    <form id="workerForm" class="modal-card stack-md">
       <div class="section-head with-action">
         <h3 id="workerDialogTitle">Nuevo operario</h3>
         <button class="icon-btn" type="button" data-close="workerDialog">✕</button>
       </div>
       <input type="hidden" id="workerId" />
-      <div class="field"><label>Nombre</label><input id="workerName" required /></div>
-      <div class="field"><label>Tipo</label>
+      <div class="field">
+        <label for="workerName">Nombre</label>
+        <input id="workerName" required />
+      </div>
+      <div class="field">
+        <label for="workerType">Tipo</label>
         <select id="workerType" required>
           <option value="full_time">Jornada completa</option>
           <option value="part_time">Media jornada</option>
           <option value="insurance">Seguro / por hora</option>
         </select>
       </div>
-      <div class="field"><label>Horas objetivo semanales</label><input id="workerTargetHours" type="number" min="0" step="0.5" /></div>
-      <div class="field"><label>Observaciones</label><textarea id="workerNotes" rows="3"></textarea></div>
+      <div class="field">
+        <label for="workerTargetHours">Horas objetivo semanales</label>
+        <input id="workerTargetHours" type="number" min="0" step="0.5" />
+      </div>
+      <div class="field">
+        <label for="workerNotes">Observaciones</label>
+        <textarea id="workerNotes" rows="3"></textarea>
+      </div>
       <div class="modal-actions">
         <button class="btn btn-secondary" type="button" data-close="workerDialog">Cancelar</button>
         <button class="btn btn-primary" type="submit">Guardar</button>
@@ -194,23 +204,36 @@
   </dialog>
 
   <dialog id="serviceDialog" class="modal">
-    <form method="dialog" id="serviceForm" class="modal-card stack-md">
+    <form id="serviceForm" class="modal-card stack-md">
       <div class="section-head with-action">
         <h3 id="serviceDialogTitle">Nuevo servicio</h3>
         <button class="icon-btn" type="button" data-close="serviceDialog">✕</button>
       </div>
       <input type="hidden" id="serviceId" />
-      <div class="field"><label>Nombre del servicio</label><input id="serviceName" required /></div>
-      <div class="field"><label>Cliente / dirección</label><input id="serviceClientAddress" /></div>
-      <div class="field"><label>Zona</label><input id="serviceZone" /></div>
-      <div class="field"><label>Frecuencia</label>
+      <div class="field">
+        <label for="serviceName">Nombre del servicio</label>
+        <input id="serviceName" required />
+      </div>
+      <div class="field">
+        <label for="serviceAddress">Cliente / dirección</label>
+        <input id="serviceAddress" />
+      </div>
+      <div class="field">
+        <label for="serviceZone">Zona</label>
+        <input id="serviceZone" />
+      </div>
+      <div class="field">
+        <label for="serviceFrequency">Frecuencia</label>
         <select id="serviceFrequency">
           <option value="fixed">Fija</option>
           <option value="variable">Variable</option>
           <option value="replacement">Reemplazo</option>
         </select>
       </div>
-      <div class="field"><label>Observaciones</label><textarea id="serviceNotes" rows="3"></textarea></div>
+      <div class="field">
+        <label for="serviceNotes">Observaciones</label>
+        <textarea id="serviceNotes" rows="3"></textarea>
+      </div>
       <div class="modal-actions">
         <button class="btn btn-secondary" type="button" data-close="serviceDialog">Cancelar</button>
         <button class="btn btn-primary" type="submit">Guardar</button>
@@ -219,15 +242,22 @@
   </dialog>
 
   <dialog id="assignmentDialog" class="modal">
-    <form method="dialog" id="assignmentForm" class="modal-card stack-md">
+    <form id="assignmentForm" class="modal-card stack-md">
       <div class="section-head with-action">
         <h3 id="assignmentDialogTitle">Nueva asignación</h3>
         <button class="icon-btn" type="button" data-close="assignmentDialog">✕</button>
       </div>
       <input type="hidden" id="assignmentId" />
-      <div class="field"><label>Operario</label><select id="assignmentWorker" required></select></div>
-      <div class="field"><label>Servicio</label><select id="assignmentService" required></select></div>
-      <div class="field"><label>Día</label>
+      <div class="field">
+        <label for="assignmentWorker">Operario</label>
+        <select id="assignmentWorker" required></select>
+      </div>
+      <div class="field">
+        <label for="assignmentService">Servicio</label>
+        <select id="assignmentService" required></select>
+      </div>
+      <div class="field">
+        <label for="assignmentDay">Día</label>
         <select id="assignmentDay" required>
           <option value="1">Lunes</option>
           <option value="2">Martes</option>
@@ -239,10 +269,19 @@
         </select>
       </div>
       <div class="grid-2">
-        <div class="field"><label>Hora inicio</label><input id="assignmentStart" type="time" required /></div>
-        <div class="field"><label>Hora fin</label><input id="assignmentEnd" type="time" required /></div>
+        <div class="field">
+          <label for="assignmentStart">Hora inicio</label>
+          <input id="assignmentStart" type="time" required />
+        </div>
+        <div class="field">
+          <label for="assignmentEnd">Hora fin</label>
+          <input id="assignmentEnd" type="time" required />
+        </div>
       </div>
-      <div class="field"><label>Notas</label><textarea id="assignmentNotes" rows="3"></textarea></div>
+      <div class="field">
+        <label for="assignmentNotes">Notas</label>
+        <textarea id="assignmentNotes" rows="3"></textarea>
+      </div>
       <div class="modal-actions">
         <button class="btn btn-secondary" type="button" data-close="assignmentDialog">Cancelar</button>
         <button class="btn btn-primary" type="submit">Guardar</button>
