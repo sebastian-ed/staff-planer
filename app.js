@@ -171,20 +171,18 @@ function getServicesWithGaps() {
 }
 
 function populateSelects() {
-  const workerOptions = state.workers
-    .map(
-      (worker) => `<option value="${worker.id}">${escapeHtml(worker.name)}</option>`
-    )
+  const workerSelect = $('assignmentWorker');
+  const serviceSelect = $('assignmentService');
+
+  if (!workerSelect || !serviceSelect) return;
+
+  workerSelect.innerHTML = state.workers
+    .map((worker) => `<option value="${worker.id}">${escapeHtml(worker.name)}</option>`)
     .join('');
 
-  const serviceOptions = state.services
-    .map(
-      (service) => `<option value="${service.id}">${escapeHtml(service.name)}</option>`
-    )
+  serviceSelect.innerHTML = state.services
+    .map((service) => `<option value="${service.id}">${escapeHtml(service.name)}</option>`)
     .join('');
-
-  $('assignmentWorker').innerHTML = workerOptions;
-  $('assignmentService').innerHTML = serviceOptions;
 }
 
 function renderKpis(summaries) {
@@ -257,7 +255,7 @@ function renderCriticalWorkers(summaries) {
     `
     : `
       <div class="empty-state">
-        Sin desvíos relevantes. Un milagro operativo, poco frecuente pero real.
+        Sin desvíos relevantes.
       </div>
     `;
 }
@@ -285,7 +283,7 @@ function renderServiceGaps() {
     `
     : `
       <div class="empty-state">
-        No se detectaron servicios sin cobertura mínima según la carga actual.
+        No se detectaron servicios sin cobertura mínima.
       </div>
     `;
 }
@@ -513,7 +511,7 @@ async function loadAllData() {
 
   if (workersRes.error || servicesRes.error || assignmentsRes.error) {
     console.error(workersRes.error || servicesRes.error || assignmentsRes.error);
-    alert('No se pudieron cargar los datos. Revisá la configuración de Supabase y las policies.');
+    alert('No se pudieron cargar los datos. Revisá Supabase y las policies.');
     return;
   }
 
@@ -566,12 +564,19 @@ async function initAuth() {
 
 async function handleLogin(event) {
   event.preventDefault();
-  console.log('Submit login capturado');
 
   el.authMessage.textContent = 'Validando acceso...';
 
-  const email = $('email').value.trim();
-  const password = $('password').value;
+  const emailInput = $('email');
+  const passwordInput = $('password');
+
+  const email = emailInput?.value.trim();
+  const password = passwordInput?.value;
+
+  if (!email || !password) {
+    el.authMessage.textContent = 'Completá email y contraseña.';
+    return;
+  }
 
   const { error } = await supabase.auth.signInWithPassword({ email, password });
 
@@ -617,11 +622,21 @@ function openAssignmentDialog() {
 async function saveWorker(event) {
   event.preventDefault();
 
+  const nameInput = $('workerName');
+  const typeInput = $('workerType');
+  const targetInput = $('workerTargetHours');
+  const notesInput = $('workerNotes');
+
+  if (!nameInput || !typeInput) {
+    alert('Faltan campos del formulario de operario.');
+    return;
+  }
+
   const payload = {
-    name: $('workerName').value.trim(),
-    worker_type: $('workerType').value,
-    target_hours: $('workerTargetHours').value ? Number($('workerTargetHours').value) : null,
-    notes: $('workerNotes').value.trim() || null,
+    name: nameInput.value.trim(),
+    worker_type: typeInput.value,
+    target_hours: targetInput?.value ? Number(targetInput.value) : null,
+    notes: notesInput?.value.trim() || null,
   };
 
   const { error } = await supabase.from('workers').insert(payload);
@@ -639,12 +654,23 @@ async function saveWorker(event) {
 async function saveService(event) {
   event.preventDefault();
 
+  const serviceName = $('serviceName');
+  const serviceAddress = $('serviceAddress');
+  const serviceZone = $('serviceZone');
+  const serviceFrequency = $('serviceFrequency');
+  const serviceNotes = $('serviceNotes');
+
+  if (!serviceName) {
+    alert('Falta el campo serviceName en el HTML.');
+    return;
+  }
+
   const payload = {
-    name: $('serviceName').value.trim(),
-    client_address: $('serviceAddress').value.trim() || null,
-    zone: $('serviceZone').value.trim() || null,
-    frequency_type: $('serviceFrequency').value,
-    notes: $('serviceNotes').value.trim() || null,
+    name: serviceName.value.trim(),
+    client_address: serviceAddress ? serviceAddress.value.trim() || null : null,
+    zone: serviceZone ? serviceZone.value.trim() || null : null,
+    frequency_type: serviceFrequency ? serviceFrequency.value : 'fixed',
+    notes: serviceNotes ? serviceNotes.value.trim() || null : null,
   };
 
   const { error } = await supabase.from('services').insert(payload);
@@ -662,13 +688,25 @@ async function saveService(event) {
 async function saveAssignment(event) {
   event.preventDefault();
 
+  const workerInput = $('assignmentWorker');
+  const serviceInput = $('assignmentService');
+  const dayInput = $('assignmentDay');
+  const startInput = $('assignmentStart');
+  const endInput = $('assignmentEnd');
+  const notesInput = $('assignmentNotes');
+
+  if (!workerInput || !serviceInput || !dayInput || !startInput || !endInput) {
+    alert('Faltan campos del formulario de asignación.');
+    return;
+  }
+
   const payload = {
-    worker_id: $('assignmentWorker').value,
-    service_id: $('assignmentService').value,
-    day_of_week: Number($('assignmentDay').value),
-    start_time: $('assignmentStart').value,
-    end_time: $('assignmentEnd').value,
-    notes: $('assignmentNotes').value.trim() || null,
+    worker_id: workerInput.value,
+    service_id: serviceInput.value,
+    day_of_week: Number(dayInput.value),
+    start_time: startInput.value,
+    end_time: endInput.value,
+    notes: notesInput?.value.trim() || null,
     is_active: true,
   };
 
@@ -685,39 +723,38 @@ async function saveAssignment(event) {
 }
 
 function bindEvents() {
-  el.loginForm.addEventListener('submit', handleLogin);
-  el.logoutBtn.addEventListener('click', handleLogout);
-  el.refreshBtn.addEventListener('click', loadAllData);
-  el.navTabs.addEventListener('click', handleViewChange);
-  el.globalSearch.addEventListener('input', handleFilterChange);
-  el.workerTypeFilter.addEventListener('change', handleFilterChange);
-  el.statusFilter.addEventListener('change', handleFilterChange);
+  el.loginForm?.addEventListener('submit', handleLogin);
+  el.logoutBtn?.addEventListener('click', handleLogout);
+  el.refreshBtn?.addEventListener('click', loadAllData);
+  el.navTabs?.addEventListener('click', handleViewChange);
+  el.globalSearch?.addEventListener('input', handleFilterChange);
+  el.workerTypeFilter?.addEventListener('change', handleFilterChange);
+  el.statusFilter?.addEventListener('change', handleFilterChange);
 
-  el.addWorkerBtn.addEventListener('click', openWorkerDialog);
-  el.addServiceBtn.addEventListener('click', openServiceDialog);
-  el.addAssignmentBtn.addEventListener('click', openAssignmentDialog);
+  el.addWorkerBtn?.addEventListener('click', openWorkerDialog);
+  el.addServiceBtn?.addEventListener('click', openServiceDialog);
+  el.addAssignmentBtn?.addEventListener('click', openAssignmentDialog);
 
-  el.workerForm.addEventListener('submit', saveWorker);
-  el.serviceForm.addEventListener('submit', saveService);
-  el.assignmentForm.addEventListener('submit', saveAssignment);
+  el.workerForm?.addEventListener('submit', saveWorker);
+  el.serviceForm?.addEventListener('submit', saveService);
+  el.assignmentForm?.addEventListener('submit', saveAssignment);
 
   document.querySelectorAll('[data-close]').forEach((button) => {
-    button.addEventListener('click', () => $(button.dataset.close).close());
+    button.addEventListener('click', () => {
+      const dialog = $(button.dataset.close);
+      if (dialog) dialog.close();
+    });
   });
 }
 
 function boot() {
   try {
-    console.log('Boot iniciando...');
-
     if (!window.SUPABASE_URL || !window.SUPABASE_ANON_KEY) {
-      console.error('Falta configurar supabase-config.js');
       alert('Falta configurar supabase-config.js');
       return;
     }
 
     supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
-    console.log('Supabase client OK');
 
     Object.assign(el, {
       authView: $('authView'),
