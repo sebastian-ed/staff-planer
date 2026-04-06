@@ -1,3 +1,5 @@
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+
 const DAYS = [
   { value: 1, label: 'Lun' },
   { value: 2, label: 'Mar' },
