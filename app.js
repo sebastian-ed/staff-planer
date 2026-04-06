@@ -36,12 +36,65 @@ function $(id) {
 }
 
 function boot() {
-  if (!window.SUPABASE_URL || !window.SUPABASE_ANON_KEY) {
-    alert('Falta configurar supabase-config.js');
-    return;
-  }
+  try {
+    console.log('Boot iniciando...');
 
-  supabase = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+    if (!window.SUPABASE_URL || !window.SUPABASE_ANON_KEY) {
+      console.error('Falta configurar supabase-config.js');
+      alert('Falta configurar supabase-config.js');
+      return;
+    }
+
+    supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+    console.log('Supabase client OK');
+
+    Object.assign(el, {
+      authView: $('authView'),
+      mainView: $('mainView'),
+      loginForm: $('loginForm'),
+      authMessage: $('authMessage'),
+      logoutBtn: $('logoutBtn'),
+      refreshBtn: $('refreshBtn'),
+      navTabs: $('navTabs'),
+      globalSearch: $('globalSearch'),
+      workerTypeFilter: $('workerTypeFilter'),
+      statusFilter: $('statusFilter'),
+      kpiCards: $('kpiCards'),
+      criticalWorkers: $('criticalWorkers'),
+      serviceGaps: $('serviceGaps'),
+      workersTableBody: $('workersTableBody'),
+      workerAvailabilityBoard: $('workerAvailabilityBoard'),
+      servicesGrid: $('servicesGrid'),
+      plannerBoard: $('plannerBoard'),
+      addWorkerBtn: $('addWorkerBtn'),
+      addServiceBtn: $('addServiceBtn'),
+      addAssignmentBtn: $('addAssignmentBtn'),
+      workerDialog: $('workerDialog'),
+      serviceDialog: $('serviceDialog'),
+      assignmentDialog: $('assignmentDialog'),
+      workerForm: $('workerForm'),
+      serviceForm: $('serviceForm'),
+      assignmentForm: $('assignmentForm'),
+    });
+
+    console.log('Elementos DOM OK', el);
+
+    if (!el.loginForm) {
+      throw new Error('No se encontró #loginForm');
+    }
+
+    bindEvents();
+    console.log('Eventos OK');
+
+    initAuth();
+    console.log('Auth init OK');
+  } catch (error) {
+    console.error('Error en boot():', error);
+    alert(`Error al iniciar la app: ${error.message}`);
+  }
+}
+
+  supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
 
   Object.assign(el, {
     authView: $('authView'),
@@ -122,13 +175,25 @@ async function initAuth() {
 
 async function handleLogin(event) {
   event.preventDefault();
+  console.log('Submit login capturado');
+
   el.authMessage.textContent = 'Validando acceso...';
 
   const email = $('email').value.trim();
   const password = $('password').value;
 
+  console.log('Intentando login con:', email);
+
   const { error } = await supabase.auth.signInWithPassword({ email, password });
-  el.authMessage.textContent = error ? error.message : '';
+
+  if (error) {
+    console.error('Error login:', error);
+    el.authMessage.textContent = error.message;
+    return;
+  }
+
+  console.log('Login OK');
+  el.authMessage.textContent = '';
 }
 
 async function handleLogout() {
