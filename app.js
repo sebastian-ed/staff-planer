@@ -171,18 +171,23 @@ function getServicesWithGaps() {
 }
 
 function populateSelects() {
-  const workerSelect = $('assignmentWorker');
-  const serviceSelect = $('assignmentService');
-
-  if (!workerSelect || !serviceSelect) return;
-
-  workerSelect.innerHTML = state.workers
+  const workerOptions = state.workers
     .map((worker) => `<option value="${worker.id}">${escapeHtml(worker.name)}</option>`)
     .join('');
 
-  serviceSelect.innerHTML = state.services
+  const serviceOptions = state.services
     .map((service) => `<option value="${service.id}">${escapeHtml(service.name)}</option>`)
     .join('');
+
+  const assignmentWorker = $('assignmentWorker');
+  const assignmentService = $('assignmentService');
+  const bulkAssignmentWorker = $('bulkAssignmentWorker');
+  const bulkAssignmentService = $('bulkAssignmentService');
+
+  if (assignmentWorker) assignmentWorker.innerHTML = workerOptions;
+  if (assignmentService) assignmentService.innerHTML = serviceOptions;
+  if (bulkAssignmentWorker) bulkAssignmentWorker.innerHTML = workerOptions;
+  if (bulkAssignmentService) bulkAssignmentService.innerHTML = serviceOptions;
 }
 
 function renderKpis(summaries) {
@@ -679,6 +684,17 @@ function openAssignmentDialog(assignmentId = null) {
   el.assignmentDialog.showModal();
 }
 
+function openBulkAssignmentDialog() {
+  el.bulkAssignmentForm.reset();
+  populateSelects();
+
+  document.querySelectorAll('.bulk-day').forEach((checkbox) => {
+    checkbox.checked = false;
+  });
+
+  el.bulkAssignmentDialog.showModal();
+}
+
 async function saveWorker(event) {
   event.preventDefault();
 
@@ -797,6 +813,56 @@ async function saveAssignment(event) {
   await loadAllData();
 }
 
+async function saveBulkAssignments(event) {
+  event.preventDefault();
+
+  const workerInput = $('bulkAssignmentWorker');
+  const serviceInput = $('bulkAssignmentService');
+  const startInput = $('bulkAssignmentStart');
+  const endInput = $('bulkAssignmentEnd');
+  const notesInput = $('bulkAssignmentNotes');
+
+  if (!workerInput || !serviceInput || !startInput || !endInput) {
+    alert('Faltan campos del formulario de carga rápida.');
+    return;
+  }
+
+  const selectedDays = [...document.querySelectorAll('.bulk-day:checked')].map((input) =>
+    Number(input.value)
+  );
+
+  if (!selectedDays.length) {
+    alert('Seleccioná al menos un día.');
+    return;
+  }
+
+  if (!startInput.value || !endInput.value) {
+    alert('Completá horario de inicio y fin.');
+    return;
+  }
+
+  const payload = selectedDays.map((day) => ({
+    worker_id: workerInput.value,
+    service_id: serviceInput.value,
+    day_of_week: day,
+    start_time: startInput.value,
+    end_time: endInput.value,
+    notes: notesInput?.value.trim() || null,
+    is_active: true,
+  }));
+
+  const { error } = await supabase.from('assignments').insert(payload);
+
+  if (error) {
+    console.error(error);
+    alert(error.message);
+    return;
+  }
+
+  el.bulkAssignmentDialog.close();
+  await loadAllData();
+}
+
 async function deleteWorker() {
   const workerId = $('workerId').value.trim();
   if (!workerId) return;
@@ -894,10 +960,12 @@ function bindEvents() {
   el.addWorkerBtn?.addEventListener('click', () => openWorkerDialog());
   el.addServiceBtn?.addEventListener('click', () => openServiceDialog());
   el.addAssignmentBtn?.addEventListener('click', () => openAssignmentDialog());
+  el.bulkAssignmentBtn?.addEventListener('click', () => openBulkAssignmentDialog());
 
   el.workerForm?.addEventListener('submit', saveWorker);
   el.serviceForm?.addEventListener('submit', saveService);
   el.assignmentForm?.addEventListener('submit', saveAssignment);
+  el.bulkAssignmentForm?.addEventListener('submit', saveBulkAssignments);
 
   $('deleteWorkerBtn')?.addEventListener('click', deleteWorker);
   $('deleteServiceBtn')?.addEventListener('click', deleteService);
@@ -945,12 +1013,15 @@ function boot() {
       addWorkerBtn: $('addWorkerBtn'),
       addServiceBtn: $('addServiceBtn'),
       addAssignmentBtn: $('addAssignmentBtn'),
+      bulkAssignmentBtn: $('bulkAssignmentBtn'),
       workerDialog: $('workerDialog'),
       serviceDialog: $('serviceDialog'),
       assignmentDialog: $('assignmentDialog'),
+      bulkAssignmentDialog: $('bulkAssignmentDialog'),
       workerForm: $('workerForm'),
       serviceForm: $('serviceForm'),
       assignmentForm: $('assignmentForm'),
+      bulkAssignmentForm: $('bulkAssignmentForm'),
     });
 
     if (!el.loginForm) {

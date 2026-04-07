@@ -130,3 +130,36 @@ tr:hover td { background: rgba(255,255,255,0.02); }
   .btn { width: 100%; }
   .topbar-actions, .modal-actions { flex-direction: column; }
 }
+
+.inline-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.btn-sm {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.days-check-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.day-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+}
+
+@media (min-width: 768px) {
+  .days-check-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
