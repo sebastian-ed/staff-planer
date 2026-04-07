@@ -59,12 +59,6 @@ function calculateHours(startTime, endTime) {
   return ((eh * 60 + em) - (sh * 60 + sm)) / 60;
 }
 
-function sortByName(list) {
-  return [...list].sort((a, b) =>
-    String(a.name || '').localeCompare(String(b.name || ''), 'es', { sensitivity: 'base' })
-  );
-}
-
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -76,31 +70,6 @@ function withTimeout(promise, ms = 12000, message = 'La operación tardó demasi
       setTimeout(() => reject(new Error(message)), ms);
     }),
   ]);
-}
-
-async function ensureWriteSession() {
-  let { data, error } = await supabase.auth.getSession();
-
-  if (error) throw error;
-  if (data?.session) return data.session;
-
-  const refresh = await supabase.auth.refreshSession();
-  if (refresh.error) throw refresh.error;
-  if (!refresh.data?.session) {
-    throw new Error('No hay sesión activa para guardar datos.');
-  }
-
-  return refresh.data.session;
-}
-
-function goToView(viewName) {
-  document.querySelectorAll('.nav-tab').forEach((tab) => {
-    tab.classList.toggle('active', tab.dataset.view === viewName);
-  });
-
-  document.querySelectorAll('.view').forEach((view) => view.classList.add('hidden'));
-  const targetView = $(`${viewName}View`);
-  if (targetView) targetView.classList.remove('hidden');
 }
 
 function getTargetHours(worker) {
@@ -141,6 +110,16 @@ function ensureDataReady(actionLabel = 'esta acción') {
     return false;
   }
   return true;
+}
+
+function goToView(viewName) {
+  document.querySelectorAll('.nav-tab').forEach((tab) => {
+    tab.classList.toggle('active', tab.dataset.view === viewName);
+  });
+
+  document.querySelectorAll('.view').forEach((view) => view.classList.add('hidden'));
+  const targetView = $(`${viewName}View`);
+  if (targetView) targetView.classList.remove('hidden');
 }
 
 function getWorkerSummaries() {
@@ -647,9 +626,15 @@ function subscribeRealtime() {
 
   state.realtimeChannel = supabase
     .channel('planner-realtime')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'workers' }, () => loadAllDataWithRetry(2, 250))
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'services' }, () => loadAllDataWithRetry(2, 250))
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, () => loadAllDataWithRetry(2, 250))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'workers' }, () => {
+      setTimeout(() => { loadAllDataWithRetry(2, 250); }, 0);
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'services' }, () => {
+      setTimeout(() => { loadAllDataWithRetry(2, 250); }, 0);
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, () => {
+      setTimeout(() => { loadAllDataWithRetry(2, 250); }, 0);
+    })
     .subscribe();
 }
 
@@ -671,18 +656,20 @@ async function initAuth() {
     setDataReady(true);
   }
 
-  supabase.auth.onAuthStateChange(async (_event, sessionNow) => {
-    state.user = sessionNow?.user || null;
+  supabase.auth.onAuthStateChange((_event, sessionNow) => {
+    setTimeout(async () => {
+      state.user = sessionNow?.user || null;
 
-    if (state.user) {
-      await initializeAfterLogin();
-    } else {
-      showAuth();
-      state.workers = [];
-      state.services = [];
-      state.assignments = [];
-      setDataReady(true);
-    }
+      if (state.user) {
+        await initializeAfterLogin();
+      } else {
+        showAuth();
+        state.workers = [];
+        state.services = [];
+        state.assignments = [];
+        setDataReady(true);
+      }
+    }, 0);
   });
 }
 
