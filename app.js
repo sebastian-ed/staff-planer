@@ -27,6 +27,8 @@ const state = {
     status: 'all',
   },
   realtimeChannel: null,
+  dataReady: false,
+  loadingData: false,
 };
 
 const el = {};
@@ -57,6 +59,16 @@ function calculateHours(startTime, endTime) {
   return ((eh * 60 + em) - (sh * 60 + sm)) / 60;
 }
 
+function sortByName(list) {
+  return [...list].sort((a, b) =>
+    String(a.name || '').localeCompare(String(b.name || ''), 'es', { sensitivity: 'base' })
+  );
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function getTargetHours(worker) {
   return worker.target_hours ?? TYPE_META[worker.worker_type]?.defaultHours ?? null;
 }
@@ -67,6 +79,38 @@ function getWorkerAssignments(workerId) {
 
 function getServiceAssignments(serviceId) {
   return state.assignments.filter((item) => item.service_id === serviceId);
+}
+
+function setDataReady(isReady) {
+  state.dataReady = isReady;
+
+  const ids = [
+    'refreshBtn',
+    'addWorkerBtn',
+    'addServiceBtn',
+    'addAssignmentBtn',
+    'bulkAssignmentBtn',
+    'workerTypeFilter',
+    'statusFilter',
+    'globalSearch',
+  ];
+
+  ids.forEach((id) => {
+    const node = $(id);
+    if (node) node.disabled = !isReady;
+  });
+
+  if (el.authMessage && !state.user) {
+    el.authMessage.textContent = isReady ? '' : 'Inicializando...';
+  }
+}
+
+function ensureDataReady(actionLabel = 'esta acción') {
+  if (!state.dataReady || state.loadingData) {
+    alert(`Todavía se están cargando los datos. Esperá unos segundos antes de ${actionLabel}.`);
+    return false;
+  }
+  return true;
 }
 
 function getWorkerSummaries() {
@@ -171,18 +215,23 @@ function getServicesWithGaps() {
 }
 
 function populateSelects() {
-  const workerSelect = $('assignmentWorker');
-  const serviceSelect = $('assignmentService');
-
-  if (!workerSelect || !serviceSelect) return;
-
-  workerSelect.innerHTML = state.workers
+  const workerOptions = state.workers
     .map((worker) => `<option value="${worker.id}">${escapeHtml(worker.name)}</option>`)
     .join('');
 
-  serviceSelect.innerHTML = state.services
+  const serviceOptions = state.services
     .map((service) => `<option value="${service.id}">${escapeHtml(service.name)}</option>`)
     .join('');
+
+  const assignmentWorker = $('assignmentWorker');
+  const assignmentService = $('assignmentService');
+  const bulkAssignmentWorker = $('bulkAssignmentWorker');
+  const bulkAssignmentService = $('bulkAssignmentService');
+
+  if (assignmentWorker) assignmentWorker.innerHTML = workerOptions;
+  if (assignmentService) assignmentService.innerHTML = serviceOptions;
+  if (bulkAssignmentWorker) bulkAssignmentWorker.innerHTML = workerOptions;
+  if (bulkAssignmentService) bulkAssignmentService.innerHTML = serviceOptions;
 }
 
 function renderKpis(summaries) {
@@ -311,6 +360,11 @@ function renderWorkersTable(summaries) {
                 : 'Sin servicio'
             }
           </td>
+          <td>
+            <div class="inline-actions">
+              <button class="btn btn-secondary btn-sm" type="button" data-edit-worker="${worker.id}">Editar</button>
+            </div>
+          </td>
         </tr>
       `
     )
@@ -407,6 +461,10 @@ function renderServices() {
             </div>
           </header>
 
+          <div class="inline-actions service-actions">
+            <button class="btn btn-secondary btn-sm" type="button" data-edit-service="${service.id}">Editar</button>
+          </div>
+
           <div class="service-days">
             ${serviceDays
               .map(
@@ -461,6 +519,9 @@ function renderPlanner() {
                       <h4>${escapeHtml(service?.name || 'Servicio')}</h4>
                       <p>${escapeHtml(worker?.name || 'Operario')}</p>
                       <small>${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}</small>
+                      <div class="inline-actions planner-actions">
+                        <button class="btn btn-secondary btn-sm" type="button" data-edit-assignment="${item.id}">Editar</button>
+                      </div>
                     </article>
                   `;
                 })
@@ -496,6 +557,8 @@ function handleViewChange(event) {
 }
 
 function handleFilterChange() {
+  if (!ensureDataReady('filtrar')) return;
+
   state.filters.search = el.globalSearch.value.trim().toLowerCase();
   state.filters.workerType = el.workerTypeFilter.value;
   state.filters.status = el.statusFilter.value;
@@ -510,9 +573,7 @@ async function loadAllData() {
   ]);
 
   if (workersRes.error || servicesRes.error || assignmentsRes.error) {
-    console.error(workersRes.error || servicesRes.error || assignmentsRes.error);
-    alert('No se pudieron cargar los datos. Revisá Supabase y las policies.');
-    return;
+    throw workersRes.error || servicesRes.error || assignmentsRes.error;
   }
 
   state.workers = workersRes.data || [];
@@ -523,6 +584,34 @@ async function loadAllData() {
   renderAll();
 }
 
+async function loadAllDataWithRetry(retries = 4, delayMs = 500) {
+  state.loadingData = true;
+  setDataReady(false);
+
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      await loadAllData();
+      state.loadingData = false;
+      setDataReady(true);
+      return true;
+    } catch (error) {
+      lastError = error;
+      console.error(`Error cargando datos. Intento ${attempt}/${retries}`, error);
+      if (attempt < retries) {
+        await sleep(delayMs);
+      }
+    }
+  }
+
+  state.loadingData = false;
+  setDataReady(false);
+  console.error('No se pudieron cargar los datos luego de varios intentos.', lastError);
+  alert('No se pudieron inicializar los datos al ingresar. Tocá "Actualizar" en unos segundos.');
+  return false;
+}
+
 function subscribeRealtime() {
   if (state.realtimeChannel) {
     supabase.removeChannel(state.realtimeChannel);
@@ -530,10 +619,18 @@ function subscribeRealtime() {
 
   state.realtimeChannel = supabase
     .channel('planner-realtime')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'workers' }, () => loadAllData())
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'services' }, () => loadAllData())
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, () => loadAllData())
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'workers' }, () => loadAllDataWithRetry(2, 250))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'services' }, () => loadAllDataWithRetry(2, 250))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, () => loadAllDataWithRetry(2, 250))
     .subscribe();
+}
+
+async function initializeAfterLogin() {
+  showMain();
+  const ok = await loadAllDataWithRetry(4, 500);
+  if (ok) {
+    subscribeRealtime();
+  }
 }
 
 async function initAuth() {
@@ -542,22 +639,23 @@ async function initAuth() {
 
   if (session?.user) {
     state.user = session.user;
-    showMain();
-    await loadAllData();
-    subscribeRealtime();
+    await initializeAfterLogin();
   } else {
     showAuth();
+    setDataReady(true);
   }
 
   supabase.auth.onAuthStateChange(async (_event, sessionNow) => {
     state.user = sessionNow?.user || null;
 
     if (state.user) {
-      showMain();
-      await loadAllData();
-      subscribeRealtime();
+      await initializeAfterLogin();
     } else {
       showAuth();
+      state.workers = [];
+      state.services = [];
+      state.assignments = [];
+      setDataReady(true);
     }
   });
 }
@@ -578,15 +676,31 @@ async function handleLogin(event) {
     return;
   }
 
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
-
-  if (error) {
-    console.error('Error login:', error);
-    el.authMessage.textContent = error.message;
-    return;
+  const submitBtn = el.loginForm?.querySelector('button[type="submit"]');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Ingresando...';
   }
 
-  el.authMessage.textContent = '';
+  try {
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+
+    if (error) {
+      console.error('Error login:', error);
+      el.authMessage.textContent = error.message;
+      return;
+    }
+
+    el.authMessage.textContent = 'Cargando datos...';
+    await sleep(250);
+    await initializeAfterLogin();
+    el.authMessage.textContent = '';
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Ingresar';
+    }
+  }
 }
 
 async function handleLogout() {
@@ -603,25 +717,94 @@ function showAuth() {
   el.authView.classList.remove('hidden');
 }
 
-function openWorkerDialog() {
+function openWorkerDialog(workerId = null) {
+  if (!ensureDataReady('abrir el formulario de operarios')) return;
+
   el.workerForm.reset();
+  $('workerId').value = '';
+  $('workerDialogTitle').textContent = workerId ? 'Editar operario' : 'Nuevo operario';
+  $('deleteWorkerBtn').classList.toggle('hidden', !workerId);
+
+  if (workerId) {
+    const worker = state.workers.find((item) => item.id === workerId);
+    if (!worker) return;
+
+    $('workerId').value = worker.id;
+    $('workerName').value = worker.name || '';
+    $('workerType').value = worker.worker_type || 'full_time';
+    $('workerTargetHours').value = worker.target_hours ?? '';
+    $('workerNotes').value = worker.notes || '';
+  }
+
   el.workerDialog.showModal();
 }
 
-function openServiceDialog() {
+function openServiceDialog(serviceId = null) {
+  if (!ensureDataReady('abrir el formulario de servicios')) return;
+
   el.serviceForm.reset();
+  $('serviceId').value = '';
+  $('serviceDialogTitle').textContent = serviceId ? 'Editar servicio' : 'Nuevo servicio';
+  $('deleteServiceBtn').classList.toggle('hidden', !serviceId);
+
+  if (serviceId) {
+    const service = state.services.find((item) => item.id === serviceId);
+    if (!service) return;
+
+    $('serviceId').value = service.id;
+    $('serviceName').value = service.name || '';
+    $('serviceAddress').value = service.client_address || '';
+    $('serviceZone').value = service.zone || '';
+    $('serviceFrequency').value = service.frequency_type || 'fixed';
+    $('serviceNotes').value = service.notes || '';
+  }
+
   el.serviceDialog.showModal();
 }
 
-function openAssignmentDialog() {
+function openAssignmentDialog(assignmentId = null) {
+  if (!ensureDataReady('abrir asignaciones')) return;
+
   el.assignmentForm.reset();
   populateSelects();
+  $('assignmentId').value = '';
+  $('assignmentDialogTitle').textContent = assignmentId ? 'Editar asignación' : 'Nueva asignación';
+  $('deleteAssignmentBtn').classList.toggle('hidden', !assignmentId);
+
+  if (assignmentId) {
+    const assignment = state.assignments.find((item) => item.id === assignmentId);
+    if (!assignment) return;
+
+    $('assignmentId').value = assignment.id;
+    $('assignmentWorker').value = assignment.worker_id;
+    $('assignmentService').value = assignment.service_id;
+    $('assignmentDay').value = String(assignment.day_of_week);
+    $('assignmentStart').value = assignment.start_time?.slice(0, 5) || '';
+    $('assignmentEnd').value = assignment.end_time?.slice(0, 5) || '';
+    $('assignmentNotes').value = assignment.notes || '';
+  }
+
   el.assignmentDialog.showModal();
+}
+
+function openBulkAssignmentDialog() {
+  if (!ensureDataReady('abrir carga rápida')) return;
+
+  el.bulkAssignmentForm.reset();
+  populateSelects();
+
+  document.querySelectorAll('.bulk-day').forEach((checkbox) => {
+    checkbox.checked = false;
+  });
+
+  el.bulkAssignmentDialog.showModal();
 }
 
 async function saveWorker(event) {
   event.preventDefault();
+  if (!ensureDataReady('guardar el operario')) return;
 
+  const workerId = $('workerId').value.trim();
   const nameInput = $('workerName');
   const typeInput = $('workerType');
   const targetInput = $('workerTargetHours');
@@ -632,28 +815,59 @@ async function saveWorker(event) {
     return;
   }
 
-  const payload = {
-    name: nameInput.value.trim(),
-    worker_type: typeInput.value,
-    target_hours: targetInput?.value ? Number(targetInput.value) : null,
-    notes: notesInput?.value.trim() || null,
-  };
-
-  const { error } = await supabase.from('workers').insert(payload);
-
-  if (error) {
-    console.error(error);
-    alert(error.message);
-    return;
+  const submitBtn = el.workerForm?.querySelector('button[type="submit"]');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Guardando...';
   }
 
-  el.workerDialog.close();
-  await loadAllData();
+  try {
+    const payload = {
+      name: nameInput.value.trim(),
+      worker_type: typeInput.value,
+      target_hours: targetInput?.value ? Number(targetInput.value) : null,
+      notes: notesInput?.value.trim() || null,
+    };
+
+    const query = workerId
+      ? supabase.from('workers').update(payload).eq('id', workerId).select().single()
+      : supabase.from('workers').insert(payload).select().single();
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error(error);
+      alert(error.message);
+      return;
+    }
+
+    if (workerId) {
+      state.workers = state.workers.map((item) => (item.id === workerId ? data : item));
+    } else {
+      state.workers = [...state.workers, data];
+    }
+
+    state.workers = sortByName(state.workers);
+
+    el.workerDialog.close();
+    populateSelects();
+    renderAll();
+  } catch (error) {
+    console.error(error);
+    alert('No se pudo guardar el operario.');
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Guardar';
+    }
+  }
 }
 
 async function saveService(event) {
   event.preventDefault();
+  if (!ensureDataReady('guardar el servicio')) return;
 
+  const serviceId = $('serviceId').value.trim();
   const serviceName = $('serviceName');
   const serviceAddress = $('serviceAddress');
   const serviceZone = $('serviceZone');
@@ -665,29 +879,60 @@ async function saveService(event) {
     return;
   }
 
-  const payload = {
-    name: serviceName.value.trim(),
-    client_address: serviceAddress ? serviceAddress.value.trim() || null : null,
-    zone: serviceZone ? serviceZone.value.trim() || null : null,
-    frequency_type: serviceFrequency ? serviceFrequency.value : 'fixed',
-    notes: serviceNotes ? serviceNotes.value.trim() || null : null,
-  };
-
-  const { error } = await supabase.from('services').insert(payload);
-
-  if (error) {
-    console.error(error);
-    alert(error.message);
-    return;
+  const submitBtn = el.serviceForm?.querySelector('button[type="submit"]');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Guardando...';
   }
 
-  el.serviceDialog.close();
-  await loadAllData();
+  try {
+    const payload = {
+      name: serviceName.value.trim(),
+      client_address: serviceAddress ? serviceAddress.value.trim() || null : null,
+      zone: serviceZone ? serviceZone.value.trim() || null : null,
+      frequency_type: serviceFrequency ? serviceFrequency.value : 'fixed',
+      notes: serviceNotes ? serviceNotes.value.trim() || null : null,
+    };
+
+    const query = serviceId
+      ? supabase.from('services').update(payload).eq('id', serviceId).select().single()
+      : supabase.from('services').insert(payload).select().single();
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error(error);
+      alert(error.message);
+      return;
+    }
+
+    if (serviceId) {
+      state.services = state.services.map((item) => (item.id === serviceId ? data : item));
+    } else {
+      state.services = [...state.services, data];
+    }
+
+    state.services = sortByName(state.services);
+
+    el.serviceDialog.close();
+    populateSelects();
+    renderAll();
+  } catch (error) {
+    console.error(error);
+    alert('No se pudo guardar el servicio.');
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Guardar';
+    }
+  }
 }
 
 async function saveAssignment(event) {
   event.preventDefault();
+  if (!ensureDataReady('guardar la asignación')) return;
 
+  const assignmentId = $('assignmentId').value.trim();
   const workerInput = $('assignmentWorker');
   const serviceInput = $('assignmentService');
   const dayInput = $('assignmentDay');
@@ -710,7 +955,11 @@ async function saveAssignment(event) {
     is_active: true,
   };
 
-  const { error } = await supabase.from('assignments').insert(payload);
+  const query = assignmentId
+    ? supabase.from('assignments').update(payload).eq('id', assignmentId)
+    : supabase.from('assignments').insert(payload);
+
+  const { error } = await query;
 
   if (error) {
     console.error(error);
@@ -719,25 +968,177 @@ async function saveAssignment(event) {
   }
 
   el.assignmentDialog.close();
-  await loadAllData();
+  await loadAllDataWithRetry(2, 250);
+}
+
+async function saveBulkAssignments(event) {
+  event.preventDefault();
+  if (!ensureDataReady('guardar la carga rápida')) return;
+
+  const workerInput = $('bulkAssignmentWorker');
+  const serviceInput = $('bulkAssignmentService');
+  const startInput = $('bulkAssignmentStart');
+  const endInput = $('bulkAssignmentEnd');
+  const notesInput = $('bulkAssignmentNotes');
+
+  if (!workerInput || !serviceInput || !startInput || !endInput) {
+    alert('Faltan campos del formulario de carga rápida.');
+    return;
+  }
+
+  const selectedDays = [...document.querySelectorAll('.bulk-day:checked')].map((input) =>
+    Number(input.value)
+  );
+
+  if (!selectedDays.length) {
+    alert('Seleccioná al menos un día.');
+    return;
+  }
+
+  if (!startInput.value || !endInput.value) {
+    alert('Completá horario de inicio y fin.');
+    return;
+  }
+
+  const payload = selectedDays.map((day) => ({
+    worker_id: workerInput.value,
+    service_id: serviceInput.value,
+    day_of_week: day,
+    start_time: startInput.value,
+    end_time: endInput.value,
+    notes: notesInput?.value.trim() || null,
+    is_active: true,
+  }));
+
+  const { error } = await supabase.from('assignments').insert(payload);
+
+  if (error) {
+    console.error(error);
+    alert(error.message);
+    return;
+  }
+
+  el.bulkAssignmentDialog.close();
+  await loadAllDataWithRetry(2, 250);
+}
+
+async function deleteWorker() {
+  if (!ensureDataReady('eliminar el operario')) return;
+
+  const workerId = $('workerId').value.trim();
+  if (!workerId) return;
+
+  const hasAssignments = state.assignments.some((item) => item.worker_id === workerId);
+  if (hasAssignments) {
+    alert('No podés eliminar este operario porque todavía tiene asignaciones activas. Primero mové o eliminá esas asignaciones.');
+    return;
+  }
+
+  if (!confirm('¿Eliminar este operario?')) return;
+
+  const { error } = await supabase.from('workers').delete().eq('id', workerId);
+
+  if (error) {
+    console.error(error);
+    alert(error.message);
+    return;
+  }
+
+  el.workerDialog.close();
+  await loadAllDataWithRetry(2, 250);
+}
+
+async function deleteService() {
+  if (!ensureDataReady('eliminar el servicio')) return;
+
+  const serviceId = $('serviceId').value.trim();
+  if (!serviceId) return;
+
+  const hasAssignments = state.assignments.some((item) => item.service_id === serviceId);
+  if (hasAssignments) {
+    alert('No podés eliminar este servicio porque todavía tiene asignaciones activas. Primero eliminá o mové esas asignaciones.');
+    return;
+  }
+
+  if (!confirm('¿Eliminar este servicio?')) return;
+
+  const { error } = await supabase.from('services').delete().eq('id', serviceId);
+
+  if (error) {
+    console.error(error);
+    alert(error.message);
+    return;
+  }
+
+  el.serviceDialog.close();
+  await loadAllDataWithRetry(2, 250);
+}
+
+async function deleteAssignment() {
+  if (!ensureDataReady('eliminar la asignación')) return;
+
+  const assignmentId = $('assignmentId').value.trim();
+  if (!assignmentId) return;
+
+  if (!confirm('¿Eliminar esta asignación del planner?')) return;
+
+  const { error } = await supabase.from('assignments').delete().eq('id', assignmentId);
+
+  if (error) {
+    console.error(error);
+    alert(error.message);
+    return;
+  }
+
+  el.assignmentDialog.close();
+  await loadAllDataWithRetry(2, 250);
+}
+
+function handleDynamicClicks(event) {
+  const workerBtn = event.target.closest('[data-edit-worker]');
+  if (workerBtn) {
+    openWorkerDialog(workerBtn.dataset.editWorker);
+    return;
+  }
+
+  const serviceBtn = event.target.closest('[data-edit-service]');
+  if (serviceBtn) {
+    openServiceDialog(serviceBtn.dataset.editService);
+    return;
+  }
+
+  const assignmentBtn = event.target.closest('[data-edit-assignment]');
+  if (assignmentBtn) {
+    openAssignmentDialog(assignmentBtn.dataset.editAssignment);
+  }
 }
 
 function bindEvents() {
   el.loginForm?.addEventListener('submit', handleLogin);
   el.logoutBtn?.addEventListener('click', handleLogout);
-  el.refreshBtn?.addEventListener('click', loadAllData);
+  el.refreshBtn?.addEventListener('click', () => loadAllDataWithRetry(4, 500));
   el.navTabs?.addEventListener('click', handleViewChange);
   el.globalSearch?.addEventListener('input', handleFilterChange);
   el.workerTypeFilter?.addEventListener('change', handleFilterChange);
   el.statusFilter?.addEventListener('change', handleFilterChange);
 
-  el.addWorkerBtn?.addEventListener('click', openWorkerDialog);
-  el.addServiceBtn?.addEventListener('click', openServiceDialog);
-  el.addAssignmentBtn?.addEventListener('click', openAssignmentDialog);
+  el.addWorkerBtn?.addEventListener('click', () => openWorkerDialog());
+  el.addServiceBtn?.addEventListener('click', () => openServiceDialog());
+  el.addAssignmentBtn?.addEventListener('click', () => openAssignmentDialog());
+  el.bulkAssignmentBtn?.addEventListener('click', () => openBulkAssignmentDialog());
 
   el.workerForm?.addEventListener('submit', saveWorker);
   el.serviceForm?.addEventListener('submit', saveService);
   el.assignmentForm?.addEventListener('submit', saveAssignment);
+  el.bulkAssignmentForm?.addEventListener('submit', saveBulkAssignments);
+
+  $('deleteWorkerBtn')?.addEventListener('click', deleteWorker);
+  $('deleteServiceBtn')?.addEventListener('click', deleteService);
+  $('deleteAssignmentBtn')?.addEventListener('click', deleteAssignment);
+
+  el.workersTableBody?.addEventListener('click', handleDynamicClicks);
+  el.servicesGrid?.addEventListener('click', handleDynamicClicks);
+  el.plannerBoard?.addEventListener('click', handleDynamicClicks);
 
   document.querySelectorAll('[data-close]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -777,18 +1178,22 @@ function boot() {
       addWorkerBtn: $('addWorkerBtn'),
       addServiceBtn: $('addServiceBtn'),
       addAssignmentBtn: $('addAssignmentBtn'),
+      bulkAssignmentBtn: $('bulkAssignmentBtn'),
       workerDialog: $('workerDialog'),
       serviceDialog: $('serviceDialog'),
       assignmentDialog: $('assignmentDialog'),
+      bulkAssignmentDialog: $('bulkAssignmentDialog'),
       workerForm: $('workerForm'),
       serviceForm: $('serviceForm'),
       assignmentForm: $('assignmentForm'),
+      bulkAssignmentForm: $('bulkAssignmentForm'),
     });
 
     if (!el.loginForm) {
       throw new Error('No se encontró #loginForm');
     }
 
+    setDataReady(false);
     bindEvents();
     initAuth();
   } catch (error) {
