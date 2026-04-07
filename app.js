@@ -27,6 +27,8 @@ const state = {
     status: 'all',
   },
   realtimeChannel: null,
+  dataReady: false,
+  loadingData: false,
 };
 
 const el = {};
@@ -63,6 +65,44 @@ function sortByName(list) {
   );
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withTimeout(promise, ms = 12000, message = 'La operación tardó demasiado.') {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(message)), ms);
+    }),
+  ]);
+}
+
+async function ensureWriteSession() {
+  let { data, error } = await supabase.auth.getSession();
+
+  if (error) throw error;
+  if (data?.session) return data.session;
+
+  const refresh = await supabase.auth.refreshSession();
+  if (refresh.error) throw refresh.error;
+  if (!refresh.data?.session) {
+    throw new Error('No hay sesión activa para guardar datos.');
+  }
+
+  return refresh.data.session;
+}
+
+function goToView(viewName) {
+  document.querySelectorAll('.nav-tab').forEach((tab) => {
+    tab.classList.toggle('active', tab.dataset.view === viewName);
+  });
+
+  document.querySelectorAll('.view').forEach((view) => view.classList.add('hidden'));
+  const targetView = $(`${viewName}View`);
+  if (targetView) targetView.classList.remove('hidden');
+}
+
 function getTargetHours(worker) {
   return worker.target_hours ?? TYPE_META[worker.worker_type]?.defaultHours ?? null;
 }
@@ -73,6 +113,34 @@ function getWorkerAssignments(workerId) {
 
 function getServiceAssignments(serviceId) {
   return state.assignments.filter((item) => item.service_id === serviceId);
+}
+
+function setDataReady(isReady) {
+  state.dataReady = isReady;
+
+  const ids = [
+    'refreshBtn',
+    'addWorkerBtn',
+    'addServiceBtn',
+    'addAssignmentBtn',
+    'bulkAssignmentBtn',
+    'workerTypeFilter',
+    'statusFilter',
+    'globalSearch',
+  ];
+
+  ids.forEach((id) => {
+    const node = $(id);
+    if (node) node.disabled = !isReady;
+  });
+}
+
+function ensureDataReady(actionLabel = 'esta acción') {
+  if (!state.dataReady || state.loadingData) {
+    alert(`Todavía se están cargando los datos. Esperá unos segundos antes de ${actionLabel}.`);
+    return false;
+  }
+  return true;
 }
 
 function getWorkerSummaries() {
@@ -519,6 +587,8 @@ function handleViewChange(event) {
 }
 
 function handleFilterChange() {
+  if (!ensureDataReady('filtrar')) return;
+
   state.filters.search = el.globalSearch.value.trim().toLowerCase();
   state.filters.workerType = el.workerTypeFilter.value;
   state.filters.status = el.statusFilter.value;
@@ -533,9 +603,7 @@ async function loadAllData() {
   ]);
 
   if (workersRes.error || servicesRes.error || assignmentsRes.error) {
-    console.error(workersRes.error || servicesRes.error || assignmentsRes.error);
-    alert('No se pudieron cargar los datos. Revisá Supabase y las policies.');
-    return;
+    throw workersRes.error || servicesRes.error || assignmentsRes.error;
   }
 
   state.workers = workersRes.data || [];
@@ -546,6 +614,32 @@ async function loadAllData() {
   renderAll();
 }
 
+async function loadAllDataWithRetry(retries = 4, delayMs = 500) {
+  state.loadingData = true;
+  setDataReady(false);
+
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      await loadAllData();
+      state.loadingData = false;
+      setDataReady(true);
+      return true;
+    } catch (error) {
+      lastError = error;
+      console.error(`Error cargando datos. Intento ${attempt}/${retries}`, error);
+      if (attempt < retries) await sleep(delayMs);
+    }
+  }
+
+  state.loadingData = false;
+  setDataReady(false);
+  console.error('No se pudieron cargar los datos luego de varios intentos.', lastError);
+  alert('No se pudieron inicializar los datos. Tocá "Actualizar" en unos segundos.');
+  return false;
+}
+
 function subscribeRealtime() {
   if (state.realtimeChannel) {
     supabase.removeChannel(state.realtimeChannel);
@@ -553,10 +647,16 @@ function subscribeRealtime() {
 
   state.realtimeChannel = supabase
     .channel('planner-realtime')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'workers' }, () => loadAllData())
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'services' }, () => loadAllData())
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, () => loadAllData())
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'workers' }, () => loadAllDataWithRetry(2, 250))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'services' }, () => loadAllDataWithRetry(2, 250))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, () => loadAllDataWithRetry(2, 250))
     .subscribe();
+}
+
+async function initializeAfterLogin() {
+  showMain();
+  const ok = await loadAllDataWithRetry(4, 500);
+  if (ok) subscribeRealtime();
 }
 
 async function initAuth() {
@@ -565,22 +665,23 @@ async function initAuth() {
 
   if (session?.user) {
     state.user = session.user;
-    showMain();
-    await loadAllData();
-    subscribeRealtime();
+    await initializeAfterLogin();
   } else {
     showAuth();
+    setDataReady(true);
   }
 
   supabase.auth.onAuthStateChange(async (_event, sessionNow) => {
     state.user = sessionNow?.user || null;
 
     if (state.user) {
-      showMain();
-      await loadAllData();
-      subscribeRealtime();
+      await initializeAfterLogin();
     } else {
       showAuth();
+      state.workers = [];
+      state.services = [];
+      state.assignments = [];
+      setDataReady(true);
     }
   });
 }
@@ -601,15 +702,35 @@ async function handleLogin(event) {
     return;
   }
 
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
-
-  if (error) {
-    console.error('Error login:', error);
-    el.authMessage.textContent = error.message;
-    return;
+  const submitBtn = el.loginForm?.querySelector('button[type="submit"]');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Ingresando...';
   }
 
-  el.authMessage.textContent = '';
+  try {
+    const { error } = await withTimeout(
+      supabase.auth.signInWithPassword({ email, password }),
+      12000,
+      'El login tardó demasiado.'
+    );
+
+    if (error) {
+      console.error('Error login:', error);
+      el.authMessage.textContent = error.message;
+      return;
+    }
+
+    el.authMessage.textContent = 'Ingresando...';
+  } catch (error) {
+    console.error(error);
+    el.authMessage.textContent = error.message || 'No se pudo iniciar sesión.';
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Ingresar';
+    }
+  }
 }
 
 async function handleLogout() {
@@ -627,6 +748,8 @@ function showAuth() {
 }
 
 function openWorkerDialog(workerId = null) {
+  if (!ensureDataReady('abrir el formulario de operarios')) return;
+
   el.workerForm.reset();
   $('workerId').value = '';
   $('workerDialogTitle').textContent = workerId ? 'Editar operario' : 'Nuevo operario';
@@ -647,6 +770,8 @@ function openWorkerDialog(workerId = null) {
 }
 
 function openServiceDialog(serviceId = null) {
+  if (!ensureDataReady('abrir el formulario de servicios')) return;
+
   el.serviceForm.reset();
   $('serviceId').value = '';
   $('serviceDialogTitle').textContent = serviceId ? 'Editar servicio' : 'Nuevo servicio';
@@ -668,6 +793,8 @@ function openServiceDialog(serviceId = null) {
 }
 
 function openAssignmentDialog(assignmentId = null) {
+  if (!ensureDataReady('abrir asignaciones')) return;
+
   el.assignmentForm.reset();
   populateSelects();
   $('assignmentId').value = '';
@@ -691,6 +818,8 @@ function openAssignmentDialog(assignmentId = null) {
 }
 
 function openBulkAssignmentDialog() {
+  if (!ensureDataReady('abrir carga rápida')) return;
+
   el.bulkAssignmentForm.reset();
   populateSelects();
 
@@ -722,6 +851,8 @@ async function saveWorker(event) {
   }
 
   try {
+    await ensureWriteSession();
+
     const payload = {
       name: nameInput.value.trim(),
       worker_type: typeInput.value,
@@ -729,11 +860,15 @@ async function saveWorker(event) {
       notes: notesInput?.value.trim() || null,
     };
 
-    const query = workerId
-      ? supabase.from('workers').update(payload).eq('id', workerId).select().single()
-      : supabase.from('workers').insert(payload).select().single();
+    const request = workerId
+      ? supabase.from('workers').update(payload).eq('id', workerId)
+      : supabase.from('workers').insert(payload);
 
-    const { data, error } = await query;
+    const { error } = await withTimeout(
+      request,
+      12000,
+      'Guardar operario tardó demasiado.'
+    );
 
     if (error) {
       console.error(error);
@@ -741,20 +876,12 @@ async function saveWorker(event) {
       return;
     }
 
-    if (workerId) {
-      state.workers = state.workers.map((item) => (item.id === workerId ? data : item));
-    } else {
-      state.workers = [...state.workers, data];
-    }
-
-    state.workers = sortByName(state.workers);
-
     el.workerDialog.close();
-    populateSelects();
-    renderAll();
+    goToView('workers');
+    await loadAllDataWithRetry(3, 300);
   } catch (error) {
     console.error(error);
-    alert('No se pudo guardar el operario.');
+    alert(error.message || 'No se pudo guardar el operario.');
   } finally {
     if (submitBtn) {
       submitBtn.disabled = false;
@@ -785,6 +912,8 @@ async function saveService(event) {
   }
 
   try {
+    await ensureWriteSession();
+
     const payload = {
       name: serviceName.value.trim(),
       client_address: serviceAddress ? serviceAddress.value.trim() || null : null,
@@ -793,11 +922,15 @@ async function saveService(event) {
       notes: serviceNotes ? serviceNotes.value.trim() || null : null,
     };
 
-    const query = serviceId
-      ? supabase.from('services').update(payload).eq('id', serviceId).select().single()
-      : supabase.from('services').insert(payload).select().single();
+    const request = serviceId
+      ? supabase.from('services').update(payload).eq('id', serviceId)
+      : supabase.from('services').insert(payload);
 
-    const { data, error } = await query;
+    const { error } = await withTimeout(
+      request,
+      12000,
+      'Guardar servicio tardó demasiado.'
+    );
 
     if (error) {
       console.error(error);
@@ -805,20 +938,12 @@ async function saveService(event) {
       return;
     }
 
-    if (serviceId) {
-      state.services = state.services.map((item) => (item.id === serviceId ? data : item));
-    } else {
-      state.services = [...state.services, data];
-    }
-
-    state.services = sortByName(state.services);
-
     el.serviceDialog.close();
-    populateSelects();
-    renderAll();
+    goToView('services');
+    await loadAllDataWithRetry(3, 300);
   } catch (error) {
     console.error(error);
-    alert('No se pudo guardar el servicio.');
+    alert(error.message || 'No se pudo guardar el servicio.');
   } finally {
     if (submitBtn) {
       submitBtn.disabled = false;
@@ -843,30 +968,53 @@ async function saveAssignment(event) {
     return;
   }
 
-  const payload = {
-    worker_id: workerInput.value,
-    service_id: serviceInput.value,
-    day_of_week: Number(dayInput.value),
-    start_time: startInput.value,
-    end_time: endInput.value,
-    notes: notesInput?.value.trim() || null,
-    is_active: true,
-  };
-
-  const query = assignmentId
-    ? supabase.from('assignments').update(payload).eq('id', assignmentId)
-    : supabase.from('assignments').insert(payload);
-
-  const { error } = await query;
-
-  if (error) {
-    console.error(error);
-    alert(error.message);
-    return;
+  const submitBtn = el.assignmentForm?.querySelector('button[type="submit"]');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Guardando...';
   }
 
-  el.assignmentDialog.close();
-  await loadAllData();
+  try {
+    await ensureWriteSession();
+
+    const payload = {
+      worker_id: workerInput.value,
+      service_id: serviceInput.value,
+      day_of_week: Number(dayInput.value),
+      start_time: startInput.value,
+      end_time: endInput.value,
+      notes: notesInput?.value.trim() || null,
+      is_active: true,
+    };
+
+    const request = assignmentId
+      ? supabase.from('assignments').update(payload).eq('id', assignmentId)
+      : supabase.from('assignments').insert(payload);
+
+    const { error } = await withTimeout(
+      request,
+      12000,
+      'Guardar asignación tardó demasiado.'
+    );
+
+    if (error) {
+      console.error(error);
+      alert(error.message);
+      return;
+    }
+
+    el.assignmentDialog.close();
+    goToView('planner');
+    await loadAllDataWithRetry(3, 300);
+  } catch (error) {
+    console.error(error);
+    alert(error.message || 'No se pudo guardar la asignación.');
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Guardar';
+    }
+  }
 }
 
 async function saveBulkAssignments(event) {
@@ -897,29 +1045,54 @@ async function saveBulkAssignments(event) {
     return;
   }
 
-  const payload = selectedDays.map((day) => ({
-    worker_id: workerInput.value,
-    service_id: serviceInput.value,
-    day_of_week: day,
-    start_time: startInput.value,
-    end_time: endInput.value,
-    notes: notesInput?.value.trim() || null,
-    is_active: true,
-  }));
-
-  const { error } = await supabase.from('assignments').insert(payload);
-
-  if (error) {
-    console.error(error);
-    alert(error.message);
-    return;
+  const submitBtn = el.bulkAssignmentForm?.querySelector('button[type="submit"]');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Guardando...';
   }
 
-  el.bulkAssignmentDialog.close();
-  await loadAllData();
+  try {
+    await ensureWriteSession();
+
+    const payload = selectedDays.map((day) => ({
+      worker_id: workerInput.value,
+      service_id: serviceInput.value,
+      day_of_week: day,
+      start_time: startInput.value,
+      end_time: endInput.value,
+      notes: notesInput?.value.trim() || null,
+      is_active: true,
+    }));
+
+    const { error } = await withTimeout(
+      supabase.from('assignments').insert(payload),
+      12000,
+      'Guardar carga rápida tardó demasiado.'
+    );
+
+    if (error) {
+      console.error(error);
+      alert(error.message);
+      return;
+    }
+
+    el.bulkAssignmentDialog.close();
+    goToView('planner');
+    await loadAllDataWithRetry(3, 300);
+  } catch (error) {
+    console.error(error);
+    alert(error.message || 'No se pudo guardar la carga rápida.');
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Crear asignaciones';
+    }
+  }
 }
 
 async function deleteWorker() {
+  if (!ensureDataReady('eliminar el operario')) return;
+
   const workerId = $('workerId').value.trim();
   if (!workerId) return;
 
@@ -940,10 +1113,12 @@ async function deleteWorker() {
   }
 
   el.workerDialog.close();
-  await loadAllData();
+  await loadAllDataWithRetry(2, 250);
 }
 
 async function deleteService() {
+  if (!ensureDataReady('eliminar el servicio')) return;
+
   const serviceId = $('serviceId').value.trim();
   if (!serviceId) return;
 
@@ -964,10 +1139,12 @@ async function deleteService() {
   }
 
   el.serviceDialog.close();
-  await loadAllData();
+  await loadAllDataWithRetry(2, 250);
 }
 
 async function deleteAssignment() {
+  if (!ensureDataReady('eliminar la asignación')) return;
+
   const assignmentId = $('assignmentId').value.trim();
   if (!assignmentId) return;
 
@@ -982,7 +1159,7 @@ async function deleteAssignment() {
   }
 
   el.assignmentDialog.close();
-  await loadAllData();
+  await loadAllDataWithRetry(2, 250);
 }
 
 function handleDynamicClicks(event) {
@@ -1007,7 +1184,7 @@ function handleDynamicClicks(event) {
 function bindEvents() {
   el.loginForm?.addEventListener('submit', handleLogin);
   el.logoutBtn?.addEventListener('click', handleLogout);
-  el.refreshBtn?.addEventListener('click', loadAllData);
+  el.refreshBtn?.addEventListener('click', () => loadAllDataWithRetry(4, 500));
   el.navTabs?.addEventListener('click', handleViewChange);
   el.globalSearch?.addEventListener('input', handleFilterChange);
   el.workerTypeFilter?.addEventListener('change', handleFilterChange);
@@ -1084,6 +1261,7 @@ function boot() {
       throw new Error('No se encontró #loginForm');
     }
 
+    setDataReady(false);
     bindEvents();
     initAuth();
   } catch (error) {
