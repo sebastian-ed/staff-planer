@@ -1,3 +1,5 @@
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+
 const DAYS = [
   { value: 1, label: 'Lun' },
   { value: 2, label: 'Mar' },
@@ -24,6 +26,7 @@ const state = {
     workerType: 'all',
     status: 'all',
   },
+  realtimeChannel: null,
 };
 
 const el = {};
@@ -33,114 +36,463 @@ function $(id) {
   return document.getElementById(id);
 }
 
-function boot() {
-  if (!window.SUPABASE_URL || !window.SUPABASE_ANON_KEY) {
-    alert('Falta configurar supabase-config.js');
-    return;
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+function formatHours(value) {
+  if (value == null || Number.isNaN(value)) return '—';
+  return Number(value).toFixed(2).replace('.00', '');
+}
+
+function calculateHours(startTime, endTime) {
+  if (!startTime || !endTime) return 0;
+  const [sh, sm] = startTime.split(':').map(Number);
+  const [eh, em] = endTime.split(':').map(Number);
+  return ((eh * 60 + em) - (sh * 60 + sm)) / 60;
+}
+
+function getTargetHours(worker) {
+  return worker.target_hours ?? TYPE_META[worker.worker_type]?.defaultHours ?? null;
+}
+
+function getWorkerAssignments(workerId) {
+  return state.assignments.filter((item) => item.worker_id === workerId);
+}
+
+function getServiceAssignments(serviceId) {
+  return state.assignments.filter((item) => item.service_id === serviceId);
+}
+
+function getWorkerSummaries() {
+  return state.workers
+    .map((worker) => {
+      const assignments = getWorkerAssignments(worker.id);
+      const totalHours = assignments.reduce(
+        (sum, assignment) => sum + calculateHours(assignment.start_time, assignment.end_time),
+        0
+      );
+
+      const targetHours = getTargetHours(worker);
+      const difference =
+        targetHours == null ? null : Number((targetHours - totalHours).toFixed(2));
+
+      let status = 'balanced';
+      if (difference == null) status = 'insurance';
+      else if (difference > 0) status = 'available';
+      else if (difference < 0) status = 'over';
+
+      const services = [...new Set(assignments.map((a) => a.service_id))]
+        .map((id) => state.services.find((service) => service.id === id))
+        .filter(Boolean);
+
+      return {
+        ...worker,
+        assignments,
+        totalHours: Number(totalHours.toFixed(2)),
+        targetHours,
+        difference,
+        services,
+        status,
+      };
+    })
+    .filter(matchesFilters);
+}
+
+function matchesFilters(summary) {
+  const term = state.filters.search;
+
+  const searchSource = [
+    summary.name,
+    summary.notes || '',
+    ...summary.services.map(
+      (service) => `${service.name} ${service.zone || ''} ${service.client_address || ''}`
+    ),
+  ]
+    .join(' ')
+    .toLowerCase();
+
+  const searchOk = !term || searchSource.includes(term);
+  const typeOk =
+    state.filters.workerType === 'all' || summary.worker_type === state.filters.workerType;
+  const statusOk =
+    state.filters.status === 'all' || summary.status === state.filters.status;
+
+  return searchOk && typeOk && statusOk;
+}
+
+function renderStatusPill(status) {
+  const labels = {
+    balanced: 'Equilibrado',
+    available: 'Con horas libres',
+    over: 'Excedido',
+    insurance: 'Seguro',
+  };
+
+  return `<span class="status-pill status-${status}">${labels[status] || status}</span>`;
+}
+
+function renderDifferencePill(worker) {
+  if (worker.difference == null) {
+    return `<span class="status-pill status-insurance">SEGURO</span>`;
   }
 
-  supabase = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
-
-  Object.assign(el, {
-    authView: $('authView'),
-    mainView: $('mainView'),
-    loginForm: $('loginForm'),
-    authMessage: $('authMessage'),
-    logoutBtn: $('logoutBtn'),
-    refreshBtn: $('refreshBtn'),
-    navTabs: $('navTabs'),
-    globalSearch: $('globalSearch'),
-    workerTypeFilter: $('workerTypeFilter'),
-    statusFilter: $('statusFilter'),
-    kpiCards: $('kpiCards'),
-    criticalWorkers: $('criticalWorkers'),
-    serviceGaps: $('serviceGaps'),
-    workersTableBody: $('workersTableBody'),
-    workerAvailabilityBoard: $('workerAvailabilityBoard'),
-    servicesGrid: $('servicesGrid'),
-    plannerBoard: $('plannerBoard'),
-    addWorkerBtn: $('addWorkerBtn'),
-    addServiceBtn: $('addServiceBtn'),
-    addAssignmentBtn: $('addAssignmentBtn'),
-    workerDialog: $('workerDialog'),
-    serviceDialog: $('serviceDialog'),
-    assignmentDialog: $('assignmentDialog'),
-    workerForm: $('workerForm'),
-    serviceForm: $('serviceForm'),
-    assignmentForm: $('assignmentForm'),
-  });
-
-  bindEvents();
-  initAuth();
-}
-
-function bindEvents() {
-  el.loginForm.addEventListener('submit', handleLogin);
-  el.logoutBtn.addEventListener('click', handleLogout);
-  el.refreshBtn.addEventListener('click', loadAllData);
-  el.navTabs.addEventListener('click', handleViewChange);
-  el.globalSearch.addEventListener('input', handleFilterChange);
-  el.workerTypeFilter.addEventListener('change', handleFilterChange);
-  el.statusFilter.addEventListener('change', handleFilterChange);
-
-  el.addWorkerBtn.addEventListener('click', () => openWorkerDialog());
-  el.addServiceBtn.addEventListener('click', () => openServiceDialog());
-  el.addAssignmentBtn.addEventListener('click', () => openAssignmentDialog());
-
-  el.workerForm.addEventListener('submit', saveWorker);
-  el.serviceForm.addEventListener('submit', saveService);
-  el.assignmentForm.addEventListener('submit', saveAssignment);
-
-  document.querySelectorAll('[data-close]').forEach((button) => {
-    button.addEventListener('click', () => $(button.dataset.close).close());
-  });
-}
-
-async function initAuth() {
-  const { data } = await supabase.auth.getSession();
-  const session = data.session;
-
-  if (session?.user) {
-    state.user = session.user;
-    showMain();
-    await loadAllData();
-    subscribeRealtime();
+  if (worker.difference > 0) {
+    return `<span class="status-pill status-available">Faltan ${formatHours(worker.difference)} hs</span>`;
   }
 
-  supabase.auth.onAuthStateChange(async (event, session) => {
-    state.user = session?.user || null;
-    if (state.user) {
-      showMain();
-      await loadAllData();
-    } else {
-      showAuth();
-    }
+  if (worker.difference < 0) {
+    return `<span class="status-pill status-over">Se pasó ${formatHours(Math.abs(worker.difference))} hs</span>`;
+  }
+
+  return `<span class="status-pill status-balanced">Exacto</span>`;
+}
+
+function getServicesWithGaps() {
+  return state.services
+    .map((service) => {
+      const assignments = getServiceAssignments(service.id);
+      const coveredDays = [...new Set(assignments.map((item) => item.day_of_week))];
+      const hasGap = coveredDays.length === 0 || coveredDays.length < 3;
+
+      return {
+        ...service,
+        assignments,
+        coveredDays,
+        hasGap,
+      };
+    })
+    .filter((service) => service.hasGap);
+}
+
+function populateSelects() {
+  const workerSelect = $('assignmentWorker');
+  const serviceSelect = $('assignmentService');
+
+  if (!workerSelect || !serviceSelect) return;
+
+  workerSelect.innerHTML = state.workers
+    .map((worker) => `<option value="${worker.id}">${escapeHtml(worker.name)}</option>`)
+    .join('');
+
+  serviceSelect.innerHTML = state.services
+    .map((service) => `<option value="${service.id}">${escapeHtml(service.name)}</option>`)
+    .join('');
+}
+
+function renderKpis(summaries) {
+  const totalAssignedHours = summaries.reduce((sum, worker) => sum + worker.totalHours, 0);
+  const availableWorkers = summaries.filter((worker) => worker.status === 'available').length;
+  const overloadedWorkers = summaries.filter((worker) => worker.status === 'over').length;
+  const uncoveredServices = getServicesWithGaps().length;
+
+  const cards = [
+    {
+      label: 'Operarios activos',
+      value: summaries.length,
+      foot: `${state.services.length} servicios cargados`,
+    },
+    {
+      label: 'Horas asignadas',
+      value: formatHours(totalAssignedHours),
+      foot: 'Suma semanal actual',
+    },
+    {
+      label: 'Operarios con horas libres',
+      value: availableWorkers,
+      foot: 'Capacidad para reubicar',
+    },
+    {
+      label: 'Servicios con gaps',
+      value: uncoveredServices,
+      foot: overloadedWorkers
+        ? `${overloadedWorkers} operarios excedidos`
+        : 'Sin excesos detectados',
+    },
+  ];
+
+  el.kpiCards.innerHTML = cards
+    .map(
+      (card) => `
+        <article class="kpi-card">
+          <span class="kpi-label">${card.label}</span>
+          <strong class="kpi-value">${card.value}</strong>
+          <small class="kpi-foot">${card.foot}</small>
+        </article>
+      `
+    )
+    .join('');
+}
+
+function renderCriticalWorkers(summaries) {
+  const critical = summaries
+    .filter((worker) => worker.status === 'available' || worker.status === 'over')
+    .sort((a, b) => Math.abs(b.difference || 0) - Math.abs(a.difference || 0))
+    .slice(0, 8);
+
+  el.criticalWorkers.innerHTML = critical.length
+    ? `
+      <div class="stack-list">
+        ${critical
+          .map(
+            (worker) => `
+              <article class="mini-card">
+                <div>
+                  <strong>${escapeHtml(worker.name)}</strong>
+                  <div class="muted">${TYPE_META[worker.worker_type].label}</div>
+                </div>
+                <div>${renderDifferencePill(worker)}</div>
+              </article>
+            `
+          )
+          .join('')}
+      </div>
+    `
+    : `
+      <div class="empty-state">
+        Sin desvíos relevantes.
+      </div>
+    `;
+}
+
+function renderServiceGaps() {
+  const gaps = getServicesWithGaps().slice(0, 8);
+
+  el.serviceGaps.innerHTML = gaps.length
+    ? `
+      <div class="stack-list">
+        ${gaps
+          .map(
+            (service) => `
+              <article class="mini-card">
+                <div>
+                  <strong>${escapeHtml(service.name)}</strong>
+                  <div class="muted">${escapeHtml(service.zone || 'Sin zona')}</div>
+                </div>
+                <span class="status-pill status-over">Cobertura parcial</span>
+              </article>
+            `
+          )
+          .join('')}
+      </div>
+    `
+    : `
+      <div class="empty-state">
+        No se detectaron servicios sin cobertura mínima.
+      </div>
+    `;
+}
+
+function renderWorkersTable(summaries) {
+  el.workersTableBody.innerHTML = summaries
+    .map(
+      (worker) => `
+        <tr>
+          <td>
+            <strong>${escapeHtml(worker.name)}</strong>
+            <div class="muted">${escapeHtml(worker.notes || '')}</div>
+          </td>
+          <td>${TYPE_META[worker.worker_type].label}</td>
+          <td>${worker.targetHours == null ? 'SEGURO' : formatHours(worker.targetHours)}</td>
+          <td>${formatHours(worker.totalHours)}</td>
+          <td>${worker.difference == null ? 'SEGURO' : formatHours(worker.difference)}</td>
+          <td>${renderStatusPill(worker.status)}</td>
+          <td>
+            ${
+              worker.services.length
+                ? worker.services
+                    .map((service) => `<span class="chip">${escapeHtml(service.name)}</span>`)
+                    .join(' ')
+                : 'Sin servicio'
+            }
+          </td>
+          <td>
+            <div class="inline-actions">
+              <button class="btn btn-secondary btn-sm" type="button" data-edit-worker="${worker.id}">Editar</button>
+            </div>
+          </td>
+        </tr>
+      `
+    )
+    .join('');
+}
+
+function renderWorkerAvailability(summaries) {
+  el.workerAvailabilityBoard.innerHTML = summaries
+    .map((worker) => {
+      const assignmentsByDay = DAYS.map((day) => ({
+        ...day,
+        items: worker.assignments.filter((item) => item.day_of_week === day.value),
+      }));
+
+      return `
+        <article class="availability-card">
+          <header class="availability-header">
+            <div>
+              <h3>${escapeHtml(worker.name)}</h3>
+              <p>${TYPE_META[worker.worker_type].label}</p>
+            </div>
+            <div>${renderDifferencePill(worker)}</div>
+          </header>
+
+          <div class="availability-grid">
+            ${assignmentsByDay
+              .map(
+                (day) => `
+                  <section class="day-column">
+                    <h4>${day.label}</h4>
+                    ${
+                      day.items.length
+                        ? day.items
+                            .map((item) => {
+                              const service = state.services.find(
+                                (service) => service.id === item.service_id
+                              );
+                              return `
+                                <div class="slot-card">
+                                  <strong>${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}</strong>
+                                  <span>${escapeHtml(service?.name || 'Servicio')}</span>
+                                </div>
+                              `;
+                            })
+                            .join('')
+                        : `<div class="slot-empty">Libre</div>`
+                    }
+                  </section>
+                `
+              )
+              .join('')}
+          </div>
+        </article>
+      `;
+    })
+    .join('');
+}
+
+function renderServices() {
+  const term = state.filters.search;
+
+  const services = state.services.filter((service) => {
+    const hay = [
+      service.name,
+      service.zone || '',
+      service.client_address || '',
+      service.notes || '',
+    ]
+      .join(' ')
+      .toLowerCase();
+
+    return !term || hay.includes(term);
   });
+
+  el.servicesGrid.innerHTML = services
+    .map((service) => {
+      const assignments = getServiceAssignments(service.id);
+
+      const serviceDays = DAYS.map((day) => ({
+        ...day,
+        items: assignments.filter((item) => item.day_of_week === day.value),
+      }));
+
+      return `
+        <article class="service-card">
+          <header class="service-card-header">
+            <div>
+              <h3>${escapeHtml(service.name)}</h3>
+              <p>${escapeHtml(service.client_address || 'Sin dirección')}</p>
+            </div>
+            <div class="service-meta">
+              <span class="chip">${escapeHtml(service.frequency_type || 'fixed')}</span>
+              <span class="chip">${escapeHtml(service.zone || 'Sin zona')}</span>
+            </div>
+          </header>
+
+          <div class="inline-actions service-actions">
+            <button class="btn btn-secondary btn-sm" type="button" data-edit-service="${service.id}">Editar</button>
+          </div>
+
+          <div class="service-days">
+            ${serviceDays
+              .map(
+                (day) => `
+                  <section class="service-day">
+                    <h4>${day.label}</h4>
+                    ${
+                      day.items.length
+                        ? day.items
+                            .map((item) => {
+                              const worker = state.workers.find(
+                                (worker) => worker.id === item.worker_id
+                              );
+
+                              return `
+                                <div class="slot-card">
+                                  <strong>${escapeHtml(worker?.name || 'Sin asignar')}</strong>
+                                  <span>${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}</span>
+                                </div>
+                              `;
+                            })
+                            .join('')
+                        : `<div class="slot-empty">Sin cobertura</div>`
+                    }
+                  </section>
+                `
+              )
+              .join('')}
+          </div>
+        </article>
+      `;
+    })
+    .join('');
 }
 
-async function handleLogin(event) {
-  event.preventDefault();
-  el.authMessage.textContent = 'Validando acceso...';
+function renderPlanner() {
+  el.plannerBoard.innerHTML = DAYS.map((day) => {
+    const items = state.assignments.filter((assignment) => assignment.day_of_week === day.value);
 
-  const email = $('email').value.trim();
-  const password = $('password').value;
+    return `
+      <section class="planner-column">
+        <h3>${day.label}</h3>
+        ${
+          items.length
+            ? items
+                .map((item) => {
+                  const worker = state.workers.find((row) => row.id === item.worker_id);
+                  const service = state.services.find((row) => row.id === item.service_id);
 
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
-  el.authMessage.textContent = error ? error.message : '';
+                  return `
+                    <article class="planner-card">
+                      <h4>${escapeHtml(service?.name || 'Servicio')}</h4>
+                      <p>${escapeHtml(worker?.name || 'Operario')}</p>
+                      <small>${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}</small>
+                      <div class="inline-actions planner-actions">
+                        <button class="btn btn-secondary btn-sm" type="button" data-edit-assignment="${item.id}">Editar</button>
+                      </div>
+                    </article>
+                  `;
+                })
+                .join('')
+            : `<div class="slot-empty">Sin asignaciones</div>`
+        }
+      </section>
+    `;
+  }).join('');
 }
 
-async function handleLogout() {
-  await supabase.auth.signOut();
-}
-
-function showMain() {
-  el.authView.classList.add('hidden');
-  el.mainView.classList.remove('hidden');
-}
-
-function showAuth() {
-  el.mainView.classList.add('hidden');
-  el.authView.classList.remove('hidden');
+function renderAll() {
+  const summaries = getWorkerSummaries();
+  renderKpis(summaries);
+  renderCriticalWorkers(summaries);
+  renderServiceGaps();
+  renderWorkersTable(summaries);
+  renderWorkerAvailability(summaries);
+  renderServices();
+  renderPlanner();
 }
 
 function handleViewChange(event) {
@@ -171,429 +523,446 @@ async function loadAllData() {
 
   if (workersRes.error || servicesRes.error || assignmentsRes.error) {
     console.error(workersRes.error || servicesRes.error || assignmentsRes.error);
-    alert('No se pudieron cargar los datos. Revisá la configuración de Supabase y las políticas.');
+    alert('No se pudieron cargar los datos. Revisá Supabase y las policies.');
     return;
   }
 
   state.workers = workersRes.data || [];
   state.services = servicesRes.data || [];
   state.assignments = assignmentsRes.data || [];
+
   populateSelects();
   renderAll();
 }
 
 function subscribeRealtime() {
-  supabase.channel('planner-realtime')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'workers' }, loadAllData)
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'services' }, loadAllData)
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, loadAllData)
+  if (state.realtimeChannel) {
+    supabase.removeChannel(state.realtimeChannel);
+  }
+
+  state.realtimeChannel = supabase
+    .channel('planner-realtime')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'workers' }, () => loadAllData())
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'services' }, () => loadAllData())
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, () => loadAllData())
     .subscribe();
 }
 
-function populateSelects() {
-  $('assignmentWorker').innerHTML = state.workers.map((worker) => `<option value="${worker.id}">${escapeHtml(worker.name)}</option>`).join('');
-  $('assignmentService').innerHTML = state.services.map((service) => `<option value="${service.id}">${escapeHtml(service.name)}</option>`).join('');
-}
+async function initAuth() {
+  const { data } = await supabase.auth.getSession();
+  const session = data.session;
 
-function renderAll() {
-  const summaries = getWorkerSummaries();
-  renderKpis(summaries);
-  renderCriticalWorkers(summaries);
-  renderServiceGaps();
-  renderWorkersTable(summaries);
-  renderWorkerAvailability(summaries);
-  renderServices();
-  renderPlanner();
-}
-
-function getWorkerAssignments(workerId) {
-  return state.assignments.filter((item) => item.worker_id === workerId);
-}
-
-function getServiceAssignments(serviceId) {
-  return state.assignments.filter((item) => item.service_id === serviceId);
-}
-
-function calculateHours(startTime, endTime) {
-  if (!startTime || !endTime) return 0;
-  const [sh, sm] = startTime.split(':').map(Number);
-  const [eh, em] = endTime.split(':').map(Number);
-  return ((eh * 60 + em) - (sh * 60 + sm)) / 60;
-}
-
-function getWorkerSummaries() {
-  return state.workers.map((worker) => {
-    const assignments = getWorkerAssignments(worker.id);
-    const totalHours = assignments.reduce((sum, assignment) => sum + calculateHours(assignment.start_time, assignment.end_time), 0);
-    const targetHours = worker.target_hours ?? TYPE_META[worker.worker_type]?.defaultHours ?? null;
-    const difference = targetHours == null ? null : Number((targetHours - totalHours).toFixed(2));
-    const serviceIds = [...new Set(assignments.map((assignment) => assignment.service_id))];
-    const services = serviceIds.map((id) => state.services.find((service) => service.id === id)).filter(Boolean);
-
-    let status = 'balanced';
-    if (difference == null) status = 'insurance';
-    else if (difference > 0) status = 'available';
-    else if (difference < 0) status = 'over';
-
-    return {
-      ...worker,
-      assignments,
-      totalHours: Number(totalHours.toFixed(2)),
-      targetHours,
-      difference,
-      services,
-      status,
-    };
-  }).filter(matchesFilters);
-}
-
-function matchesFilters(summary) {
-  const term = state.filters.search;
-  const searchOk = !term || [summary.name, summary.notes || '', ...summary.services.map((service) => `${service.name} ${service.zone || ''} ${service.client_address || ''}`)]
-    .join(' ')
-    .toLowerCase()
-    .includes(term);
-
-  const typeOk = state.filters.workerType === 'all' || summary.worker_type === state.filters.workerType;
-  const statusOk = state.filters.status === 'all' || summary.status === state.filters.status;
-  return searchOk && typeOk && statusOk;
-}
-
-function renderKpis(summaries) {
-  const totalAssignedHours = summaries.reduce((sum, worker) => sum + worker.totalHours, 0);
-  const availableWorkers = summaries.filter((worker) => worker.status === 'available').length;
-  const overloadedWorkers = summaries.filter((worker) => worker.status === 'over').length;
-  const uncoveredServices = getServicesWithGaps().length;
-
-  const cards = [
-    { label: 'Operarios activos', value: summaries.length, foot: `${state.services.length} servicios cargados` },
-    { label: 'Horas asignadas', value: totalAssignedHours, foot: 'Suma semanal actual' },
-    { label: 'Operarios con horas libres', value: availableWorkers, foot: 'Capacidad para reubicar' },
-    { label: 'Servicios con gaps', value: uncoveredServices, foot: overloadedWorkers ? `${overloadedWorkers} operarios excedidos` : 'Sin excesos detectados' },
-  ];
-
-  el.kpiCards.innerHTML = cards.map((card) => `
-    <article class="kpi-card card">
-      <div class="muted small">${card.label}</div>
-      <div class="kpi-value">${card.value}</div>
-      <div class="kpi-foot">${card.foot}</div>
-    </article>
-  `).join('');
-}
-
-function renderCriticalWorkers(summaries) {
-  const critical = summaries
-    .filter((worker) => worker.status === 'available' || worker.status === 'over')
-    .sort((a, b) => Math.abs(b.difference || 0) - Math.abs(a.difference || 0))
-    .slice(0, 8);
-
-  el.criticalWorkers.innerHTML = critical.length ? `
-    <div class="critical-list">
-      ${critical.map((worker) => `
-        <div class="list-card">
-          <div>
-            <strong>${escapeHtml(worker.name)}</strong>
-            <div class="muted small">${TYPE_META[worker.worker_type].label}</div>
-          </div>
-          ${renderDifferencePill(worker)}
-        </div>
-      `).join('')}
-    </div>
-  ` : `<p class="muted">Sin desvíos relevantes. Un milagro operativo, poco frecuente pero real.</p>`;
-}
-
-function getServicesWithGaps() {
-  return state.services.map((service) => {
-    const assignments = getServiceAssignments(service.id);
-    const coveredDays = [...new Set(assignments.map((item) => item.day_of_week))];
-    const hasGap = coveredDays.length === 0 || coveredDays.length < 3;
-    return { ...service, assignments, coveredDays, hasGap };
-  }).filter((service) => service.hasGap);
-}
-
-function renderServiceGaps() {
-  const gaps = getServicesWithGaps().slice(0, 8);
-  el.serviceGaps.innerHTML = gaps.length ? `
-    <div class="gap-list">
-      ${gaps.map((service) => `
-        <div class="list-card">
-          <div>
-            <strong>${escapeHtml(service.name)}</strong>
-            <div class="muted small">${escapeHtml(service.zone || 'Sin zona')}</div>
-          </div>
-          <span class="pill warning">Cobertura parcial</span>
-        </div>
-      `).join('')}
-    </div>
-  ` : `<p class="muted">No se detectaron servicios sin cobertura mínima según la carga actual.</p>`;
-}
-
-function renderWorkersTable(summaries) {
-  el.workersTableBody.innerHTML = summaries.map((worker) => `
-    <tr>
-      <td>
-        <strong>${escapeHtml(worker.name)}</strong>
-        <div class="muted small">${escapeHtml(worker.notes || '')}</div>
-      </td>
-      <td>${TYPE_META[worker.worker_type].label}</td>
-      <td>${worker.targetHours == null ? 'SEGURO' : worker.targetHours}</td>
-      <td>${worker.totalHours}</td>
-      <td>${worker.difference == null ? 'SEGURO' : worker.difference}</td>
-      <td>${renderStatusPill(worker.status)}</td>
-      <td>
-        <div class="tag-list">
-          ${worker.services.length ? worker.services.map((service) => `<span class="pill info">${escapeHtml(service.name)}</span>`).join('') : '<span class="muted small">Sin servicio</span>'}
-        </div>
-      </td>
-      <td>
-        <div class="action-row">
-          <button class="text-link" type="button" onclick="window.editWorker('${worker.id}')">Editar</button>
-          <button class="text-link" type="button" onclick="window.openAssignmentForWorker('${worker.id}')">Asignar</button>
-        </div>
-      </td>
-    </tr>
-  `).join('');
-}
-
-function renderWorkerAvailability(summaries) {
-  el.workerAvailabilityBoard.innerHTML = summaries.map((worker) => {
-    const assignmentsByDay = DAYS.map((day) => {
-      const dayAssignments = worker.assignments.filter((item) => item.day_of_week === day.value);
-      return { ...day, items: dayAssignments };
-    });
-
-    return `
-      <article class="availability-card">
-        <div class="availability-card-header">
-          <div>
-            <h3>${escapeHtml(worker.name)}</h3>
-            <div class="muted small">${TYPE_META[worker.worker_type].label}</div>
-          </div>
-          ${renderDifferencePill(worker)}
-        </div>
-        <div class="day-bars">
-          ${assignmentsByDay.map((day) => `
-            <div class="day-bar">
-              <h4>${day.label}</h4>
-              ${day.items.length
-                ? day.items.map((item) => {
-                    const service = state.services.find((service) => service.id === item.service_id);
-                    return `<span class="slot">${item.start_time.slice(0,5)}-${item.end_time.slice(0,5)} · ${escapeHtml(service?.name || 'Servicio')}</span>`;
-                  }).join('')
-                : '<span class="free">Libre</span>'}
-            </div>
-          `).join('')}
-        </div>
-      </article>
-    `;
-  }).join('');
-}
-
-function renderServices() {
-  const term = state.filters.search;
-  const services = state.services.filter((service) => {
-    const hay = [service.name, service.zone || '', service.client_address || '', service.notes || ''].join(' ').toLowerCase();
-    return !term || hay.includes(term);
-  });
-
-  el.servicesGrid.innerHTML = services.map((service) => {
-    const assignments = getServiceAssignments(service.id);
-    const serviceDays = DAYS.map((day) => ({
-      ...day,
-      items: assignments.filter((item) => item.day_of_week === day.value),
-    }));
-
-    return `
-      <article class="service-card">
-        <div class="service-card-header">
-          <div>
-            <h3>${escapeHtml(service.name)}</h3>
-            <div class="muted small">${escapeHtml(service.client_address || 'Sin dirección')}</div>
-          </div>
-          <span class="pill info">${escapeHtml(service.frequency_type || 'fixed')}</span>
-        </div>
-        <div class="tag-list">
-          <span class="pill success">${escapeHtml(service.zone || 'Sin zona')}</span>
-          ${service.notes ? `<span class="pill warning">Con notas</span>` : ''}
-        </div>
-        <div class="service-week">
-          ${serviceDays.map((day) => `
-            <div class="service-day">
-              <strong>${day.label}</strong>
-              ${day.items.length ? day.items.map((item) => {
-                const worker = state.workers.find((worker) => worker.id === item.worker_id);
-                return `<div class="small">${escapeHtml(worker?.name || 'Sin asignar')}<br>${item.start_time.slice(0,5)}-${item.end_time.slice(0,5)}</div>`;
-              }).join('') : '<div class="small muted">Sin cobertura</div>'}
-            </div>
-          `).join('')}
-        </div>
-        <div class="action-row" style="margin-top:14px">
-          <button class="text-link" type="button" onclick="window.editService('${service.id}')">Editar</button>
-          <button class="text-link" type="button" onclick="window.openAssignmentForService('${service.id}')">Asignar</button>
-        </div>
-      </article>
-    `;
-  }).join('');
-}
-
-function renderPlanner() {
-  el.plannerBoard.innerHTML = DAYS.map((day) => {
-    const items = state.assignments.filter((assignment) => assignment.day_of_week === day.value);
-    return `
-      <div class="planner-column">
-        <h4>${day.label}</h4>
-        ${items.length ? items.map((item) => {
-          const worker = state.workers.find((row) => row.id === item.worker_id);
-          const service = state.services.find((row) => row.id === item.service_id);
-          return `
-            <div class="assignment-chip">
-              <h5>${escapeHtml(service?.name || 'Servicio')}</h5>
-              <p>${escapeHtml(worker?.name || 'Operario')} · ${item.start_time.slice(0,5)}-${item.end_time.slice(0,5)}</p>
-              <div class="action-row">
-                <button class="text-link" type="button" onclick="window.editAssignment('${item.id}')">Editar</button>
-                <button class="text-link" type="button" onclick="window.deleteAssignment('${item.id}')">Eliminar</button>
-              </div>
-            </div>
-          `;
-        }).join('') : '<div class="assignment-chip"><p>Sin asignaciones</p></div>'}
-      </div>
-    `;
-  }).join('');
-}
-
-function renderStatusPill(status) {
-  switch (status) {
-    case 'available':
-      return '<span class="pill warning">Horas libres</span>';
-    case 'over':
-      return '<span class="pill danger">Excedido</span>';
-    case 'insurance':
-      return '<span class="pill info">Seguro</span>';
-    default:
-      return '<span class="pill success">En objetivo</span>';
+  if (session?.user) {
+    state.user = session.user;
+    showMain();
+    await loadAllData();
+    subscribeRealtime();
+  } else {
+    showAuth();
   }
+
+  supabase.auth.onAuthStateChange(async (_event, sessionNow) => {
+    state.user = sessionNow?.user || null;
+
+    if (state.user) {
+      showMain();
+      await loadAllData();
+      subscribeRealtime();
+    } else {
+      showAuth();
+    }
+  });
 }
 
-function renderDifferencePill(worker) {
-  if (worker.difference == null) return '<span class="pill info">SEGURO</span>';
-  if (worker.difference > 0) return `<span class="pill warning">Faltan ${worker.difference} hs</span>`;
-  if (worker.difference < 0) return `<span class="pill danger">Exceso ${Math.abs(worker.difference)} hs</span>`;
-  return '<span class="pill success">Objetivo cumplido</span>';
+async function handleLogin(event) {
+  event.preventDefault();
+
+  el.authMessage.textContent = 'Validando acceso...';
+
+  const emailInput = $('email');
+  const passwordInput = $('password');
+
+  const email = emailInput?.value.trim();
+  const password = passwordInput?.value;
+
+  if (!email || !password) {
+    el.authMessage.textContent = 'Completá email y contraseña.';
+    return;
+  }
+
+  const { error } = await supabase.auth.signInWithPassword({ email, password });
+
+  if (error) {
+    console.error('Error login:', error);
+    el.authMessage.textContent = error.message;
+    return;
+  }
+
+  el.authMessage.textContent = '';
 }
 
-function openWorkerDialog(worker = null) {
-  $('workerDialogTitle').textContent = worker ? 'Editar operario' : 'Nuevo operario';
-  $('workerId').value = worker?.id || '';
-  $('workerName').value = worker?.name || '';
-  $('workerType').value = worker?.worker_type || 'full_time';
-  $('workerTargetHours').value = worker?.target_hours ?? '';
-  $('workerNotes').value = worker?.notes || '';
+async function handleLogout() {
+  await supabase.auth.signOut();
+}
+
+function showMain() {
+  el.authView.classList.add('hidden');
+  el.mainView.classList.remove('hidden');
+}
+
+function showAuth() {
+  el.mainView.classList.add('hidden');
+  el.authView.classList.remove('hidden');
+}
+
+function openWorkerDialog(workerId = null) {
+  el.workerForm.reset();
+  $('workerId').value = '';
+  $('workerDialogTitle').textContent = workerId ? 'Editar operario' : 'Nuevo operario';
+  $('deleteWorkerBtn').classList.toggle('hidden', !workerId);
+
+  if (workerId) {
+    const worker = state.workers.find((item) => item.id === workerId);
+    if (!worker) return;
+
+    $('workerId').value = worker.id;
+    $('workerName').value = worker.name || '';
+    $('workerType').value = worker.worker_type || 'full_time';
+    $('workerTargetHours').value = worker.target_hours ?? '';
+    $('workerNotes').value = worker.notes || '';
+  }
+
   el.workerDialog.showModal();
 }
 
-function openServiceDialog(service = null) {
-  $('serviceDialogTitle').textContent = service ? 'Editar servicio' : 'Nuevo servicio';
-  $('serviceId').value = service?.id || '';
-  $('serviceName').value = service?.name || '';
-  $('serviceClientAddress').value = service?.client_address || '';
-  $('serviceZone').value = service?.zone || '';
-  $('serviceFrequency').value = service?.frequency_type || 'fixed';
-  $('serviceNotes').value = service?.notes || '';
+function openServiceDialog(serviceId = null) {
+  el.serviceForm.reset();
+  $('serviceId').value = '';
+  $('serviceDialogTitle').textContent = serviceId ? 'Editar servicio' : 'Nuevo servicio';
+  $('deleteServiceBtn').classList.toggle('hidden', !serviceId);
+
+  if (serviceId) {
+    const service = state.services.find((item) => item.id === serviceId);
+    if (!service) return;
+
+    $('serviceId').value = service.id;
+    $('serviceName').value = service.name || '';
+    $('serviceAddress').value = service.client_address || '';
+    $('serviceZone').value = service.zone || '';
+    $('serviceFrequency').value = service.frequency_type || 'fixed';
+    $('serviceNotes').value = service.notes || '';
+  }
+
   el.serviceDialog.showModal();
 }
 
-function openAssignmentDialog(assignment = null, preset = {}) {
-  $('assignmentDialogTitle').textContent = assignment ? 'Editar asignación' : 'Nueva asignación';
-  $('assignmentId').value = assignment?.id || '';
-  $('assignmentWorker').value = assignment?.worker_id || preset.workerId || state.workers[0]?.id || '';
-  $('assignmentService').value = assignment?.service_id || preset.serviceId || state.services[0]?.id || '';
-  $('assignmentDay').value = String(assignment?.day_of_week ?? 1);
-  $('assignmentStart').value = assignment?.start_time || '08:00';
-  $('assignmentEnd').value = assignment?.end_time || '12:00';
-  $('assignmentNotes').value = assignment?.notes || '';
+function openAssignmentDialog(assignmentId = null) {
+  el.assignmentForm.reset();
+  populateSelects();
+  $('assignmentId').value = '';
+  $('assignmentDialogTitle').textContent = assignmentId ? 'Editar asignación' : 'Nueva asignación';
+  $('deleteAssignmentBtn').classList.toggle('hidden', !assignmentId);
+
+  if (assignmentId) {
+    const assignment = state.assignments.find((item) => item.id === assignmentId);
+    if (!assignment) return;
+
+    $('assignmentId').value = assignment.id;
+    $('assignmentWorker').value = assignment.worker_id;
+    $('assignmentService').value = assignment.service_id;
+    $('assignmentDay').value = String(assignment.day_of_week);
+    $('assignmentStart').value = assignment.start_time?.slice(0, 5) || '';
+    $('assignmentEnd').value = assignment.end_time?.slice(0, 5) || '';
+    $('assignmentNotes').value = assignment.notes || '';
+  }
+
   el.assignmentDialog.showModal();
 }
 
 async function saveWorker(event) {
   event.preventDefault();
-  const id = $('workerId').value;
-  const workerType = $('workerType').value;
-  const targetHoursRaw = $('workerTargetHours').value;
+
+  const workerId = $('workerId').value.trim();
+  const nameInput = $('workerName');
+  const typeInput = $('workerType');
+  const targetInput = $('workerTargetHours');
+  const notesInput = $('workerNotes');
+
+  if (!nameInput || !typeInput) {
+    alert('Faltan campos del formulario de operario.');
+    return;
+  }
 
   const payload = {
-    name: $('workerName').value.trim(),
-    worker_type: workerType,
-    target_hours: targetHoursRaw ? Number(targetHoursRaw) : TYPE_META[workerType].defaultHours,
-    notes: $('workerNotes').value.trim(),
+    name: nameInput.value.trim(),
+    worker_type: typeInput.value,
+    target_hours: targetInput?.value ? Number(targetInput.value) : null,
+    notes: notesInput?.value.trim() || null,
   };
 
-  const query = id ? supabase.from('workers').update(payload).eq('id', id) : supabase.from('workers').insert(payload);
+  const query = workerId
+    ? supabase.from('workers').update(payload).eq('id', workerId)
+    : supabase.from('workers').insert(payload);
+
   const { error } = await query;
-  if (error) return alert(error.message);
+
+  if (error) {
+    console.error(error);
+    alert(error.message);
+    return;
+  }
+
   el.workerDialog.close();
+  await loadAllData();
 }
 
 async function saveService(event) {
   event.preventDefault();
-  const id = $('serviceId').value;
+
+  const serviceId = $('serviceId').value.trim();
+  const serviceName = $('serviceName');
+  const serviceAddress = $('serviceAddress');
+  const serviceZone = $('serviceZone');
+  const serviceFrequency = $('serviceFrequency');
+  const serviceNotes = $('serviceNotes');
+
+  if (!serviceName) {
+    alert('Falta el campo serviceName en el HTML.');
+    return;
+  }
+
   const payload = {
-    name: $('serviceName').value.trim(),
-    client_address: $('serviceClientAddress').value.trim(),
-    zone: $('serviceZone').value.trim(),
-    frequency_type: $('serviceFrequency').value,
-    notes: $('serviceNotes').value.trim(),
+    name: serviceName.value.trim(),
+    client_address: serviceAddress ? serviceAddress.value.trim() || null : null,
+    zone: serviceZone ? serviceZone.value.trim() || null : null,
+    frequency_type: serviceFrequency ? serviceFrequency.value : 'fixed',
+    notes: serviceNotes ? serviceNotes.value.trim() || null : null,
   };
 
-  const query = id ? supabase.from('services').update(payload).eq('id', id) : supabase.from('services').insert(payload);
+  const query = serviceId
+    ? supabase.from('services').update(payload).eq('id', serviceId)
+    : supabase.from('services').insert(payload);
+
   const { error } = await query;
-  if (error) return alert(error.message);
+
+  if (error) {
+    console.error(error);
+    alert(error.message);
+    return;
+  }
+
   el.serviceDialog.close();
+  await loadAllData();
 }
 
 async function saveAssignment(event) {
   event.preventDefault();
-  const id = $('assignmentId').value;
-  const payload = {
-    worker_id: $('assignmentWorker').value,
-    service_id: $('assignmentService').value,
-    day_of_week: Number($('assignmentDay').value),
-    start_time: $('assignmentStart').value,
-    end_time: $('assignmentEnd').value,
-    notes: $('assignmentNotes').value.trim(),
-    is_active: true,
-  };
 
-  if (calculateHours(payload.start_time, payload.end_time) <= 0) {
-    alert('El horario de fin debe ser mayor al de inicio. Parece obvio, pero la planilla original venía bastante creativa.');
+  const assignmentId = $('assignmentId').value.trim();
+  const workerInput = $('assignmentWorker');
+  const serviceInput = $('assignmentService');
+  const dayInput = $('assignmentDay');
+  const startInput = $('assignmentStart');
+  const endInput = $('assignmentEnd');
+  const notesInput = $('assignmentNotes');
+
+  if (!workerInput || !serviceInput || !dayInput || !startInput || !endInput) {
+    alert('Faltan campos del formulario de asignación.');
     return;
   }
 
-  const query = id ? supabase.from('assignments').update(payload).eq('id', id) : supabase.from('assignments').insert(payload);
+  const payload = {
+    worker_id: workerInput.value,
+    service_id: serviceInput.value,
+    day_of_week: Number(dayInput.value),
+    start_time: startInput.value,
+    end_time: endInput.value,
+    notes: notesInput?.value.trim() || null,
+    is_active: true,
+  };
+
+  const query = assignmentId
+    ? supabase.from('assignments').update(payload).eq('id', assignmentId)
+    : supabase.from('assignments').insert(payload);
+
   const { error } = await query;
-  if (error) return alert(error.message);
+
+  if (error) {
+    console.error(error);
+    alert(error.message);
+    return;
+  }
+
   el.assignmentDialog.close();
+  await loadAllData();
 }
 
-async function deleteAssignment(id) {
-  if (!confirm('¿Eliminar esta asignación?')) return;
-  const { error } = await supabase.from('assignments').update({ is_active: false }).eq('id', id);
-  if (error) alert(error.message);
+async function deleteWorker() {
+  const workerId = $('workerId').value.trim();
+  if (!workerId) return;
+
+  const hasAssignments = state.assignments.some((item) => item.worker_id === workerId);
+  if (hasAssignments) {
+    alert('No podés eliminar este operario porque todavía tiene asignaciones activas. Primero mové o eliminá esas asignaciones.');
+    return;
+  }
+
+  if (!confirm('¿Eliminar este operario?')) return;
+
+  const { error } = await supabase.from('workers').delete().eq('id', workerId);
+
+  if (error) {
+    console.error(error);
+    alert(error.message);
+    return;
+  }
+
+  el.workerDialog.close();
+  await loadAllData();
 }
 
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
+async function deleteService() {
+  const serviceId = $('serviceId').value.trim();
+  if (!serviceId) return;
+
+  const hasAssignments = state.assignments.some((item) => item.service_id === serviceId);
+  if (hasAssignments) {
+    alert('No podés eliminar este servicio porque todavía tiene asignaciones activas. Primero eliminá o mové esas asignaciones.');
+    return;
+  }
+
+  if (!confirm('¿Eliminar este servicio?')) return;
+
+  const { error } = await supabase.from('services').delete().eq('id', serviceId);
+
+  if (error) {
+    console.error(error);
+    alert(error.message);
+    return;
+  }
+
+  el.serviceDialog.close();
+  await loadAllData();
 }
 
-window.editWorker = (id) => openWorkerDialog(state.workers.find((item) => item.id === id));
-window.editService = (id) => openServiceDialog(state.services.find((item) => item.id === id));
-window.editAssignment = (id) => openAssignmentDialog(state.assignments.find((item) => item.id === id));
-window.deleteAssignment = deleteAssignment;
-window.openAssignmentForWorker = (workerId) => openAssignmentDialog(null, { workerId });
-window.openAssignmentForService = (serviceId) => openAssignmentDialog(null, { serviceId });
+async function deleteAssignment() {
+  const assignmentId = $('assignmentId').value.trim();
+  if (!assignmentId) return;
 
-boot();
+  if (!confirm('¿Eliminar esta asignación del planner?')) return;
+
+  const { error } = await supabase.from('assignments').delete().eq('id', assignmentId);
+
+  if (error) {
+    console.error(error);
+    alert(error.message);
+    return;
+  }
+
+  el.assignmentDialog.close();
+  await loadAllData();
+}
+
+function handleDynamicClicks(event) {
+  const workerBtn = event.target.closest('[data-edit-worker]');
+  if (workerBtn) {
+    openWorkerDialog(workerBtn.dataset.editWorker);
+    return;
+  }
+
+  const serviceBtn = event.target.closest('[data-edit-service]');
+  if (serviceBtn) {
+    openServiceDialog(serviceBtn.dataset.editService);
+    return;
+  }
+
+  const assignmentBtn = event.target.closest('[data-edit-assignment]');
+  if (assignmentBtn) {
+    openAssignmentDialog(assignmentBtn.dataset.editAssignment);
+  }
+}
+
+function bindEvents() {
+  el.loginForm?.addEventListener('submit', handleLogin);
+  el.logoutBtn?.addEventListener('click', handleLogout);
+  el.refreshBtn?.addEventListener('click', loadAllData);
+  el.navTabs?.addEventListener('click', handleViewChange);
+  el.globalSearch?.addEventListener('input', handleFilterChange);
+  el.workerTypeFilter?.addEventListener('change', handleFilterChange);
+  el.statusFilter?.addEventListener('change', handleFilterChange);
+
+  el.addWorkerBtn?.addEventListener('click', () => openWorkerDialog());
+  el.addServiceBtn?.addEventListener('click', () => openServiceDialog());
+  el.addAssignmentBtn?.addEventListener('click', () => openAssignmentDialog());
+
+  el.workerForm?.addEventListener('submit', saveWorker);
+  el.serviceForm?.addEventListener('submit', saveService);
+  el.assignmentForm?.addEventListener('submit', saveAssignment);
+
+  $('deleteWorkerBtn')?.addEventListener('click', deleteWorker);
+  $('deleteServiceBtn')?.addEventListener('click', deleteService);
+  $('deleteAssignmentBtn')?.addEventListener('click', deleteAssignment);
+
+  el.workersTableBody?.addEventListener('click', handleDynamicClicks);
+  el.servicesGrid?.addEventListener('click', handleDynamicClicks);
+  el.plannerBoard?.addEventListener('click', handleDynamicClicks);
+
+  document.querySelectorAll('[data-close]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const dialog = $(button.dataset.close);
+      if (dialog) dialog.close();
+    });
+  });
+}
+
+function boot() {
+  try {
+    if (!window.SUPABASE_URL || !window.SUPABASE_ANON_KEY) {
+      alert('Falta configurar supabase-config.js');
+      return;
+    }
+
+    supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+
+    Object.assign(el, {
+      authView: $('authView'),
+      mainView: $('mainView'),
+      loginForm: $('loginForm'),
+      authMessage: $('authMessage'),
+      logoutBtn: $('logoutBtn'),
+      refreshBtn: $('refreshBtn'),
+      navTabs: $('navTabs'),
+      globalSearch: $('globalSearch'),
+      workerTypeFilter: $('workerTypeFilter'),
+      statusFilter: $('statusFilter'),
+      kpiCards: $('kpiCards'),
+      criticalWorkers: $('criticalWorkers'),
+      serviceGaps: $('serviceGaps'),
+      workersTableBody: $('workersTableBody'),
+      workerAvailabilityBoard: $('workerAvailabilityBoard'),
+      servicesGrid: $('servicesGrid'),
+      plannerBoard: $('plannerBoard'),
+      addWorkerBtn: $('addWorkerBtn'),
+      addServiceBtn: $('addServiceBtn'),
+      addAssignmentBtn: $('addAssignmentBtn'),
+      workerDialog: $('workerDialog'),
+      serviceDialog: $('serviceDialog'),
+      assignmentDialog: $('assignmentDialog'),
+      workerForm: $('workerForm'),
+      serviceForm: $('serviceForm'),
+      assignmentForm: $('assignmentForm'),
+    });
+
+    if (!el.loginForm) {
+      throw new Error('No se encontró #loginForm');
+    }
+
+    bindEvents();
+    initAuth();
+  } catch (error) {
+    console.error('Error en boot():', error);
+    alert(`Error al iniciar la app: ${error.message}`);
+  }
+}
+
+document.addEventListener('DOMContentLoaded', boot);

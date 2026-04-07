@@ -76,6 +76,307 @@
                 <option value="available">Con horas disponibles</option>
                 <option value="balanced">En objetivo</option>
                 <option value="over">Con exceso de horas</option>
+                <option value="insurance">Seguro / por hora</option>
+              </select>
+            </div>
+          </div>
+        </aside>
+
+        <section class="content stack-lg">
+          <section id="dashboardView" class="view stack-lg">
+            <div class="cards-grid" id="kpiCards"></div>
+            <div class="split-grid">
+              <article class="card">
+                <div class="section-head">
+                  <h3>Operarios críticos</h3>
+                  <span class="muted">Déficit o exceso de horas</span>
+                </div>
+                <div id="criticalWorkers"></div>
+              </article>
+              <article class="card">
+                <div class="section-head">
+                  <h3>Servicios sin cobertura completa</h3>
+                  <span class="muted">Días faltantes o asignación vacante</span>
+                </div>
+                <div id="serviceGaps"></div>
+              </article>
+            </div>
+          </section>
+
+          <section id="workersView" class="view hidden stack-lg">
+            <article class="card">
+              <div class="section-head with-action">
+                <div>
+                  <h3>Operarios</h3>
+                  <span class="muted">Alta, edición y control de carga semanal</span>
+                </div>
+                <button id="addWorkerBtn" class="btn btn-primary" type="button">Nuevo operario</button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Operario</th>
+                      <th>Tipo</th>
+                      <th>Horas objetivo</th>
+                      <th>Horas asignadas</th>
+                      <th>Diferencia</th>
+                      <th>Estado</th>
+                      <th>Servicios</th>
+                      <th>Acciones</th>
+                    </tr>
+                  </thead>
+                  <tbody id="workersTableBody"></tbody>
+                </table>
+              </div>
+            </article>
+
+            <article class="card">
+              <div class="section-head">
+                <h3>Disponibilidad semanal</h3>
+                <span class="muted">Lectura rápida por operario y por día</span>
+              </div>
+              <div id="workerAvailabilityBoard" class="availability-board"></div>
+            </article>
+          </section>
+
+          <section id="servicesView" class="view hidden stack-lg">
+            <article class="card">
+              <div class="section-head with-action">
+                <div>
+                  <h3>Servicios</h3>
+                  <span class="muted">Frecuencia, horario, zona y cobertura</span>
+                </div>
+                <button id="addServiceBtn" class="btn btn-primary" type="button">Nuevo servicio</button>
+              </div>
+              <div class="service-cards" id="servicesGrid"></div>
+            </article>
+          </section>
+
+          <section id="plannerView" class="view hidden stack-lg">
+            <article class="card">
+              <div class="section-head with-action">
+                <div>
+                  <h3>Planner semanal</h3>
+                  <span class="muted">Quién está en cada servicio, día por día</span>
+                </div>
+                <button id="addAssignmentBtn" class="btn btn-primary" type="button">Nueva asignación</button>
+              </div>
+              <div class="planner-board" id="plannerBoard"></div>
+            </article>
+          </section>
+        </section>
+      </main>
+    </section>
+  </div>
+
+  <dialog id="workerDialog" class="modal">
+    <form id="workerForm" class="modal-card stack-md">
+      <div class="section-head with-action">
+        <h3 id="workerDialogTitle">Nuevo operario</h3>
+        <button class="icon-btn" type="button" data-close="workerDialog">✕</button>
+      </div>
+      <input type="hidden" id="workerId" />
+      <div class="field">
+        <label for="workerName">Nombre</label>
+        <input id="workerName" required />
+      </div>
+      <div class="field">
+        <label for="workerType">Tipo</label>
+        <select id="workerType" required>
+          <option value="full_time">Jornada completa</option>
+          <option value="part_time">Media jornada</option>
+          <option value="insurance">Seguro / por hora</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="workerTargetHours">Horas objetivo semanales</label>
+        <input id="workerTargetHours" type="number" min="0" step="0.5" />
+      </div>
+      <div class="field">
+        <label for="workerNotes">Observaciones</label>
+        <textarea id="workerNotes" rows="3"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" type="button" data-close="workerDialog">Cancelar</button>
+        <button id="deleteWorkerBtn" class="btn btn-ghost hidden" type="button">Eliminar</button>
+        <button class="btn btn-primary" type="submit">Guardar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="serviceDialog" class="modal">
+    <form id="serviceForm" class="modal-card stack-md">
+      <div class="section-head with-action">
+        <h3 id="serviceDialogTitle">Nuevo servicio</h3>
+        <button class="icon-btn" type="button" data-close="serviceDialog">✕</button>
+      </div>
+      <input type="hidden" id="serviceId" />
+      <div class="field">
+        <label for="serviceName">Nombre del servicio</label>
+        <input id="serviceName" required />
+      </div>
+      <div class="field">
+        <label for="serviceAddress">Cliente / dirección</label>
+        <input id="serviceAddress" />
+      </div>
+      <div class="field">
+        <label for="serviceZone">Zona</label>
+        <input id="serviceZone" />
+      </div>
+      <div class="field">
+        <label for="serviceFrequency">Frecuencia</label>
+        <select id="serviceFrequency">
+          <option value="fixed">Fija</option>
+          <option value="variable">Variable</option>
+          <option value="replacement">Reemplazo</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="serviceNotes">Observaciones</label>
+        <textarea id="serviceNotes" rows="3"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" type="button" data-close="serviceDialog">Cancelar</button>
+        <button id="deleteServiceBtn" class="btn btn-ghost hidden" type="button">Eliminar</button>
+        <button class="btn btn-primary" type="submit">Guardar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="assignmentDialog" class="modal">
+    <form id="assignmentForm" class="modal-card stack-md">
+      <div class="section-head with-action">
+        <h3 id="assignmentDialogTitle">Nueva asignación</h3>
+        <button class="icon-btn" type="button" data-close="assignmentDialog">✕</button>
+      </div>
+      <input type="hidden" id="assignmentId" />
+      <div class="field">
+        <label for="assignmentWorker">Operario</label>
+        <select id="assignmentWorker" required></select>
+      </div>
+      <div class="field">
+        <label for="assignmentService">Servicio</label>
+        <select id="assignmentService" required></select>
+      </div>
+      <div class="field">
+        <label for="assignmentDay">Día</label>
+        <select id="assignmentDay" required>
+          <option value="1">Lunes</option>
+          <option value="2">Martes</option>
+          <option value="3">Miércoles</option>
+          <option value="4">Jueves</option>
+          <option value="5">Viernes</option>
+          <option value="6">Sábado</option>
+          <option value="0">Domingo</option>
+        </select>
+      </div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="assignmentStart">Hora inicio</label>
+          <input id="assignmentStart" type="time" required />
+        </div>
+        <div class="field">
+          <label for="assignmentEnd">Hora fin</label>
+          <input id="assignmentEnd" type="time" required />
+        </div>
+      </div>
+      <div class="field">
+        <label for="assignmentNotes">Notas</label>
+        <textarea id="assignmentNotes" rows="3"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" type="button" data-close="assignmentDialog">Cancelar</button>
+        <button id="deleteAssignmentBtn" class="btn btn-ghost hidden" type="button">Eliminar</button>
+        <button class="btn btn-primary" type="submit">Guardar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="./supabase-config.js"></script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
+
+<!-- HTML VIEJO
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Clean It · Planificador Operativo</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <section id="authView" class="auth-view">
+      <div class="auth-card card">
+        <div>
+          <span class="eyebrow">Clean It</span>
+          <h1>Planificador Operativo</h1>
+          <p class="muted">Asignación de operarios, control de horas, disponibilidad y cobertura de servicios en tiempo real.</p>
+        </div>
+        <form id="loginForm" class="stack-lg">
+          <div class="field">
+            <label for="email">Email</label>
+            <input id="email" type="email" placeholder="admin@cleanit.com" required />
+          </div>
+          <div class="field">
+            <label for="password">Contraseña</label>
+            <input id="password" type="password" placeholder="••••••••" required />
+          </div>
+          <button class="btn btn-primary" type="submit">Ingresar</button>
+          <p id="authMessage" class="form-message"></p>
+        </form>
+      </div>
+    </section>
+
+    <section id="mainView" class="hidden">
+      <header class="topbar">
+        <div>
+          <span class="eyebrow">Clean It · Gestión</span>
+          <h2>Operarios y servicios</h2>
+        </div>
+        <div class="topbar-actions">
+          <button id="refreshBtn" class="btn btn-secondary" type="button">Actualizar</button>
+          <button id="logoutBtn" class="btn btn-ghost" type="button">Cerrar sesión</button>
+        </div>
+      </header>
+
+      <main class="main-grid">
+        <aside class="sidebar card">
+          <nav class="nav-tabs" id="navTabs">
+            <button class="nav-tab active" data-view="dashboard">Dashboard</button>
+            <button class="nav-tab" data-view="workers">Operarios</button>
+            <button class="nav-tab" data-view="services">Servicios</button>
+            <button class="nav-tab" data-view="planner">Planner semanal</button>
+          </nav>
+
+          <div class="sidebar-panel stack-md">
+            <h3>Filtros</h3>
+            <div class="field">
+              <label for="globalSearch">Buscar</label>
+              <input id="globalSearch" type="search" placeholder="Operario, servicio o zona" />
+            </div>
+            <div class="field">
+              <label for="workerTypeFilter">Tipo de operario</label>
+              <select id="workerTypeFilter">
+                <option value="all">Todos</option>
+                <option value="full_time">Jornada completa</option>
+                <option value="part_time">Media jornada</option>
+                <option value="insurance">Seguro / por hora</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="statusFilter">Estado semanal</label>
+              <select id="statusFilter">
+                <option value="all">Todos</option>
+                <option value="available">Con horas disponibles</option>
+                <option value="balanced">En objetivo</option>
+                <option value="over">Con exceso de horas</option>
               </select>
             </div>
           </div>
@@ -254,4 +555,4 @@
   <script src="./supabase-config.js"></script>
   <script src="./app.js"></script>
 </body>
-</html>
+</html>-->
