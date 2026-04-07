@@ -72,6 +72,22 @@ function withTimeout(promise, ms = 12000, message = 'La operación tardó demasi
   ]);
 }
 
+async function ensureWriteSession() {
+  const { data, error } = await supabase.auth.getSession();
+
+  if (error) throw error;
+  if (data?.session) return data.session;
+
+  const refresh = await supabase.auth.refreshSession();
+
+  if (refresh.error) throw refresh.error;
+  if (!refresh.data?.session) {
+    throw new Error('No hay sesión activa para guardar datos.');
+  }
+
+  return refresh.data.session;
+}
+
 function getTargetHours(worker) {
   return worker.target_hours ?? TYPE_META[worker.worker_type]?.defaultHours ?? null;
 }
