@@ -57,6 +57,12 @@ function calculateHours(startTime, endTime) {
   return ((eh * 60 + em) - (sh * 60 + sm)) / 60;
 }
 
+function sortByName(list) {
+  return [...list].sort((a, b) =>
+    String(a.name || '').localeCompare(String(b.name || ''), 'es', { sensitivity: 'base' })
+  );
+}
+
 function getTargetHours(worker) {
   return worker.target_hours ?? TYPE_META[worker.worker_type]?.defaultHours ?? null;
 }
@@ -709,27 +715,52 @@ async function saveWorker(event) {
     return;
   }
 
-  const payload = {
-    name: nameInput.value.trim(),
-    worker_type: typeInput.value,
-    target_hours: targetInput?.value ? Number(targetInput.value) : null,
-    notes: notesInput?.value.trim() || null,
-  };
-
-  const query = workerId
-    ? supabase.from('workers').update(payload).eq('id', workerId)
-    : supabase.from('workers').insert(payload);
-
-  const { error } = await query;
-
-  if (error) {
-    console.error(error);
-    alert(error.message);
-    return;
+  const submitBtn = el.workerForm?.querySelector('button[type="submit"]');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Guardando...';
   }
 
-  el.workerDialog.close();
-  await loadAllData();
+  try {
+    const payload = {
+      name: nameInput.value.trim(),
+      worker_type: typeInput.value,
+      target_hours: targetInput?.value ? Number(targetInput.value) : null,
+      notes: notesInput?.value.trim() || null,
+    };
+
+    const query = workerId
+      ? supabase.from('workers').update(payload).eq('id', workerId).select().single()
+      : supabase.from('workers').insert(payload).select().single();
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error(error);
+      alert(error.message);
+      return;
+    }
+
+    if (workerId) {
+      state.workers = state.workers.map((item) => (item.id === workerId ? data : item));
+    } else {
+      state.workers = [...state.workers, data];
+    }
+
+    state.workers = sortByName(state.workers);
+
+    el.workerDialog.close();
+    populateSelects();
+    renderAll();
+  } catch (error) {
+    console.error(error);
+    alert('No se pudo guardar el operario.');
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Guardar';
+    }
+  }
 }
 
 async function saveService(event) {
@@ -747,28 +778,53 @@ async function saveService(event) {
     return;
   }
 
-  const payload = {
-    name: serviceName.value.trim(),
-    client_address: serviceAddress ? serviceAddress.value.trim() || null : null,
-    zone: serviceZone ? serviceZone.value.trim() || null : null,
-    frequency_type: serviceFrequency ? serviceFrequency.value : 'fixed',
-    notes: serviceNotes ? serviceNotes.value.trim() || null : null,
-  };
-
-  const query = serviceId
-    ? supabase.from('services').update(payload).eq('id', serviceId)
-    : supabase.from('services').insert(payload);
-
-  const { error } = await query;
-
-  if (error) {
-    console.error(error);
-    alert(error.message);
-    return;
+  const submitBtn = el.serviceForm?.querySelector('button[type="submit"]');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Guardando...';
   }
 
-  el.serviceDialog.close();
-  await loadAllData();
+  try {
+    const payload = {
+      name: serviceName.value.trim(),
+      client_address: serviceAddress ? serviceAddress.value.trim() || null : null,
+      zone: serviceZone ? serviceZone.value.trim() || null : null,
+      frequency_type: serviceFrequency ? serviceFrequency.value : 'fixed',
+      notes: serviceNotes ? serviceNotes.value.trim() || null : null,
+    };
+
+    const query = serviceId
+      ? supabase.from('services').update(payload).eq('id', serviceId).select().single()
+      : supabase.from('services').insert(payload).select().single();
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error(error);
+      alert(error.message);
+      return;
+    }
+
+    if (serviceId) {
+      state.services = state.services.map((item) => (item.id === serviceId ? data : item));
+    } else {
+      state.services = [...state.services, data];
+    }
+
+    state.services = sortByName(state.services);
+
+    el.serviceDialog.close();
+    populateSelects();
+    renderAll();
+  } catch (error) {
+    console.error(error);
+    alert('No se pudo guardar el servicio.');
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Guardar';
+    }
+  }
 }
 
 async function saveAssignment(event) {
