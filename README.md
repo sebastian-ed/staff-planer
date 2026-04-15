@@ -9,6 +9,8 @@ Web app mobile-first para visualizar y editar asignaciones de operarios por serv
 - Detectar operarios con horas libres o excedidos.
 - Editar operarios, servicios y asignaciones desde cualquier dispositivo.
 - Ver cambios en vivo entre varios usuarios.
+- Crear usuarios nuevos desde el login para que ingresen con las mismas funcionalidades.
+- Imprimir la vista filtrada actual y descargar cada panel en Excel o PDF.
 
 ## Stack
 
@@ -34,9 +36,11 @@ Creá un proyecto nuevo en Supabase.
 
 En el SQL Editor de Supabase, pegá y ejecutá `sql/schema.sql`.
 
-### 3) Crear un usuario administrador
+### 3) Crear el primer usuario
 
-En Authentication > Users, creá un usuario con email y contraseña.
+En Authentication > Users, creá un usuario con email y contraseña. Después vas a poder crear más usuarios desde el mismo login de la app.
+
+**Importante:** si tenés activa la confirmación por email en Supabase, cada usuario nuevo va a tener que validar su correo antes de entrar. Si querés alta inmediata, desactivá esa confirmación en Authentication.
 
 ### 4) Configurar el frontend
 

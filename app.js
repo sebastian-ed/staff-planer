@@ -1,13 +1,13 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 
 const DAYS = [
-  { value: 1, label: 'Lun' },
-  { value: 2, label: 'Mar' },
-  { value: 3, label: 'Mié' },
-  { value: 4, label: 'Jue' },
-  { value: 5, label: 'Vie' },
-  { value: 6, label: 'Sáb' },
-  { value: 0, label: 'Dom' },
+  { value: 1, label: 'Lun', fullLabel: 'Lunes' },
+  { value: 2, label: 'Mar', fullLabel: 'Martes' },
+  { value: 3, label: 'Mié', fullLabel: 'Miércoles' },
+  { value: 4, label: 'Jue', fullLabel: 'Jueves' },
+  { value: 5, label: 'Vie', fullLabel: 'Viernes' },
+  { value: 6, label: 'Sáb', fullLabel: 'Sábado' },
+  { value: 0, label: 'Dom', fullLabel: 'Domingo' },
 ];
 
 const TYPE_META = {
@@ -16,11 +16,20 @@ const TYPE_META = {
   insurance: { label: 'Seguro / por hora', defaultHours: null },
 };
 
+const VIEW_IDS = {
+  dashboard: 'dashboardView',
+  workers: 'workersView',
+  services: 'servicesView',
+  planner: 'plannerView',
+};
+
 const state = {
   user: null,
   workers: [],
   services: [],
   assignments: [],
+  currentView: 'dashboard',
+  authMode: 'login',
   filters: {
     search: '',
     workerType: 'all',
@@ -73,19 +82,35 @@ function withTimeout(promise, ms = 12000, message = 'La operación tardó demasi
 }
 
 async function ensureWriteSession() {
-  const { data, error } = await supabase.auth.getSession();
+  let { data, error } = await supabase.auth.getSession();
 
   if (error) throw error;
   if (data?.session) return data.session;
 
   const refresh = await supabase.auth.refreshSession();
-
   if (refresh.error) throw refresh.error;
   if (!refresh.data?.session) {
     throw new Error('No hay sesión activa para guardar datos.');
   }
 
   return refresh.data.session;
+}
+
+function setCurrentView(viewName) {
+  state.currentView = viewName;
+  document.body.dataset.currentView = viewName;
+}
+
+function goToView(viewName) {
+  setCurrentView(viewName);
+
+  document.querySelectorAll('.nav-tab').forEach((tab) => {
+    tab.classList.toggle('active', tab.dataset.view === viewName);
+  });
+
+  document.querySelectorAll('.view').forEach((view) => view.classList.add('hidden'));
+  const targetView = $(VIEW_IDS[viewName]);
+  if (targetView) targetView.classList.remove('hidden');
 }
 
 function getTargetHours(worker) {
@@ -105,6 +130,9 @@ function setDataReady(isReady) {
 
   const ids = [
     'refreshBtn',
+    'printViewBtn',
+    'exportExcelBtn',
+    'exportPdfBtn',
     'addWorkerBtn',
     'addServiceBtn',
     'addAssignmentBtn',
@@ -128,14 +156,21 @@ function ensureDataReady(actionLabel = 'esta acción') {
   return true;
 }
 
-function goToView(viewName) {
-  document.querySelectorAll('.nav-tab').forEach((tab) => {
-    tab.classList.toggle('active', tab.dataset.view === viewName);
-  });
+function getFilteredServices() {
+  const term = state.filters.search;
 
-  document.querySelectorAll('.view').forEach((view) => view.classList.add('hidden'));
-  const targetView = $(`${viewName}View`);
-  if (targetView) targetView.classList.remove('hidden');
+  return state.services.filter((service) => {
+    const hay = [
+      service.name,
+      service.zone || '',
+      service.client_address || '',
+      service.notes || '',
+    ]
+      .join(' ')
+      .toLowerCase();
+
+    return !term || hay.includes(term);
+  });
 }
 
 function getWorkerSummaries() {
@@ -170,7 +205,8 @@ function getWorkerSummaries() {
         status,
       };
     })
-    .filter(matchesFilters);
+    .filter(matchesFilters)
+    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es', { sensitivity: 'base' }));
 }
 
 function matchesFilters(summary) {
@@ -222,21 +258,13 @@ function renderDifferencePill(worker) {
   return `<span class="status-pill status-balanced">Exacto</span>`;
 }
 
-function getServicesWithGaps() {
-  return state.services
-    .map((service) => {
-      const assignments = getServiceAssignments(service.id);
-      const coveredDays = [...new Set(assignments.map((item) => item.day_of_week))];
-      const hasGap = coveredDays.length === 0 || coveredDays.length < 3;
-
-      return {
-        ...service,
-        assignments,
-        coveredDays,
-        hasGap,
-      };
-    })
-    .filter((service) => service.hasGap);
+function getUncoveredServices() {
+  return getFilteredServices()
+    .map((service) => ({
+      ...service,
+      assignments: getServiceAssignments(service.id),
+    }))
+    .filter((service) => service.assignments.length === 0);
 }
 
 function populateSelects() {
@@ -263,37 +291,38 @@ function renderKpis(summaries) {
   const totalAssignedHours = summaries.reduce((sum, worker) => sum + worker.totalHours, 0);
   const availableWorkers = summaries.filter((worker) => worker.status === 'available').length;
   const overloadedWorkers = summaries.filter((worker) => worker.status === 'over').length;
-  const uncoveredServices = getServicesWithGaps().length;
+  const unassignedWorkers = summaries.filter((worker) => worker.services.length === 0).length;
+  const uncoveredServices = getUncoveredServices().length;
 
   const cards = [
     {
-      label: 'Operarios activos',
+      label: 'Operarios visibles',
       value: summaries.length,
-      foot: `${state.services.length} servicios cargados`,
+      foot: `${unassignedWorkers} sin servicio asignado`,
     },
     {
       label: 'Horas asignadas',
       value: formatHours(totalAssignedHours),
-      foot: 'Suma semanal actual',
+      foot: 'Suma semanal visible',
     },
     {
       label: 'Operarios con horas libres',
       value: availableWorkers,
-      foot: 'Capacidad para reubicar',
+      foot: overloadedWorkers
+        ? `${overloadedWorkers} excedidos`
+        : 'Sin excesos detectados',
     },
     {
-      label: 'Servicios con gaps',
+      label: 'Servicios sin cobertura',
       value: uncoveredServices,
-      foot: overloadedWorkers
-        ? `${overloadedWorkers} operarios excedidos`
-        : 'Sin excesos detectados',
+      foot: 'Sin ninguna asignación activa',
     },
   ];
 
   el.kpiCards.innerHTML = cards
     .map(
       (card) => `
-        <article class="kpi-card">
+        <article class="kpi-card card-lite">
           <span class="kpi-label">${card.label}</span>
           <strong class="kpi-value">${card.value}</strong>
           <small class="kpi-foot">${card.foot}</small>
@@ -335,7 +364,7 @@ function renderCriticalWorkers(summaries) {
 }
 
 function renderServiceGaps() {
-  const gaps = getServicesWithGaps().slice(0, 8);
+  const gaps = getUncoveredServices().slice(0, 8);
 
   el.serviceGaps.innerHTML = gaps.length
     ? `
@@ -348,7 +377,7 @@ function renderServiceGaps() {
                   <strong>${escapeHtml(service.name)}</strong>
                   <div class="muted">${escapeHtml(service.zone || 'Sin zona')}</div>
                 </div>
-                <span class="status-pill status-over">Cobertura parcial</span>
+                <span class="status-pill status-over">Sin cobertura</span>
               </article>
             `
           )
@@ -357,7 +386,7 @@ function renderServiceGaps() {
     `
     : `
       <div class="empty-state">
-        No se detectaron servicios sin cobertura mínima.
+        No se detectaron servicios visibles sin cobertura.
       </div>
     `;
 }
@@ -449,20 +478,7 @@ function renderWorkerAvailability(summaries) {
 }
 
 function renderServices() {
-  const term = state.filters.search;
-
-  const services = state.services.filter((service) => {
-    const hay = [
-      service.name,
-      service.zone || '',
-      service.client_address || '',
-      service.notes || '',
-    ]
-      .join(' ')
-      .toLowerCase();
-
-    return !term || hay.includes(term);
-  });
+  const services = getFilteredServices();
 
   el.servicesGrid.innerHTML = services
     .map((service) => {
@@ -526,8 +542,27 @@ function renderServices() {
 }
 
 function renderPlanner() {
+  const searchTerm = state.filters.search;
+
   el.plannerBoard.innerHTML = DAYS.map((day) => {
-    const items = state.assignments.filter((assignment) => assignment.day_of_week === day.value);
+    const items = state.assignments.filter((assignment) => {
+      if (assignment.day_of_week !== day.value) return false;
+      if (!searchTerm) return true;
+
+      const worker = state.workers.find((row) => row.id === assignment.worker_id);
+      const service = state.services.find((row) => row.id === assignment.service_id);
+
+      const hay = [
+        worker?.name || '',
+        service?.name || '',
+        service?.zone || '',
+        service?.client_address || '',
+      ]
+        .join(' ')
+        .toLowerCase();
+
+      return hay.includes(searchTerm);
+    });
 
     return `
       <section class="planner-column">
@@ -572,13 +607,7 @@ function renderAll() {
 function handleViewChange(event) {
   const button = event.target.closest('.nav-tab');
   if (!button) return;
-
-  document.querySelectorAll('.nav-tab').forEach((tab) => tab.classList.remove('active'));
-  button.classList.add('active');
-
-  const target = button.dataset.view;
-  document.querySelectorAll('.view').forEach((view) => view.classList.add('hidden'));
-  $(`${target}View`).classList.remove('hidden');
+  goToView(button.dataset.view);
 }
 
 function handleFilterChange() {
@@ -642,20 +671,15 @@ function subscribeRealtime() {
 
   state.realtimeChannel = supabase
     .channel('planner-realtime')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'workers' }, () => {
-      setTimeout(() => { loadAllDataWithRetry(2, 250); }, 0);
-    })
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'services' }, () => {
-      setTimeout(() => { loadAllDataWithRetry(2, 250); }, 0);
-    })
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, () => {
-      setTimeout(() => { loadAllDataWithRetry(2, 250); }, 0);
-    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'workers' }, () => loadAllDataWithRetry(2, 250))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'services' }, () => loadAllDataWithRetry(2, 250))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, () => loadAllDataWithRetry(2, 250))
     .subscribe();
 }
 
 async function initializeAfterLogin() {
   showMain();
+  goToView(state.currentView || 'dashboard');
   const ok = await loadAllDataWithRetry(4, 500);
   if (ok) subscribeRealtime();
 }
@@ -672,46 +696,84 @@ async function initAuth() {
     setDataReady(true);
   }
 
-  supabase.auth.onAuthStateChange((_event, sessionNow) => {
-    setTimeout(async () => {
-      state.user = sessionNow?.user || null;
+  supabase.auth.onAuthStateChange(async (_event, sessionNow) => {
+    state.user = sessionNow?.user || null;
 
-      if (state.user) {
-        await initializeAfterLogin();
-      } else {
-        showAuth();
-        state.workers = [];
-        state.services = [];
-        state.assignments = [];
-        setDataReady(true);
-      }
-    }, 0);
+    if (state.user) {
+      await initializeAfterLogin();
+    } else {
+      showAuth();
+      state.workers = [];
+      state.services = [];
+      state.assignments = [];
+      setDataReady(true);
+    }
   });
+}
+
+function setAuthMode(mode) {
+  state.authMode = mode;
+
+  document.querySelectorAll('.auth-mode-btn').forEach((button) => {
+    button.classList.toggle('active', button.dataset.authMode === mode);
+  });
+
+  const isRegister = mode === 'register';
+  el.confirmPasswordField?.classList.toggle('hidden', !isRegister);
+  if (el.confirmPassword) el.confirmPassword.required = isRegister;
+  if (el.authSubmitBtn) el.authSubmitBtn.textContent = isRegister ? 'Crear usuario' : 'Ingresar';
+  if (el.authMessage) el.authMessage.textContent = '';
 }
 
 async function handleLogin(event) {
   event.preventDefault();
 
-  el.authMessage.textContent = 'Validando acceso...';
+  el.authMessage.textContent = state.authMode === 'register' ? 'Creando usuario...' : 'Validando acceso...';
 
-  const emailInput = $('email');
-  const passwordInput = $('password');
-
-  const email = emailInput?.value.trim();
-  const password = passwordInput?.value;
+  const email = $('email')?.value.trim();
+  const password = $('password')?.value;
+  const confirmPassword = $('confirmPassword')?.value || '';
 
   if (!email || !password) {
     el.authMessage.textContent = 'Completá email y contraseña.';
     return;
   }
 
+  if (state.authMode === 'register' && password !== confirmPassword) {
+    el.authMessage.textContent = 'Las contraseñas no coinciden.';
+    return;
+  }
+
   const submitBtn = el.loginForm?.querySelector('button[type="submit"]');
   if (submitBtn) {
     submitBtn.disabled = true;
-    submitBtn.textContent = 'Ingresando...';
+    submitBtn.textContent = state.authMode === 'register' ? 'Creando...' : 'Ingresando...';
   }
 
   try {
+    if (state.authMode === 'register') {
+      const { data, error } = await withTimeout(
+        supabase.auth.signUp({ email, password }),
+        12000,
+        'La creación del usuario tardó demasiado.'
+      );
+
+      if (error) {
+        console.error('Error register:', error);
+        el.authMessage.textContent = error.message;
+        return;
+      }
+
+      if (data?.session) {
+        el.authMessage.textContent = 'Usuario creado e ingresado correctamente.';
+      } else {
+        el.authMessage.textContent = 'Usuario creado. Revisá el email para confirmar el acceso si tu proyecto lo exige.';
+        setAuthMode('login');
+      }
+
+      return;
+    }
+
     const { error } = await withTimeout(
       supabase.auth.signInWithPassword({ email, password }),
       12000,
@@ -727,11 +789,11 @@ async function handleLogin(event) {
     el.authMessage.textContent = 'Ingresando...';
   } catch (error) {
     console.error(error);
-    el.authMessage.textContent = error.message || 'No se pudo iniciar sesión.';
+    el.authMessage.textContent = error.message || 'No se pudo completar la operación.';
   } finally {
     if (submitBtn) {
       submitBtn.disabled = false;
-      submitBtn.textContent = 'Ingresar';
+      submitBtn.textContent = state.authMode === 'register' ? 'Crear usuario' : 'Ingresar';
     }
   }
 }
@@ -1184,6 +1246,312 @@ function handleDynamicClicks(event) {
   }
 }
 
+function getCurrentViewTitle() {
+  const titles = {
+    dashboard: 'Dashboard',
+    workers: 'Operarios',
+    services: 'Servicios',
+    planner: 'Planner semanal',
+  };
+  return titles[state.currentView] || 'Vista';
+}
+
+function getCurrentViewElement() {
+  return $(VIEW_IDS[state.currentView]);
+}
+
+function buildDashboardExportData() {
+  const summaries = getWorkerSummaries();
+  const totalAssignedHours = summaries.reduce((sum, worker) => sum + worker.totalHours, 0);
+  const availableWorkers = summaries.filter((worker) => worker.status === 'available').length;
+  const overloadedWorkers = summaries.filter((worker) => worker.status === 'over').length;
+  const uncoveredServices = getUncoveredServices();
+  const criticalWorkers = summaries
+    .filter((worker) => worker.status === 'available' || worker.status === 'over')
+    .sort((a, b) => Math.abs(b.difference || 0) - Math.abs(a.difference || 0));
+
+  return {
+    sheets: [
+      {
+        name: 'KPIs',
+        rows: [
+          ['Métrica', 'Valor'],
+          ['Operarios visibles', summaries.length],
+          ['Horas asignadas', totalAssignedHours],
+          ['Operarios con horas libres', availableWorkers],
+          ['Operarios excedidos', overloadedWorkers],
+          ['Servicios sin cobertura', uncoveredServices.length],
+        ],
+      },
+      {
+        name: 'Operarios críticos',
+        rows: [
+          ['Operario', 'Tipo', 'Horas objetivo', 'Horas asignadas', 'Diferencia', 'Estado'],
+          ...criticalWorkers.map((worker) => [
+            worker.name,
+            TYPE_META[worker.worker_type].label,
+            worker.targetHours == null ? 'SEGURO' : worker.targetHours,
+            worker.totalHours,
+            worker.difference == null ? 'SEGURO' : worker.difference,
+            worker.status,
+          ]),
+        ],
+      },
+      {
+        name: 'Servicios sin cobertura',
+        rows: [
+          ['Servicio', 'Zona', 'Dirección', 'Frecuencia'],
+          ...uncoveredServices.map((service) => [
+            service.name,
+            service.zone || '',
+            service.client_address || '',
+            service.frequency_type || '',
+          ]),
+        ],
+      },
+    ],
+  };
+}
+
+function buildWorkersExportData() {
+  const summaries = getWorkerSummaries();
+
+  return {
+    sheets: [
+      {
+        name: 'Operarios',
+        rows: [
+          ['Operario', 'Tipo', 'Horas objetivo', 'Horas asignadas', 'Diferencia', 'Estado', 'Servicios'],
+          ...summaries.map((worker) => [
+            worker.name,
+            TYPE_META[worker.worker_type].label,
+            worker.targetHours == null ? 'SEGURO' : worker.targetHours,
+            worker.totalHours,
+            worker.difference == null ? 'SEGURO' : worker.difference,
+            worker.status,
+            worker.services.map((service) => service.name).join(' | ') || 'Sin servicio',
+          ]),
+        ],
+      },
+      {
+        name: 'Disponibilidad',
+        rows: [
+          ['Operario', 'Día', 'Horario', 'Servicio'],
+          ...summaries.flatMap((worker) => {
+            const rows = [];
+            DAYS.forEach((day) => {
+              const dayItems = worker.assignments.filter((item) => item.day_of_week === day.value);
+              if (!dayItems.length) {
+                rows.push([worker.name, day.fullLabel, 'Libre', '']);
+                return;
+              }
+              dayItems.forEach((item) => {
+                const service = state.services.find((service) => service.id === item.service_id);
+                rows.push([
+                  worker.name,
+                  day.fullLabel,
+                  `${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}`,
+                  service?.name || '',
+                ]);
+              });
+            });
+            return rows;
+          }),
+        ],
+      },
+    ],
+  };
+}
+
+function buildServicesExportData() {
+  const services = getFilteredServices();
+
+  return {
+    sheets: [
+      {
+        name: 'Servicios',
+        rows: [
+          ['Servicio', 'Dirección', 'Zona', 'Frecuencia', 'Notas', 'Cobertura activa'],
+          ...services.map((service) => {
+            const assignments = getServiceAssignments(service.id);
+            return [
+              service.name,
+              service.client_address || '',
+              service.zone || '',
+              service.frequency_type || '',
+              service.notes || '',
+              assignments.length,
+            ];
+          }),
+        ],
+      },
+      {
+        name: 'Cobertura por día',
+        rows: [
+          ['Servicio', 'Día', 'Operario', 'Horario'],
+          ...services.flatMap((service) => {
+            const assignments = getServiceAssignments(service.id);
+            const rows = [];
+            DAYS.forEach((day) => {
+              const dayItems = assignments.filter((item) => item.day_of_week === day.value);
+              if (!dayItems.length) {
+                rows.push([service.name, day.fullLabel, 'Sin cobertura', '']);
+                return;
+              }
+              dayItems.forEach((item) => {
+                const worker = state.workers.find((worker) => worker.id === item.worker_id);
+                rows.push([
+                  service.name,
+                  day.fullLabel,
+                  worker?.name || '',
+                  `${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}`,
+                ]);
+              });
+            });
+            return rows;
+          }),
+        ],
+      },
+    ],
+  };
+}
+
+function buildPlannerExportData() {
+  const searchTerm = state.filters.search;
+  const filteredAssignments = state.assignments.filter((assignment) => {
+    if (!searchTerm) return true;
+    const worker = state.workers.find((row) => row.id === assignment.worker_id);
+    const service = state.services.find((row) => row.id === assignment.service_id);
+    const hay = [worker?.name || '', service?.name || '', service?.zone || '', service?.client_address || '']
+      .join(' ')
+      .toLowerCase();
+    return hay.includes(searchTerm);
+  });
+
+  return {
+    sheets: [
+      {
+        name: 'Planner',
+        rows: [
+          ['Día', 'Servicio', 'Operario', 'Horario', 'Notas'],
+          ...filteredAssignments.map((item) => {
+            const worker = state.workers.find((row) => row.id === item.worker_id);
+            const service = state.services.find((row) => row.id === item.service_id);
+            const day = DAYS.find((d) => d.value === item.day_of_week);
+            return [
+              day?.fullLabel || '',
+              service?.name || '',
+              worker?.name || '',
+              `${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}`,
+              item.notes || '',
+            ];
+          }),
+        ],
+      },
+    ],
+  };
+}
+
+function buildCurrentExportData() {
+  switch (state.currentView) {
+    case 'workers':
+      return buildWorkersExportData();
+    case 'services':
+      return buildServicesExportData();
+    case 'planner':
+      return buildPlannerExportData();
+    case 'dashboard':
+    default:
+      return buildDashboardExportData();
+  }
+}
+
+function exportCurrentViewToExcel() {
+  if (!ensureDataReady('exportar a Excel')) return;
+  if (!window.XLSX) {
+    alert('No se cargó la librería de Excel.');
+    return;
+  }
+
+  const exportData = buildCurrentExportData();
+  const wb = window.XLSX.utils.book_new();
+
+  exportData.sheets.forEach((sheet) => {
+    const ws = window.XLSX.utils.aoa_to_sheet(sheet.rows);
+    window.XLSX.utils.book_append_sheet(wb, ws, sheet.name.slice(0, 31));
+  });
+
+  const filename = `cleanit-${state.currentView}-${new Date().toISOString().slice(0, 10)}.xlsx`;
+  window.XLSX.writeFile(wb, filename);
+}
+
+async function exportCurrentViewToPdf() {
+  if (!ensureDataReady('exportar a PDF')) return;
+  if (!window.html2canvas || !window.jspdf?.jsPDF) {
+    alert('No se cargaron las librerías de PDF.');
+    return;
+  }
+
+  const target = getCurrentViewElement();
+  if (!target) {
+    alert('No se encontró la vista activa para exportar.');
+    return;
+  }
+
+  const button = el.exportPdfBtn;
+  const originalLabel = button?.textContent;
+
+  try {
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Generando PDF...';
+    }
+
+    const canvas = await window.html2canvas(target, {
+      scale: 2,
+      useCORS: true,
+      backgroundColor: '#0b1020',
+    });
+
+    const imgData = canvas.toDataURL('image/png');
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF('p', 'mm', 'a4');
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const margin = 10;
+    const usableWidth = pageWidth - margin * 2;
+    const imgHeight = (canvas.height * usableWidth) / canvas.width;
+
+    let heightLeft = imgHeight;
+    let position = margin;
+
+    pdf.addImage(imgData, 'PNG', margin, position, usableWidth, imgHeight);
+    heightLeft -= pageHeight - margin * 2;
+
+    while (heightLeft > 0) {
+      position = heightLeft - imgHeight + margin;
+      pdf.addPage();
+      pdf.addImage(imgData, 'PNG', margin, position, usableWidth, imgHeight);
+      heightLeft -= pageHeight - margin * 2;
+    }
+
+    pdf.save(`cleanit-${state.currentView}-${new Date().toISOString().slice(0, 10)}.pdf`);
+  } catch (error) {
+    console.error(error);
+    alert('No se pudo generar el PDF de la vista actual.');
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalLabel || 'Descargar PDF';
+    }
+  }
+}
+
+function printCurrentView() {
+  if (!ensureDataReady('imprimir')) return;
+  window.print();
+}
+
 function bindEvents() {
   el.loginForm?.addEventListener('submit', handleLogin);
   el.logoutBtn?.addEventListener('click', handleLogout);
@@ -1192,6 +1560,15 @@ function bindEvents() {
   el.globalSearch?.addEventListener('input', handleFilterChange);
   el.workerTypeFilter?.addEventListener('change', handleFilterChange);
   el.statusFilter?.addEventListener('change', handleFilterChange);
+  el.printViewBtn?.addEventListener('click', printCurrentView);
+  el.exportExcelBtn?.addEventListener('click', exportCurrentViewToExcel);
+  el.exportPdfBtn?.addEventListener('click', exportCurrentViewToPdf);
+
+  el.authModeSwitch?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-auth-mode]');
+    if (!button) return;
+    setAuthMode(button.dataset.authMode);
+  });
 
   el.addWorkerBtn?.addEventListener('click', () => openWorkerDialog());
   el.addServiceBtn?.addEventListener('click', () => openServiceDialog());
@@ -1233,8 +1610,15 @@ function boot() {
       mainView: $('mainView'),
       loginForm: $('loginForm'),
       authMessage: $('authMessage'),
+      authSubmitBtn: $('authSubmitBtn'),
+      authModeSwitch: $('authModeSwitch'),
+      confirmPasswordField: $('confirmPasswordField'),
+      confirmPassword: $('confirmPassword'),
       logoutBtn: $('logoutBtn'),
       refreshBtn: $('refreshBtn'),
+      printViewBtn: $('printViewBtn'),
+      exportExcelBtn: $('exportExcelBtn'),
+      exportPdfBtn: $('exportPdfBtn'),
       navTabs: $('navTabs'),
       globalSearch: $('globalSearch'),
       workerTypeFilter: $('workerTypeFilter'),
@@ -1264,6 +1648,8 @@ function boot() {
       throw new Error('No se encontró #loginForm');
     }
 
+    setCurrentView('dashboard');
+    setAuthMode('login');
     setDataReady(false);
     bindEvents();
     initAuth();
