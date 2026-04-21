@@ -23,6 +23,19 @@ const VIEW_IDS = {
   planner: 'plannerView',
 };
 
+function createEmptyDerivedState() {
+  return {
+    workerById: new Map(),
+    serviceById: new Map(),
+    assignmentById: new Map(),
+    assignmentsByWorkerId: new Map(),
+    assignmentsByServiceId: new Map(),
+    assignmentsByDay: new Map(),
+    serviceSearchById: new Map(),
+    assignmentSearchById: new Map(),
+  };
+}
+
 const state = {
   user: null,
   workers: [],
@@ -38,6 +51,9 @@ const state = {
   realtimeChannel: null,
   dataReady: false,
   loadingData: false,
+  activeLoadPromise: null,
+  ignoreRealtimeUntil: 0,
+  derived: createEmptyDerivedState(),
 };
 
 const el = {};
@@ -70,6 +86,94 @@ function calculateHours(startTime, endTime) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function debounce(fn, wait = 180) {
+  let timeoutId = 0;
+
+  return (...args) => {
+    window.clearTimeout(timeoutId);
+    timeoutId = window.setTimeout(() => fn(...args), wait);
+  };
+}
+
+function pushToMapArray(map, key, value) {
+  if (!map.has(key)) map.set(key, []);
+  map.get(key).push(value);
+}
+
+function groupAssignmentsByDay(assignments) {
+  const grouped = new Map();
+
+  assignments.forEach((assignment) => {
+    pushToMapArray(grouped, assignment.day_of_week, assignment);
+  });
+
+  return grouped;
+}
+
+function rebuildDerivedState() {
+  const derived = createEmptyDerivedState();
+
+  state.workers.forEach((worker) => {
+    derived.workerById.set(worker.id, worker);
+  });
+
+  state.services.forEach((service) => {
+    derived.serviceById.set(service.id, service);
+    derived.serviceSearchById.set(
+      service.id,
+      [service.name, service.zone || '', service.client_address || '', service.notes || '']
+        .join(' ')
+        .toLowerCase()
+    );
+  });
+
+  state.assignments.forEach((assignment) => {
+    derived.assignmentById.set(assignment.id, assignment);
+    pushToMapArray(derived.assignmentsByWorkerId, assignment.worker_id, assignment);
+    pushToMapArray(derived.assignmentsByServiceId, assignment.service_id, assignment);
+    pushToMapArray(derived.assignmentsByDay, assignment.day_of_week, assignment);
+  });
+
+  state.assignments.forEach((assignment) => {
+    const worker = derived.workerById.get(assignment.worker_id);
+    const service = derived.serviceById.get(assignment.service_id);
+
+    derived.assignmentSearchById.set(
+      assignment.id,
+      [
+        worker?.name || '',
+        service?.name || '',
+        service?.zone || '',
+        service?.client_address || '',
+      ]
+        .join(' ')
+        .toLowerCase()
+    );
+  });
+
+  state.derived = derived;
+}
+
+function getWorkerById(workerId) {
+  return state.derived.workerById.get(workerId) || null;
+}
+
+function getServiceById(serviceId) {
+  return state.derived.serviceById.get(serviceId) || null;
+}
+
+function getAssignmentById(assignmentId) {
+  return state.derived.assignmentById.get(assignmentId) || null;
+}
+
+function getAssignmentsByDay(dayOfWeek) {
+  return state.derived.assignmentsByDay.get(dayOfWeek) || [];
+}
+
+function markLocalMutation() {
+  state.ignoreRealtimeUntil = Date.now() + 1500;
 }
 
 function withTimeout(promise, ms = 12000, message = 'La operación tardó demasiado.') {
@@ -111,6 +215,8 @@ function goToView(viewName) {
   document.querySelectorAll('.view').forEach((view) => view.classList.add('hidden'));
   const targetView = $(VIEW_IDS[viewName]);
   if (targetView) targetView.classList.remove('hidden');
+
+  scheduleRenderCurrentView();
 }
 
 function getTargetHours(worker) {
@@ -118,11 +224,11 @@ function getTargetHours(worker) {
 }
 
 function getWorkerAssignments(workerId) {
-  return state.assignments.filter((item) => item.worker_id === workerId);
+  return state.derived.assignmentsByWorkerId.get(workerId) || [];
 }
 
 function getServiceAssignments(serviceId) {
-  return state.assignments.filter((item) => item.service_id === serviceId);
+  return state.derived.assignmentsByServiceId.get(serviceId) || [];
 }
 
 function setDataReady(isReady) {
@@ -160,15 +266,7 @@ function getFilteredServices() {
   const term = state.filters.search;
 
   return state.services.filter((service) => {
-    const hay = [
-      service.name,
-      service.zone || '',
-      service.client_address || '',
-      service.notes || '',
-    ]
-      .join(' ')
-      .toLowerCase();
-
+    const hay = state.derived.serviceSearchById.get(service.id) || '';
     return !term || hay.includes(term);
   });
 }
@@ -191,8 +289,8 @@ function getWorkerSummaries() {
       else if (difference > 0) status = 'available';
       else if (difference < 0) status = 'over';
 
-      const services = [...new Set(assignments.map((a) => a.service_id))]
-        .map((id) => state.services.find((service) => service.id === id))
+      const services = [...new Set(assignments.map((assignment) => assignment.service_id))]
+        .map((serviceId) => getServiceById(serviceId))
         .filter(Boolean);
 
       return {
@@ -428,10 +526,7 @@ function renderWorkersTable(summaries) {
 function renderWorkerAvailability(summaries) {
   el.workerAvailabilityBoard.innerHTML = summaries
     .map((worker) => {
-      const assignmentsByDay = DAYS.map((day) => ({
-        ...day,
-        items: worker.assignments.filter((item) => item.day_of_week === day.value),
-      }));
+      const assignmentsByDay = groupAssignmentsByDay(worker.assignments);
 
       return `
         <article class="availability-card">
@@ -444,30 +539,32 @@ function renderWorkerAvailability(summaries) {
           </header>
 
           <div class="availability-grid">
-            ${assignmentsByDay
+            ${DAYS
               .map(
-                (day) => `
-                  <section class="day-column">
-                    <h4>${day.label}</h4>
-                    ${
-                      day.items.length
-                        ? day.items
-                            .map((item) => {
-                              const service = state.services.find(
-                                (service) => service.id === item.service_id
-                              );
-                              return `
-                                <div class="slot-card">
-                                  <strong>${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}</strong>
-                                  <span>${escapeHtml(service?.name || 'Servicio')}</span>
-                                </div>
-                              `;
-                            })
-                            .join('')
-                        : `<div class="slot-empty">Libre</div>`
-                    }
-                  </section>
-                `
+                (day) => {
+                  const items = assignmentsByDay.get(day.value) || [];
+
+                  return `
+                    <section class="day-column">
+                      <h4>${day.label}</h4>
+                      ${
+                        items.length
+                          ? items
+                              .map((item) => {
+                                const service = getServiceById(item.service_id);
+                                return `
+                                  <div class="slot-card">
+                                    <strong>${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}</strong>
+                                    <span>${escapeHtml(service?.name || 'Servicio')}</span>
+                                  </div>
+                                `;
+                              })
+                              .join('')
+                          : `<div class="slot-empty">Libre</div>`
+                      }
+                    </section>
+                  `;
+                }
               )
               .join('')}
           </div>
@@ -483,11 +580,7 @@ function renderServices() {
   el.servicesGrid.innerHTML = services
     .map((service) => {
       const assignments = getServiceAssignments(service.id);
-
-      const serviceDays = DAYS.map((day) => ({
-        ...day,
-        items: assignments.filter((item) => item.day_of_week === day.value),
-      }));
+      const assignmentsByDay = groupAssignmentsByDay(assignments);
 
       return `
         <article class="service-card">
@@ -507,31 +600,33 @@ function renderServices() {
           </div>
 
           <div class="service-days">
-            ${serviceDays
+            ${DAYS
               .map(
-                (day) => `
-                  <section class="service-day">
-                    <h4>${day.label}</h4>
-                    ${
-                      day.items.length
-                        ? day.items
-                            .map((item) => {
-                              const worker = state.workers.find(
-                                (worker) => worker.id === item.worker_id
-                              );
+                (day) => {
+                  const items = assignmentsByDay.get(day.value) || [];
 
-                              return `
-                                <div class="slot-card">
-                                  <strong>${escapeHtml(worker?.name || 'Sin asignar')}</strong>
-                                  <span>${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}</span>
-                                </div>
-                              `;
-                            })
-                            .join('')
-                        : `<div class="slot-empty">Sin cobertura</div>`
-                    }
-                  </section>
-                `
+                  return `
+                    <section class="service-day">
+                      <h4>${day.label}</h4>
+                      ${
+                        items.length
+                          ? items
+                              .map((item) => {
+                                const worker = getWorkerById(item.worker_id);
+
+                                return `
+                                  <div class="slot-card">
+                                    <strong>${escapeHtml(worker?.name || 'Sin asignar')}</strong>
+                                    <span>${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}</span>
+                                  </div>
+                                `;
+                              })
+                              .join('')
+                          : `<div class="slot-empty">Sin cobertura</div>`
+                      }
+                    </section>
+                  `;
+                }
               )
               .join('')}
           </div>
@@ -545,22 +640,9 @@ function renderPlanner() {
   const searchTerm = state.filters.search;
 
   el.plannerBoard.innerHTML = DAYS.map((day) => {
-    const items = state.assignments.filter((assignment) => {
-      if (assignment.day_of_week !== day.value) return false;
+    const items = getAssignmentsByDay(day.value).filter((assignment) => {
       if (!searchTerm) return true;
-
-      const worker = state.workers.find((row) => row.id === assignment.worker_id);
-      const service = state.services.find((row) => row.id === assignment.service_id);
-
-      const hay = [
-        worker?.name || '',
-        service?.name || '',
-        service?.zone || '',
-        service?.client_address || '',
-      ]
-        .join(' ')
-        .toLowerCase();
-
+      const hay = state.derived.assignmentSearchById.get(assignment.id) || '';
       return hay.includes(searchTerm);
     });
 
@@ -571,8 +653,8 @@ function renderPlanner() {
           items.length
             ? items
                 .map((item) => {
-                  const worker = state.workers.find((row) => row.id === item.worker_id);
-                  const service = state.services.find((row) => row.id === item.service_id);
+                  const worker = getWorkerById(item.worker_id);
+                  const service = getServiceById(item.service_id);
 
                   return `
                     <article class="planner-card">
@@ -593,15 +675,43 @@ function renderPlanner() {
   }).join('');
 }
 
-function renderAll() {
-  const summaries = getWorkerSummaries();
-  renderKpis(summaries);
-  renderCriticalWorkers(summaries);
-  renderServiceGaps();
-  renderWorkersTable(summaries);
-  renderWorkerAvailability(summaries);
-  renderServices();
-  renderPlanner();
+let renderFrameId = 0;
+let realtimeRefreshTimer = 0;
+
+function renderCurrentView() {
+  switch (state.currentView) {
+    case 'workers': {
+      const summaries = getWorkerSummaries();
+      renderWorkersTable(summaries);
+      renderWorkerAvailability(summaries);
+      break;
+    }
+    case 'services':
+      renderServices();
+      break;
+    case 'planner':
+      renderPlanner();
+      break;
+    case 'dashboard':
+    default: {
+      const summaries = getWorkerSummaries();
+      renderKpis(summaries);
+      renderCriticalWorkers(summaries);
+      renderServiceGaps();
+      break;
+    }
+  }
+}
+
+function scheduleRenderCurrentView() {
+  if (renderFrameId) {
+    window.cancelAnimationFrame(renderFrameId);
+  }
+
+  renderFrameId = window.requestAnimationFrame(() => {
+    renderFrameId = 0;
+    renderCurrentView();
+  });
 }
 
 function handleViewChange(event) {
@@ -616,7 +726,7 @@ function handleFilterChange() {
   state.filters.search = el.globalSearch.value.trim().toLowerCase();
   state.filters.workerType = el.workerTypeFilter.value;
   state.filters.status = el.statusFilter.value;
-  renderAll();
+  scheduleRenderCurrentView();
 }
 
 async function loadAllData() {
@@ -634,34 +744,62 @@ async function loadAllData() {
   state.services = servicesRes.data || [];
   state.assignments = assignmentsRes.data || [];
 
+  rebuildDerivedState();
   populateSelects();
-  renderAll();
+  scheduleRenderCurrentView();
 }
 
 async function loadAllDataWithRetry(retries = 4, delayMs = 500) {
-  state.loadingData = true;
-  setDataReady(false);
-
-  let lastError = null;
-
-  for (let attempt = 1; attempt <= retries; attempt += 1) {
-    try {
-      await loadAllData();
-      state.loadingData = false;
-      setDataReady(true);
-      return true;
-    } catch (error) {
-      lastError = error;
-      console.error(`Error cargando datos. Intento ${attempt}/${retries}`, error);
-      if (attempt < retries) await sleep(delayMs);
-    }
+  if (state.activeLoadPromise) {
+    return state.activeLoadPromise;
   }
 
-  state.loadingData = false;
-  setDataReady(false);
-  console.error('No se pudieron cargar los datos luego de varios intentos.', lastError);
-  alert('No se pudieron inicializar los datos. Tocá "Actualizar" en unos segundos.');
-  return false;
+  const loadPromise = (async () => {
+    state.loadingData = true;
+    setDataReady(false);
+
+    let lastError = null;
+
+    try {
+      for (let attempt = 1; attempt <= retries; attempt += 1) {
+        try {
+          await loadAllData();
+          setDataReady(true);
+          return true;
+        } catch (error) {
+          lastError = error;
+          console.error(`Error cargando datos. Intento ${attempt}/${retries}`, error);
+          if (attempt < retries) await sleep(delayMs);
+        }
+      }
+
+      setDataReady(false);
+      console.error('No se pudieron cargar los datos luego de varios intentos.', lastError);
+      alert('No se pudieron inicializar los datos. Tocá "Actualizar" en unos segundos.');
+      return false;
+    } finally {
+      state.loadingData = false;
+    }
+  })();
+
+  state.activeLoadPromise = loadPromise;
+
+  try {
+    return await loadPromise;
+  } finally {
+    if (state.activeLoadPromise === loadPromise) {
+      state.activeLoadPromise = null;
+    }
+  }
+}
+
+function scheduleRealtimeRefresh() {
+  if (Date.now() < state.ignoreRealtimeUntil) return;
+
+  window.clearTimeout(realtimeRefreshTimer);
+  realtimeRefreshTimer = window.setTimeout(() => {
+    loadAllDataWithRetry(2, 250);
+  }, 250);
 }
 
 function subscribeRealtime() {
@@ -671,9 +809,9 @@ function subscribeRealtime() {
 
   state.realtimeChannel = supabase
     .channel('planner-realtime')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'workers' }, () => loadAllDataWithRetry(2, 250))
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'services' }, () => loadAllDataWithRetry(2, 250))
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, () => loadAllDataWithRetry(2, 250))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'workers' }, scheduleRealtimeRefresh)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'services' }, scheduleRealtimeRefresh)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, scheduleRealtimeRefresh)
     .subscribe();
 }
 
@@ -706,6 +844,7 @@ async function initAuth() {
       state.workers = [];
       state.services = [];
       state.assignments = [];
+      state.derived = createEmptyDerivedState();
       setDataReady(true);
     }
   });
@@ -821,7 +960,7 @@ function openWorkerDialog(workerId = null) {
   $('deleteWorkerBtn').classList.toggle('hidden', !workerId);
 
   if (workerId) {
-    const worker = state.workers.find((item) => item.id === workerId);
+    const worker = getWorkerById(workerId);
     if (!worker) return;
 
     $('workerId').value = worker.id;
@@ -843,7 +982,7 @@ function openServiceDialog(serviceId = null) {
   $('deleteServiceBtn').classList.toggle('hidden', !serviceId);
 
   if (serviceId) {
-    const service = state.services.find((item) => item.id === serviceId);
+    const service = getServiceById(serviceId);
     if (!service) return;
 
     $('serviceId').value = service.id;
@@ -867,7 +1006,7 @@ function openAssignmentDialog(assignmentId = null) {
   $('deleteAssignmentBtn').classList.toggle('hidden', !assignmentId);
 
   if (assignmentId) {
-    const assignment = state.assignments.find((item) => item.id === assignmentId);
+    const assignment = getAssignmentById(assignmentId);
     if (!assignment) return;
 
     $('assignmentId').value = assignment.id;
@@ -928,6 +1067,8 @@ async function saveWorker(event) {
     const request = workerId
       ? supabase.from('workers').update(payload).eq('id', workerId)
       : supabase.from('workers').insert(payload);
+
+    markLocalMutation();
 
     const { error } = await withTimeout(
       request,
@@ -990,6 +1131,8 @@ async function saveService(event) {
     const request = serviceId
       ? supabase.from('services').update(payload).eq('id', serviceId)
       : supabase.from('services').insert(payload);
+
+    markLocalMutation();
 
     const { error } = await withTimeout(
       request,
@@ -1055,6 +1198,8 @@ async function saveAssignment(event) {
     const request = assignmentId
       ? supabase.from('assignments').update(payload).eq('id', assignmentId)
       : supabase.from('assignments').insert(payload);
+
+    markLocalMutation();
 
     const { error } = await withTimeout(
       request,
@@ -1129,6 +1274,8 @@ async function saveBulkAssignments(event) {
       is_active: true,
     }));
 
+    markLocalMutation();
+
     const { error } = await withTimeout(
       supabase.from('assignments').insert(payload),
       12000,
@@ -1169,6 +1316,8 @@ async function deleteWorker() {
 
   if (!confirm('¿Eliminar este operario?')) return;
 
+  markLocalMutation();
+
   const { error } = await supabase.from('workers').delete().eq('id', workerId);
 
   if (error) {
@@ -1195,6 +1344,8 @@ async function deleteService() {
 
   if (!confirm('¿Eliminar este servicio?')) return;
 
+  markLocalMutation();
+
   const { error } = await supabase.from('services').delete().eq('id', serviceId);
 
   if (error) {
@@ -1214,6 +1365,8 @@ async function deleteAssignment() {
   if (!assignmentId) return;
 
   if (!confirm('¿Eliminar esta asignación del planner?')) return;
+
+  markLocalMutation();
 
   const { error } = await supabase.from('assignments').delete().eq('id', assignmentId);
 
@@ -1346,7 +1499,7 @@ function buildWorkersExportData() {
                 return;
               }
               dayItems.forEach((item) => {
-                const service = state.services.find((service) => service.id === item.service_id);
+                const service = getServiceById(item.service_id);
                 rows.push([
                   worker.name,
                   day.fullLabel,
@@ -1399,7 +1552,7 @@ function buildServicesExportData() {
                 return;
               }
               dayItems.forEach((item) => {
-                const worker = state.workers.find((worker) => worker.id === item.worker_id);
+                const worker = getWorkerById(item.worker_id);
                 rows.push([
                   service.name,
                   day.fullLabel,
@@ -1420,11 +1573,7 @@ function buildPlannerExportData() {
   const searchTerm = state.filters.search;
   const filteredAssignments = state.assignments.filter((assignment) => {
     if (!searchTerm) return true;
-    const worker = state.workers.find((row) => row.id === assignment.worker_id);
-    const service = state.services.find((row) => row.id === assignment.service_id);
-    const hay = [worker?.name || '', service?.name || '', service?.zone || '', service?.client_address || '']
-      .join(' ')
-      .toLowerCase();
+    const hay = state.derived.assignmentSearchById.get(assignment.id) || '';
     return hay.includes(searchTerm);
   });
 
@@ -1435,8 +1584,8 @@ function buildPlannerExportData() {
         rows: [
           ['Día', 'Servicio', 'Operario', 'Horario', 'Notas'],
           ...filteredAssignments.map((item) => {
-            const worker = state.workers.find((row) => row.id === item.worker_id);
-            const service = state.services.find((row) => row.id === item.service_id);
+            const worker = getWorkerById(item.worker_id);
+            const service = getServiceById(item.service_id);
             const day = DAYS.find((d) => d.value === item.day_of_week);
             return [
               day?.fullLabel || '',
@@ -1552,12 +1701,14 @@ function printCurrentView() {
   window.print();
 }
 
+const debouncedHandleFilterInput = debounce(handleFilterChange, 180);
+
 function bindEvents() {
   el.loginForm?.addEventListener('submit', handleLogin);
   el.logoutBtn?.addEventListener('click', handleLogout);
   el.refreshBtn?.addEventListener('click', () => loadAllDataWithRetry(4, 500));
   el.navTabs?.addEventListener('click', handleViewChange);
-  el.globalSearch?.addEventListener('input', handleFilterChange);
+  el.globalSearch?.addEventListener('input', debouncedHandleFilterInput);
   el.workerTypeFilter?.addEventListener('change', handleFilterChange);
   el.statusFilter?.addEventListener('change', handleFilterChange);
   el.printViewBtn?.addEventListener('click', printCurrentView);
