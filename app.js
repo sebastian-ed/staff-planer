@@ -51,6 +51,7 @@ const state = {
   realtimeChannel: null,
   dataReady: false,
   loadingData: false,
+  hasLoadedOnce: false,
   activeLoadPromise: null,
   ignoreRealtimeUntil: 0,
   derived: createEmptyDerivedState(),
@@ -255,7 +256,7 @@ function setDataReady(isReady) {
 }
 
 function ensureDataReady(actionLabel = 'esta acción') {
-  if (!state.dataReady || state.loadingData) {
+  if (!state.dataReady) {
     alert(`Todavía se están cargando los datos. Esperá unos segundos antes de ${actionLabel}.`);
     return false;
   }
@@ -730,11 +731,15 @@ function handleFilterChange() {
 }
 
 async function loadAllData() {
-  const [workersRes, servicesRes, assignmentsRes] = await Promise.all([
-    supabase.from('workers').select('*').order('name'),
-    supabase.from('services').select('*').order('name'),
-    supabase.from('assignments').select('*').eq('is_active', true).order('day_of_week').order('start_time'),
-  ]);
+  const [workersRes, servicesRes, assignmentsRes] = await withTimeout(
+    Promise.all([
+      supabase.from('workers').select('*').order('name'),
+      supabase.from('services').select('*').order('name'),
+      supabase.from('assignments').select('*').eq('is_active', true).order('day_of_week').order('start_time'),
+    ]),
+    12000,
+    'La actualización de datos tardó demasiado.'
+  );
 
   if (workersRes.error || servicesRes.error || assignmentsRes.error) {
     throw workersRes.error || servicesRes.error || assignmentsRes.error;
@@ -743,20 +748,31 @@ async function loadAllData() {
   state.workers = workersRes.data || [];
   state.services = servicesRes.data || [];
   state.assignments = assignmentsRes.data || [];
+  state.hasLoadedOnce = true;
 
   rebuildDerivedState();
   populateSelects();
   scheduleRenderCurrentView();
 }
 
-async function loadAllDataWithRetry(retries = 4, delayMs = 500) {
+async function loadAllDataWithRetry(retries = 4, delayMs = 500, options = {}) {
+  const {
+    hardLock = !state.hasLoadedOnce,
+    silent = false,
+  } = options;
+
   if (state.activeLoadPromise) {
     return state.activeLoadPromise;
   }
 
+  const hadUsableData = state.hasLoadedOnce;
+
   const loadPromise = (async () => {
     state.loadingData = true;
-    setDataReady(false);
+
+    if (hardLock || !hadUsableData) {
+      setDataReady(false);
+    }
 
     let lastError = null;
 
@@ -773,9 +789,17 @@ async function loadAllDataWithRetry(retries = 4, delayMs = 500) {
         }
       }
 
-      setDataReady(false);
-      console.error('No se pudieron cargar los datos luego de varios intentos.', lastError);
-      alert('No se pudieron inicializar los datos. Tocá "Actualizar" en unos segundos.');
+      if (hadUsableData) {
+        setDataReady(true);
+        console.warn('Falló la actualización de fondo, pero se conserva la última data cargada.', lastError);
+      } else {
+        setDataReady(false);
+        console.error('No se pudieron cargar los datos luego de varios intentos.', lastError);
+        if (!silent) {
+          alert('No se pudieron inicializar los datos. Tocá "Actualizar" en unos segundos.');
+        }
+      }
+
       return false;
     } finally {
       state.loadingData = false;
@@ -798,7 +822,7 @@ function scheduleRealtimeRefresh() {
 
   window.clearTimeout(realtimeRefreshTimer);
   realtimeRefreshTimer = window.setTimeout(() => {
-    loadAllDataWithRetry(2, 250);
+    loadAllDataWithRetry(2, 250, { hardLock: false, silent: true });
   }, 250);
 }
 
@@ -818,7 +842,7 @@ function subscribeRealtime() {
 async function initializeAfterLogin() {
   showMain();
   goToView(state.currentView || 'dashboard');
-  const ok = await loadAllDataWithRetry(4, 500);
+  const ok = await loadAllDataWithRetry(4, 500, { hardLock: true, silent: false });
   if (ok) subscribeRealtime();
 }
 
@@ -844,6 +868,7 @@ async function initAuth() {
       state.workers = [];
       state.services = [];
       state.assignments = [];
+      state.hasLoadedOnce = false;
       state.derived = createEmptyDerivedState();
       setDataReady(true);
     }
@@ -1084,7 +1109,7 @@ async function saveWorker(event) {
 
     el.workerDialog.close();
     goToView('workers');
-    await loadAllDataWithRetry(3, 300);
+    await loadAllDataWithRetry(3, 300, { hardLock: false, silent: false });
   } catch (error) {
     console.error(error);
     alert(error.message || 'No se pudo guardar el operario.');
@@ -1148,7 +1173,7 @@ async function saveService(event) {
 
     el.serviceDialog.close();
     goToView('services');
-    await loadAllDataWithRetry(3, 300);
+    await loadAllDataWithRetry(3, 300, { hardLock: false, silent: false });
   } catch (error) {
     console.error(error);
     alert(error.message || 'No se pudo guardar el servicio.');
@@ -1215,7 +1240,7 @@ async function saveAssignment(event) {
 
     el.assignmentDialog.close();
     goToView('planner');
-    await loadAllDataWithRetry(3, 300);
+    await loadAllDataWithRetry(3, 300, { hardLock: false, silent: false });
   } catch (error) {
     console.error(error);
     alert(error.message || 'No se pudo guardar la asignación.');
@@ -1290,7 +1315,7 @@ async function saveBulkAssignments(event) {
 
     el.bulkAssignmentDialog.close();
     goToView('planner');
-    await loadAllDataWithRetry(3, 300);
+    await loadAllDataWithRetry(3, 300, { hardLock: false, silent: false });
   } catch (error) {
     console.error(error);
     alert(error.message || 'No se pudo guardar la carga rápida.');
@@ -1327,7 +1352,7 @@ async function deleteWorker() {
   }
 
   el.workerDialog.close();
-  await loadAllDataWithRetry(2, 250);
+  await loadAllDataWithRetry(2, 250, { hardLock: false, silent: false });
 }
 
 async function deleteService() {
@@ -1355,7 +1380,7 @@ async function deleteService() {
   }
 
   el.serviceDialog.close();
-  await loadAllDataWithRetry(2, 250);
+  await loadAllDataWithRetry(2, 250, { hardLock: false, silent: false });
 }
 
 async function deleteAssignment() {
@@ -1377,7 +1402,7 @@ async function deleteAssignment() {
   }
 
   el.assignmentDialog.close();
-  await loadAllDataWithRetry(2, 250);
+  await loadAllDataWithRetry(2, 250, { hardLock: false, silent: false });
 }
 
 function handleDynamicClicks(event) {
@@ -1706,7 +1731,7 @@ const debouncedHandleFilterInput = debounce(handleFilterChange, 180);
 function bindEvents() {
   el.loginForm?.addEventListener('submit', handleLogin);
   el.logoutBtn?.addEventListener('click', handleLogout);
-  el.refreshBtn?.addEventListener('click', () => loadAllDataWithRetry(4, 500));
+  el.refreshBtn?.addEventListener('click', () => loadAllDataWithRetry(4, 500, { hardLock: false, silent: false }));
   el.navTabs?.addEventListener('click', handleViewChange);
   el.globalSearch?.addEventListener('input', debouncedHandleFilterInput);
   el.workerTypeFilter?.addEventListener('change', handleFilterChange);
