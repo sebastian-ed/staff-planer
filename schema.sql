@@ -18,11 +18,14 @@ create table if not exists public.services (
   name text not null,
   client_address text,
   zone text,
+  supervisor_name text,
   frequency_type text not null default 'fixed' check (frequency_type in ('fixed', 'variable', 'replacement')),
   notes text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.services add column if not exists supervisor_name text;
 
 -- Tabla de asignaciones semanales recurrentes
 create table if not exists public.assignments (
@@ -90,9 +93,47 @@ using (true)
 with check (true);
 
 -- Realtime
-alter publication supabase_realtime add table public.workers;
-alter publication supabase_realtime add table public.services;
-alter publication supabase_realtime add table public.assignments;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_publication_rel pr
+    JOIN pg_class c ON c.oid = pr.prrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_publication p ON p.oid = pr.prpubid
+    WHERE p.pubname = 'supabase_realtime'
+      AND n.nspname = 'public'
+      AND c.relname = 'workers'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.workers;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_publication_rel pr
+    JOIN pg_class c ON c.oid = pr.prrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_publication p ON p.oid = pr.prpubid
+    WHERE p.pubname = 'supabase_realtime'
+      AND n.nspname = 'public'
+      AND c.relname = 'services'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.services;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_publication_rel pr
+    JOIN pg_class c ON c.oid = pr.prrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_publication p ON p.oid = pr.prpubid
+    WHERE p.pubname = 'supabase_realtime'
+      AND n.nspname = 'public'
+      AND c.relname = 'assignments'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.assignments;
+  END IF;
+END $$;
 
 -- Vista opcional de resumen por operario
 create or replace view public.worker_weekly_summary as

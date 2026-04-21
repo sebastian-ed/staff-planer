@@ -124,7 +124,7 @@ function rebuildDerivedState() {
     derived.serviceById.set(service.id, service);
     derived.serviceSearchById.set(
       service.id,
-      [service.name, service.zone || '', service.client_address || '', service.notes || '']
+      [service.name, service.zone || '', service.client_address || '', service.supervisor_name || '', service.notes || '']
         .join(' ')
         .toLowerCase()
     );
@@ -148,6 +148,7 @@ function rebuildDerivedState() {
         service?.name || '',
         service?.zone || '',
         service?.client_address || '',
+        service?.supervisor_name || '',
       ]
         .join(' ')
         .toLowerCase()
@@ -235,6 +236,7 @@ function getServiceAssignments(serviceId) {
 function setDataReady(isReady) {
   state.dataReady = isReady;
 
+  const shouldDisable = !isReady && !state.hasLoadedOnce;
   const ids = [
     'refreshBtn',
     'printViewBtn',
@@ -251,12 +253,12 @@ function setDataReady(isReady) {
 
   ids.forEach((id) => {
     const node = $(id);
-    if (node) node.disabled = !isReady;
+    if (node) node.disabled = shouldDisable;
   });
 }
 
 function ensureDataReady(actionLabel = 'esta acción') {
-  if (!state.dataReady) {
+  if (!state.dataReady && !state.hasLoadedOnce) {
     alert(`Todavía se están cargando los datos. Esperá unos segundos antes de ${actionLabel}.`);
     return false;
   }
@@ -593,6 +595,7 @@ function renderServices() {
             <div class="service-meta">
               <span class="chip">${escapeHtml(service.frequency_type || 'fixed')}</span>
               <span class="chip">${escapeHtml(service.zone || 'Sin zona')}</span>
+              ${service.supervisor_name ? `<span class="chip">Sup. ${escapeHtml(service.supervisor_name)}</span>` : ''}
             </div>
           </header>
 
@@ -839,11 +842,13 @@ function subscribeRealtime() {
     .subscribe();
 }
 
-async function initializeAfterLogin() {
+async function initializeAfterLogin(options = {}) {
+  const { hardLock = !state.hasLoadedOnce } = options;
+
   showMain();
   goToView(state.currentView || 'dashboard');
-  const ok = await loadAllDataWithRetry(4, 500, { hardLock: true, silent: false });
-  if (ok) subscribeRealtime();
+  const ok = await loadAllDataWithRetry(4, 500, { hardLock, silent: false });
+  if (ok && !state.realtimeChannel) subscribeRealtime();
 }
 
 async function initAuth() {
@@ -858,19 +863,32 @@ async function initAuth() {
     setDataReady(true);
   }
 
-  supabase.auth.onAuthStateChange(async (_event, sessionNow) => {
+  supabase.auth.onAuthStateChange(async (event, sessionNow) => {
+    const previousUserId = state.user?.id || null;
     state.user = sessionNow?.user || null;
 
-    if (state.user) {
-      await initializeAfterLogin();
-    } else {
+    if (event === 'SIGNED_OUT' || !state.user) {
       showAuth();
       state.workers = [];
       state.services = [];
       state.assignments = [];
       state.hasLoadedOnce = false;
       state.derived = createEmptyDerivedState();
+      if (state.realtimeChannel) {
+        supabase.removeChannel(state.realtimeChannel);
+        state.realtimeChannel = null;
+      }
       setDataReady(true);
+      return;
+    }
+
+    const mustReinitialize =
+      !state.hasLoadedOnce ||
+      event === 'SIGNED_IN' ||
+      (event === 'USER_UPDATED' && previousUserId !== state.user.id);
+
+    if (mustReinitialize) {
+      await initializeAfterLogin({ hardLock: !state.hasLoadedOnce });
     }
   });
 }
@@ -1014,6 +1032,7 @@ function openServiceDialog(serviceId = null) {
     $('serviceName').value = service.name || '';
     $('serviceAddress').value = service.client_address || '';
     $('serviceZone').value = service.zone || '';
+    $('serviceSupervisor').value = service.supervisor_name || '';
     $('serviceFrequency').value = service.frequency_type || 'fixed';
     $('serviceNotes').value = service.notes || '';
   }
@@ -1128,6 +1147,7 @@ async function saveService(event) {
   const serviceName = $('serviceName');
   const serviceAddress = $('serviceAddress');
   const serviceZone = $('serviceZone');
+  const serviceSupervisor = $('serviceSupervisor');
   const serviceFrequency = $('serviceFrequency');
   const serviceNotes = $('serviceNotes');
 
@@ -1149,6 +1169,7 @@ async function saveService(event) {
       name: serviceName.value.trim(),
       client_address: serviceAddress ? serviceAddress.value.trim() || null : null,
       zone: serviceZone ? serviceZone.value.trim() || null : null,
+      supervisor_name: serviceSupervisor ? serviceSupervisor.value.trim() || null : null,
       frequency_type: serviceFrequency ? serviceFrequency.value : 'fixed',
       notes: serviceNotes ? serviceNotes.value.trim() || null : null,
     };
@@ -1478,11 +1499,12 @@ function buildDashboardExportData() {
       {
         name: 'Servicios sin cobertura',
         rows: [
-          ['Servicio', 'Zona', 'Dirección', 'Frecuencia'],
+          ['Servicio', 'Zona', 'Dirección', 'Supervisor', 'Frecuencia'],
           ...uncoveredServices.map((service) => [
             service.name,
             service.zone || '',
             service.client_address || '',
+            service.supervisor_name || '',
             service.frequency_type || '',
           ]),
         ],
@@ -1549,13 +1571,14 @@ function buildServicesExportData() {
       {
         name: 'Servicios',
         rows: [
-          ['Servicio', 'Dirección', 'Zona', 'Frecuencia', 'Notas', 'Cobertura activa'],
+          ['Servicio', 'Dirección', 'Zona', 'Supervisor', 'Frecuencia', 'Notas', 'Cobertura activa'],
           ...services.map((service) => {
             const assignments = getServiceAssignments(service.id);
             return [
               service.name,
               service.client_address || '',
               service.zone || '',
+              service.supervisor_name || '',
               service.frequency_type || '',
               service.notes || '',
               assignments.length,
@@ -1566,14 +1589,14 @@ function buildServicesExportData() {
       {
         name: 'Cobertura por día',
         rows: [
-          ['Servicio', 'Día', 'Operario', 'Horario'],
+          ['Servicio', 'Día', 'Operario', 'Supervisor', 'Horario'],
           ...services.flatMap((service) => {
             const assignments = getServiceAssignments(service.id);
             const rows = [];
             DAYS.forEach((day) => {
               const dayItems = assignments.filter((item) => item.day_of_week === day.value);
               if (!dayItems.length) {
-                rows.push([service.name, day.fullLabel, 'Sin cobertura', '']);
+                rows.push([service.name, day.fullLabel, 'Sin cobertura', service.supervisor_name || '', '']);
                 return;
               }
               dayItems.forEach((item) => {
@@ -1582,6 +1605,7 @@ function buildServicesExportData() {
                   service.name,
                   day.fullLabel,
                   worker?.name || '',
+                  service.supervisor_name || '',
                   `${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}`,
                 ]);
               });
@@ -1607,7 +1631,7 @@ function buildPlannerExportData() {
       {
         name: 'Planner',
         rows: [
-          ['Día', 'Servicio', 'Operario', 'Horario', 'Notas'],
+          ['Día', 'Servicio', 'Operario', 'Supervisor', 'Horario', 'Notas'],
           ...filteredAssignments.map((item) => {
             const worker = getWorkerById(item.worker_id);
             const service = getServiceById(item.service_id);
@@ -1616,6 +1640,7 @@ function buildPlannerExportData() {
               day?.fullLabel || '',
               service?.name || '',
               worker?.name || '',
+              service?.supervisor_name || '',
               `${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}`,
               item.notes || '',
             ];
