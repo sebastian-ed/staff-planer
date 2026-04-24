@@ -221,6 +221,47 @@ function goToView(viewName) {
   scheduleRenderCurrentView();
 }
 
+function flashElement(element) {
+  if (!element) return;
+
+  const previousTransition = element.style.transition;
+  const previousBoxShadow = element.style.boxShadow;
+  const previousBorderColor = element.style.borderColor;
+
+  element.style.transition = 'box-shadow 0.25s ease, border-color 0.25s ease';
+  element.style.boxShadow = '0 0 0 3px rgba(117, 240, 194, 0.28)';
+  element.style.borderColor = 'rgba(117, 240, 194, 0.65)';
+
+  window.setTimeout(() => {
+    element.style.boxShadow = previousBoxShadow;
+    element.style.borderColor = previousBorderColor;
+    element.style.transition = previousTransition;
+  }, 1600);
+}
+
+function goToWorkerPlanner(workerId) {
+  if (!ensureDataReady('abrir el planner del operario')) return;
+
+  const worker = getWorkerById(workerId);
+  if (!worker) return;
+
+  const workerName = String(worker.name || '').trim();
+  if (!workerName) return;
+
+  if (el.globalSearch) el.globalSearch.value = workerName;
+  state.filters.search = workerName.toLowerCase();
+
+  goToView('planner');
+
+  window.requestAnimationFrame(() => {
+    const firstCard = el.plannerBoard?.querySelector(`[data-planner-worker-id="${workerId}"]`);
+    if (!firstCard) return;
+
+    firstCard.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+    flashElement(firstCard);
+  });
+}
+
 function getTargetHours(worker) {
   return worker.target_hours ?? TYPE_META[worker.worker_type]?.defaultHours ?? null;
 }
@@ -498,7 +539,14 @@ function renderWorkersTable(summaries) {
       (worker) => `
         <tr>
           <td>
-            <strong>${escapeHtml(worker.name)}</strong>
+            <button
+              type="button"
+              data-view-worker="${worker.id}"
+              title="Ver planner del operario"
+              style="background:none;border:0;padding:0;color:inherit;font:inherit;text-align:left;cursor:pointer;"
+            >
+              <strong>${escapeHtml(worker.name)}</strong>
+            </button>
             <div class="muted">${escapeHtml(worker.notes || '')}</div>
           </td>
           <td>${TYPE_META[worker.worker_type].label}</td>
@@ -517,6 +565,7 @@ function renderWorkersTable(summaries) {
           </td>
           <td>
             <div class="inline-actions">
+              <button class="btn btn-secondary btn-sm" type="button" data-view-worker="${worker.id}">Ver planner</button>
               <button class="btn btn-secondary btn-sm" type="button" data-edit-worker="${worker.id}">Editar</button>
             </div>
           </td>
@@ -661,7 +710,7 @@ function renderPlanner() {
                   const service = getServiceById(item.service_id);
 
                   return `
-                    <article class="planner-card">
+                    <article class="planner-card" data-planner-worker-id="${item.worker_id}">
                       <h4>${escapeHtml(service?.name || 'Servicio')}</h4>
                       <p>${escapeHtml(worker?.name || 'Operario')}</p>
                       <small>${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}</small>
@@ -1427,6 +1476,12 @@ async function deleteAssignment() {
 }
 
 function handleDynamicClicks(event) {
+  const viewWorkerBtn = event.target.closest('[data-view-worker]');
+  if (viewWorkerBtn) {
+    goToWorkerPlanner(viewWorkerBtn.dataset.viewWorker);
+    return;
+  }
+
   const workerBtn = event.target.closest('[data-edit-worker]');
   if (workerBtn) {
     openWorkerDialog(workerBtn.dataset.editWorker);
