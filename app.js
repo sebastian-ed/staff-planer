@@ -2221,19 +2221,59 @@ function buildPlannerExportData() {
 function buildAbsencesExportData() {
   const dateKey = getSelectedAbsenceDate();
   const dayOfWeek = getDateKeyDayOfWeek(dateKey);
+
+  const statusLabelMap = {
+    uncovered: 'Descubierto',
+    covered: 'Cubierto',
+    partial: 'Parcial',
+  };
+
+  const getCoverageModeLabel = (absence, coveredHours, uncoveredHours) => {
+    if (!absence) return '';
+    if (absence.coverage_status === 'uncovered') return 'Sin cobertura';
+    if (absence.coverage_status === 'covered') return 'Cobertura completa';
+    if (absence.coverage_status === 'partial') {
+      if (coveredHours != null && uncoveredHours != null) {
+        return `Cobertura parcial (${formatHours(coveredHours)} hs cubiertas / ${formatHours(uncoveredHours)} hs descubiertas)`;
+      }
+      return 'Cobertura parcial';
+    }
+    return absence.coverage_status || '';
+  };
+
   const assignments = getAssignmentsByDay(dayOfWeek).map((assignment) => {
     const worker = getWorkerById(assignment.worker_id);
     const service = getServiceById(assignment.service_id);
     const absence = findAbsenceForAssignmentOnDate(assignment, dateKey);
+    const scheduledHours = calculateHours(assignment.start_time, assignment.end_time);
+    const coveredHours = absence ? calculateCoverageHours(absence) : null;
+    const uncoveredHours =
+      absence && coveredHours != null
+        ? Math.max(0, Number((scheduledHours - coveredHours).toFixed(2)))
+        : absence?.coverage_status === 'uncovered'
+          ? scheduledHours
+          : '';
 
     return [
       formatDateLabel(dateKey),
       DAYS.find((day) => day.value === assignment.day_of_week)?.fullLabel || '',
       service?.name || '',
+      service?.supervisor_name || '',
       worker?.name || '',
+      TYPE_META[worker?.worker_type]?.label || '',
       `${assignment.start_time.slice(0, 5)}-${assignment.end_time.slice(0, 5)}`,
+      scheduledHours,
       absence ? 'Sí' : 'No',
-      absence ? absence.coverage_status : '',
+      absence ? (statusLabelMap[absence.coverage_status] || absence.coverage_status || '') : '',
+      absence ? getCoverageModeLabel(absence, coveredHours, uncoveredHours) : '',
+      absence?.coverage_worker_id ? (getWorkerById(absence.coverage_worker_id)?.name || '') : '',
+      absence?.coverage_date ? formatDateLabel(absence.coverage_date) : '',
+      absence?.coverage_start_time && absence?.coverage_end_time
+        ? `${absence.coverage_start_time.slice(0, 5)}-${absence.coverage_end_time.slice(0, 5)}`
+        : '',
+      coveredHours == null ? '' : coveredHours,
+      uncoveredHours === '' ? '' : uncoveredHours,
+      absence?.notes || '',
     ];
   });
 
@@ -2242,21 +2282,39 @@ function buildAbsencesExportData() {
     const service = getServiceById(absence.service_id);
     const coverageWorker = absence.coverage_worker_id ? getWorkerById(absence.coverage_worker_id) : null;
     const coveredHours = calculateCoverageHours(absence);
+    const scheduledHours =
+      absence.scheduled_start_time && absence.scheduled_end_time
+        ? calculateHours(absence.scheduled_start_time, absence.scheduled_end_time)
+        : null;
+    const uncoveredHours =
+      scheduledHours != null
+        ? Math.max(0, Number((scheduledHours - (coveredHours || 0)).toFixed(2)))
+        : null;
 
     return [
       formatDateLabel(absence.absence_date),
+      DAYS.find((day) => day.value === getDateKeyDayOfWeek(absence.absence_date))?.fullLabel || '',
       worker?.name || '',
+      TYPE_META[worker?.worker_type]?.label || '',
       service?.name || '',
+      service?.supervisor_name || '',
+      service?.zone || '',
+      service?.client_address || '',
       absence.scheduled_start_time && absence.scheduled_end_time
         ? `${absence.scheduled_start_time.slice(0, 5)}-${absence.scheduled_end_time.slice(0, 5)}`
         : '',
-      absence.coverage_status,
+      scheduledHours == null ? '' : scheduledHours,
+      statusLabelMap[absence.coverage_status] || absence.coverage_status || '',
+      getCoverageModeLabel(absence, coveredHours, uncoveredHours),
+      absence.coverage_status === 'uncovered' ? 'No' : absence.coverage_status === 'partial' ? 'Parcial' : 'Sí',
       coverageWorker?.name || '',
+      TYPE_META[coverageWorker?.worker_type]?.label || '',
       absence.coverage_date ? formatDateLabel(absence.coverage_date) : '',
       absence.coverage_start_time && absence.coverage_end_time
         ? `${absence.coverage_start_time.slice(0, 5)}-${absence.coverage_end_time.slice(0, 5)}`
         : '',
       coveredHours == null ? '' : coveredHours,
+      uncoveredHours == null ? '' : uncoveredHours,
       absence.notes || '',
     ];
   });
@@ -2266,14 +2324,14 @@ function buildAbsencesExportData() {
       {
         name: 'Programacion del dia',
         rows: [
-          ['Fecha', 'Día', 'Servicio', 'Operario', 'Horario', 'Ausencia registrada', 'Estado'],
+          ['Fecha', 'Día', 'Servicio', 'Supervisor', 'Operario', 'Tipo operario', 'Horario asignado', 'Horas asignadas', 'Ausencia registrada', 'Resultado', 'Cómo se cubrió', 'Operario cobertura', 'Fecha cobertura', 'Horario cobertura', 'Horas cubiertas', 'Horas descubiertas', 'Notas'],
           ...assignments,
         ],
       },
       {
         name: 'Ausencias',
         rows: [
-          ['Fecha', 'Operario ausente', 'Servicio', 'Horario asignado', 'Resultado', 'Operario cobertura', 'Fecha cobertura', 'Horario cobertura', 'Horas cubiertas', 'Notas'],
+          ['Fecha', 'Día', 'Operario ausente', 'Tipo operario', 'Servicio afectado', 'Supervisor', 'Zona', 'Dirección', 'Horario asignado', 'Horas asignadas', 'Resultado', 'Cómo se cubrió', '¿Se cubrió?', 'Operario cobertura', 'Tipo cobertura', 'Fecha cobertura', 'Horario cobertura', 'Horas cubiertas', 'Horas descubiertas', 'Notas'],
           ...absences,
         ],
       },
