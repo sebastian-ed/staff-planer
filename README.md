@@ -8,7 +8,6 @@ Web app mobile-first para visualizar y editar asignaciones de operarios por serv
 - Controlar horas asignadas vs. horas objetivo.
 - Detectar operarios con horas libres o excedidos.
 - Editar operarios, servicios y asignaciones desde cualquier dispositivo.
-- Asignar un supervisor responsable a cada servicio.
 - Ver cambios en vivo entre varios usuarios.
 - Crear usuarios nuevos desde el login para que ingresen con las mismas funcionalidades.
 - Imprimir la vista filtrada actual y descargar cada panel en Excel o PDF.
@@ -26,10 +25,6 @@ Web app mobile-first para visualizar y editar asignaciones de operarios por serv
 - `app.js`: lógica cliente.
 - `supabase-config.js`: credenciales del proyecto.
 - `sql/schema.sql`: tablas, políticas y realtime.
-
-## Cambio reciente
-
-Se agregó el campo `supervisor_name` en `services`. Si ya tenías la base creada, volvé a ejecutar `schema.sql` para aplicar el `ALTER TABLE` sin romper datos existentes.
 
 ## Pasos de implementación
 

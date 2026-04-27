@@ -498,3 +498,68 @@ tr:hover td { background: rgba(255,255,255,0.02); }
     background: #ffffff !important;
   }
 }
+
+
+.absence-date-field {
+  min-width: 180px;
+}
+
+.absence-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 18px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--line);
+}
+
+.absence-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.absence-card p,
+.absence-card small {
+  color: var(--muted);
+}
+
+.absence-card-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.absence-card-meta .chip,
+.absence-card-meta .status-pill {
+  margin: 0;
+}
+
+.absence-coverage-box {
+  border: 1px dashed rgba(255,255,255,0.12);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(255,255,255,0.03);
+}
+
+.absence-card-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 820px) {
+  .absence-card-head {
+    flex-direction: column;
+  }
+}
+
+@media print {
+  .absence-card,
+  .absence-coverage-box {
+    background: #ffffff !important;
+    color: #111111 !important;
+    border-color: #d6d6d6 !important;
+  }
+}

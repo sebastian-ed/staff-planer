@@ -21,6 +21,7 @@ const VIEW_IDS = {
   workers: 'workersView',
   services: 'servicesView',
   planner: 'plannerView',
+  absences: 'absencesView',
 };
 
 function createEmptyDerivedState() {
@@ -28,11 +29,15 @@ function createEmptyDerivedState() {
     workerById: new Map(),
     serviceById: new Map(),
     assignmentById: new Map(),
+    absenceById: new Map(),
     assignmentsByWorkerId: new Map(),
     assignmentsByServiceId: new Map(),
     assignmentsByDay: new Map(),
+    absencesByDateKey: new Map(),
+    absencesByWorkerId: new Map(),
     serviceSearchById: new Map(),
     assignmentSearchById: new Map(),
+    absenceSearchById: new Map(),
   };
 }
 
@@ -41,6 +46,7 @@ const state = {
   workers: [],
   services: [],
   assignments: [],
+  absences: [],
   currentView: 'dashboard',
   authMode: 'login',
   filters: {
@@ -155,6 +161,35 @@ function rebuildDerivedState() {
     );
   });
 
+  state.absences.forEach((absence) => {
+    derived.absenceById.set(absence.id, absence);
+    pushToMapArray(derived.absencesByDateKey, absence.absence_date, absence);
+    pushToMapArray(derived.absencesByWorkerId, absence.worker_id, absence);
+
+    const worker = derived.workerById.get(absence.worker_id);
+    const service = derived.serviceById.get(absence.service_id);
+    const coverageWorker = absence.coverage_worker_id
+      ? derived.workerById.get(absence.coverage_worker_id)
+      : null;
+
+    derived.absenceSearchById.set(
+      absence.id,
+      [
+        absence.absence_date || '',
+        worker?.name || '',
+        service?.name || '',
+        service?.zone || '',
+        service?.client_address || '',
+        service?.supervisor_name || '',
+        coverageWorker?.name || '',
+        absence.notes || '',
+        absence.coverage_status || '',
+      ]
+        .join(' ')
+        .toLowerCase()
+    );
+  });
+
   state.derived = derived;
 }
 
@@ -170,8 +205,51 @@ function getAssignmentById(assignmentId) {
   return state.derived.assignmentById.get(assignmentId) || null;
 }
 
+function getAbsenceById(absenceId) {
+  return state.derived.absenceById.get(absenceId) || null;
+}
+
 function getAssignmentsByDay(dayOfWeek) {
   return state.derived.assignmentsByDay.get(dayOfWeek) || [];
+}
+
+function getAbsencesByDate(dateKey) {
+  return state.derived.absencesByDateKey.get(dateKey) || [];
+}
+
+function getDateKeyDayOfWeek(dateKey) {
+  if (!dateKey) return null;
+  const [year, month, day] = String(dateKey).split('-').map(Number);
+  if (!year || !month || !day) return null;
+  return new Date(year, month - 1, day).getDay();
+}
+
+function formatDateLabel(dateKey) {
+  if (!dateKey) return '—';
+  const [year, month, day] = String(dateKey).split('-').map(Number);
+  if (!year || !month || !day) return dateKey;
+  return new Intl.DateTimeFormat('es-AR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(new Date(year, month - 1, day));
+}
+
+function findAbsenceForAssignmentOnDate(assignment, dateKey) {
+  if (!assignment || !dateKey) return null;
+
+  return getAbsencesByDate(dateKey).find((absence) => {
+    if (absence.assignment_id && assignment.id) {
+      return absence.assignment_id === assignment.id;
+    }
+
+    return absence.worker_id === assignment.worker_id && absence.service_id === assignment.service_id;
+  }) || null;
+}
+
+function calculateCoverageHours(absence) {
+  if (!absence?.coverage_start_time || !absence?.coverage_end_time) return null;
+  return calculateHours(absence.coverage_start_time, absence.coverage_end_time);
 }
 
 function markLocalMutation() {
@@ -287,6 +365,8 @@ function setDataReady(isReady) {
     'addServiceBtn',
     'addAssignmentBtn',
     'bulkAssignmentBtn',
+    'addAbsenceBtn',
+    'absenceDateFilter',
     'workerTypeFilter',
     'statusFilter',
     'globalSearch',
@@ -422,11 +502,26 @@ function populateSelects() {
   const assignmentService = $('assignmentService');
   const bulkAssignmentWorker = $('bulkAssignmentWorker');
   const bulkAssignmentService = $('bulkAssignmentService');
+  const absenceWorker = $('absenceWorker');
+  const absenceService = $('absenceService');
+  const absenceCoverageWorker = $('absenceCoverageWorker');
 
   if (assignmentWorker) assignmentWorker.innerHTML = workerOptions;
   if (assignmentService) assignmentService.innerHTML = serviceOptions;
   if (bulkAssignmentWorker) bulkAssignmentWorker.innerHTML = workerOptions;
   if (bulkAssignmentService) bulkAssignmentService.innerHTML = serviceOptions;
+
+  if (absenceWorker) {
+    absenceWorker.innerHTML = `<option value="">Seleccionar operario</option>${workerOptions}`;
+  }
+
+  if (absenceService) {
+    absenceService.innerHTML = `<option value="">Seleccionar servicio</option>${serviceOptions}`;
+  }
+
+  if (absenceCoverageWorker) {
+    absenceCoverageWorker.innerHTML = `<option value="">Seleccionar cobertura</option>${workerOptions}`;
+  }
 }
 
 function renderKpis(summaries) {
@@ -728,6 +823,183 @@ function renderPlanner() {
   }).join('');
 }
 
+function renderAbsenceStatusPill(status) {
+  const labels = {
+    uncovered: 'Descubierto',
+    covered: 'Cubierto',
+    partial: 'Parcial',
+  };
+
+  const classes = {
+    uncovered: 'status-over',
+    covered: 'status-available',
+    partial: 'status-balanced',
+  };
+
+  return `<span class="status-pill ${classes[status] || 'status-balanced'}">${labels[status] || status}</span>`;
+}
+
+function getSelectedAbsenceDate() {
+  if (!el.absenceDateFilter) return new Date().toISOString().slice(0, 10);
+  if (!el.absenceDateFilter.value) {
+    el.absenceDateFilter.value = new Date().toISOString().slice(0, 10);
+  }
+  return el.absenceDateFilter.value;
+}
+
+function getFilteredAbsencesForDate(dateKey) {
+  const searchTerm = state.filters.search;
+  const workerTypeFilter = state.filters.workerType;
+
+  return getAbsencesByDate(dateKey)
+    .filter((absence) => {
+      if (searchTerm) {
+        const hay = state.derived.absenceSearchById.get(absence.id) || '';
+        if (!hay.includes(searchTerm)) return false;
+      }
+
+      if (workerTypeFilter !== 'all') {
+        const worker = getWorkerById(absence.worker_id);
+        if (worker?.worker_type !== workerTypeFilter) return false;
+      }
+
+      return true;
+    })
+    .sort((a, b) => {
+      const aStart = a.scheduled_start_time || '';
+      const bStart = b.scheduled_start_time || '';
+      return aStart.localeCompare(bStart);
+    });
+}
+
+function renderAbsenceScheduleBoard(dateKey) {
+  if (!el.absenceScheduleBoard) return;
+
+  const dayOfWeek = getDateKeyDayOfWeek(dateKey);
+  const searchTerm = state.filters.search;
+  const workerTypeFilter = state.filters.workerType;
+
+  const assignments = getAssignmentsByDay(dayOfWeek).filter((assignment) => {
+    const worker = getWorkerById(assignment.worker_id);
+
+    if (workerTypeFilter !== 'all' && worker?.worker_type !== workerTypeFilter) {
+      return false;
+    }
+
+    if (!searchTerm) return true;
+
+    const hay = state.derived.assignmentSearchById.get(assignment.id) || '';
+    return hay.includes(searchTerm);
+  });
+
+  el.absenceScheduleBoard.innerHTML = assignments.length
+    ? assignments
+        .map((assignment) => {
+          const worker = getWorkerById(assignment.worker_id);
+          const service = getServiceById(assignment.service_id);
+          const absence = findAbsenceForAssignmentOnDate(assignment, dateKey);
+
+          return `
+            <article class="absence-card">
+              <div class="absence-card-head">
+                <div>
+                  <h3>${escapeHtml(service?.name || 'Servicio')}</h3>
+                  <p>${escapeHtml(worker?.name || 'Operario')}</p>
+                </div>
+                <div class="absence-card-meta">
+                  <span class="chip">${DAYS.find((day) => day.value === assignment.day_of_week)?.fullLabel || ''}</span>
+                  <span class="chip">${assignment.start_time.slice(0, 5)}-${assignment.end_time.slice(0, 5)}</span>
+                  ${service?.supervisor_name ? `<span class="chip">Sup. ${escapeHtml(service.supervisor_name)}</span>` : ''}
+                  ${absence ? renderAbsenceStatusPill(absence.coverage_status) : ''}
+                </div>
+              </div>
+              <div class="absence-card-actions">
+                <button class="btn btn-primary btn-sm" type="button" data-mark-absence="${assignment.id}">
+                  ${absence ? 'Editar ausencia' : 'Marcar ausencia'}
+                </button>
+              </div>
+            </article>
+          `;
+        })
+        .join('')
+    : `
+      <div class="empty-state">
+        No hay servicios programados para ${formatDateLabel(dateKey)} con los filtros actuales.
+      </div>
+    `;
+}
+
+function renderAbsenceHistoryBoard(dateKey) {
+  if (!el.absenceHistoryBoard) return;
+
+  const absences = getFilteredAbsencesForDate(dateKey);
+
+  el.absenceHistoryBoard.innerHTML = absences.length
+    ? absences
+        .map((absence) => {
+          const worker = getWorkerById(absence.worker_id);
+          const service = getServiceById(absence.service_id);
+          const coverageWorker = absence.coverage_worker_id
+            ? getWorkerById(absence.coverage_worker_id)
+            : null;
+          const coveredHours = calculateCoverageHours(absence);
+
+          return `
+            <article class="absence-card">
+              <div class="absence-card-head">
+                <div>
+                  <h3>${escapeHtml(worker?.name || 'Operario')}</h3>
+                  <p>${escapeHtml(service?.name || 'Servicio')}</p>
+                </div>
+                <div class="absence-card-meta">
+                  <span class="chip">${formatDateLabel(absence.absence_date)}</span>
+                  ${absence.scheduled_start_time && absence.scheduled_end_time ? `<span class="chip">${absence.scheduled_start_time.slice(0, 5)}-${absence.scheduled_end_time.slice(0, 5)}</span>` : ''}
+                  ${renderAbsenceStatusPill(absence.coverage_status)}
+                </div>
+              </div>
+
+              ${
+                absence.coverage_status !== 'uncovered'
+                  ? `
+                    <div class="absence-coverage-box">
+                      <strong>${escapeHtml(coverageWorker?.name || 'Cobertura informada')}</strong>
+                      <p>
+                        ${absence.coverage_date ? `Fecha: ${formatDateLabel(absence.coverage_date)} · ` : ''}
+                        ${absence.coverage_start_time && absence.coverage_end_time ? `Horario: ${absence.coverage_start_time.slice(0, 5)}-${absence.coverage_end_time.slice(0, 5)}` : 'Horario sin informar'}
+                        ${coveredHours != null ? ` · ${formatHours(coveredHours)} hs` : ''}
+                      </p>
+                    </div>
+                  `
+                  : `
+                    <div class="absence-coverage-box">
+                      <strong>Servicio sin cobertura</strong>
+                      <p>Quedó descubierto en la fecha indicada.</p>
+                    </div>
+                  `
+              }
+
+              ${absence.notes ? `<small>${escapeHtml(absence.notes)}</small>` : ''}
+
+              <div class="absence-card-actions">
+                <button class="btn btn-secondary btn-sm" type="button" data-edit-absence="${absence.id}">Editar</button>
+              </div>
+            </article>
+          `;
+        })
+        .join('')
+    : `
+      <div class="empty-state">
+        No hay ausencias registradas para ${formatDateLabel(dateKey)}.
+      </div>
+    `;
+}
+
+function renderAbsences() {
+  const dateKey = getSelectedAbsenceDate();
+  renderAbsenceScheduleBoard(dateKey);
+  renderAbsenceHistoryBoard(dateKey);
+}
+
 let renderFrameId = 0;
 let realtimeRefreshTimer = 0;
 
@@ -744,6 +1016,9 @@ function renderCurrentView() {
       break;
     case 'planner':
       renderPlanner();
+      break;
+    case 'absences':
+      renderAbsences();
       break;
     case 'dashboard':
     default: {
@@ -783,11 +1058,12 @@ function handleFilterChange() {
 }
 
 async function loadAllData() {
-  const [workersRes, servicesRes, assignmentsRes] = await withTimeout(
+  const [workersRes, servicesRes, assignmentsRes, absencesRes] = await withTimeout(
     Promise.all([
       supabase.from('workers').select('*').order('name'),
       supabase.from('services').select('*').order('name'),
       supabase.from('assignments').select('*').eq('is_active', true).order('day_of_week').order('start_time'),
+      supabase.from('absences').select('*').order('absence_date', { ascending: false }).order('created_at', { ascending: false }),
     ]),
     12000,
     'La actualización de datos tardó demasiado.'
@@ -800,6 +1076,11 @@ async function loadAllData() {
   state.workers = workersRes.data || [];
   state.services = servicesRes.data || [];
   state.assignments = assignmentsRes.data || [];
+  state.absences = absencesRes.error ? [] : (absencesRes.data || []);
+
+  if (absencesRes.error) {
+    console.warn('La tabla de ausencias todavía no está disponible o devolvió error.', absencesRes.error);
+  }
   state.hasLoadedOnce = true;
 
   rebuildDerivedState();
@@ -888,6 +1169,7 @@ function subscribeRealtime() {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'workers' }, scheduleRealtimeRefresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'services' }, scheduleRealtimeRefresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, scheduleRealtimeRefresh)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'absences' }, scheduleRealtimeRefresh)
     .subscribe();
 }
 
@@ -921,6 +1203,7 @@ async function initAuth() {
       state.workers = [];
       state.services = [];
       state.assignments = [];
+      state.absences = [];
       state.hasLoadedOnce = false;
       state.derived = createEmptyDerivedState();
       if (state.realtimeChannel) {
@@ -1125,6 +1408,98 @@ function openBulkAssignmentDialog() {
   });
 
   el.bulkAssignmentDialog.showModal();
+}
+
+
+function updateAbsenceCoverageInfo() {
+  if (!el.absenceCoverageHoursInfo) return;
+
+  const start = $('absenceCoverageStart')?.value;
+  const end = $('absenceCoverageEnd')?.value;
+  const hours = start && end ? calculateHours(start, end) : null;
+
+  el.absenceCoverageHoursInfo.value = hours == null || Number.isNaN(hours)
+    ? ''
+    : `${formatHours(hours)} hs`;
+}
+
+function toggleAbsenceCoverageFields() {
+  const status = $('absenceCoverageStatus')?.value || 'uncovered';
+  const shouldShow = status === 'covered' || status === 'partial';
+
+  $('absenceCoverageFields')?.classList.toggle('hidden', !shouldShow);
+
+  if (!shouldShow) {
+    if ($('absenceCoverageWorker')) $('absenceCoverageWorker').value = '';
+    if ($('absenceCoverageDate')) $('absenceCoverageDate').value = '';
+    if ($('absenceCoverageStart')) $('absenceCoverageStart').value = '';
+    if ($('absenceCoverageEnd')) $('absenceCoverageEnd').value = '';
+    if (el.absenceCoverageHoursInfo) el.absenceCoverageHoursInfo.value = '';
+  } else if ($('absenceCoverageDate') && !$('absenceCoverageDate').value) {
+    $('absenceCoverageDate').value = $('absenceDate')?.value || getSelectedAbsenceDate();
+  }
+
+  updateAbsenceCoverageInfo();
+}
+
+function openAbsenceDialog(options = {}) {
+  if (!ensureDataReady('abrir ausencias')) return;
+
+  const { absenceId = null, assignmentId = null } = typeof options === 'string'
+    ? { absenceId: options }
+    : options;
+
+  el.absenceForm.reset();
+  populateSelects();
+
+  $('absenceId').value = '';
+  $('absenceAssignmentId').value = '';
+  $('absenceDialogTitle').textContent = absenceId ? 'Editar ausencia' : 'Registrar ausencia';
+  $('deleteAbsenceBtn').classList.toggle('hidden', !absenceId);
+
+  const defaultDate = getSelectedAbsenceDate();
+  if ($('absenceDate')) $('absenceDate').value = defaultDate;
+  if ($('absenceCoverageStatus')) $('absenceCoverageStatus').value = 'uncovered';
+
+  if (absenceId) {
+    const absence = getAbsenceById(absenceId);
+    if (!absence) return;
+
+    $('absenceId').value = absence.id;
+    $('absenceAssignmentId').value = absence.assignment_id || '';
+    $('absenceDate').value = absence.absence_date || defaultDate;
+    $('absenceWorker').value = absence.worker_id || '';
+    $('absenceService').value = absence.service_id || '';
+    $('absenceScheduledStart').value = absence.scheduled_start_time?.slice(0, 5) || '';
+    $('absenceScheduledEnd').value = absence.scheduled_end_time?.slice(0, 5) || '';
+    $('absenceCoverageStatus').value = absence.coverage_status || 'uncovered';
+    $('absenceCoverageWorker').value = absence.coverage_worker_id || '';
+    $('absenceCoverageDate').value = absence.coverage_date || '';
+    $('absenceCoverageStart').value = absence.coverage_start_time?.slice(0, 5) || '';
+    $('absenceCoverageEnd').value = absence.coverage_end_time?.slice(0, 5) || '';
+    $('absenceNotes').value = absence.notes || '';
+  } else if (assignmentId) {
+    const assignment = getAssignmentById(assignmentId);
+    if (!assignment) return;
+
+    const existingAbsence = findAbsenceForAssignmentOnDate(assignment, defaultDate);
+    if (existingAbsence) {
+      openAbsenceDialog({ absenceId: existingAbsence.id });
+      return;
+    }
+
+    $('absenceAssignmentId').value = assignment.id;
+    $('absenceWorker').value = assignment.worker_id || '';
+    $('absenceService').value = assignment.service_id || '';
+    $('absenceScheduledStart').value = assignment.start_time?.slice(0, 5) || '';
+    $('absenceScheduledEnd').value = assignment.end_time?.slice(0, 5) || '';
+    $('absenceCoverageDate').value = defaultDate;
+  } else {
+    $('absenceCoverageDate').value = defaultDate;
+  }
+
+  toggleAbsenceCoverageFields();
+  el.absenceDialog.showModal();
 }
 
 async function saveWorker(event) {
@@ -1397,6 +1772,130 @@ async function saveBulkAssignments(event) {
   }
 }
 
+async function saveAbsence(event) {
+  event.preventDefault();
+
+  const absenceId = $('absenceId').value.trim();
+  const assignmentId = $('absenceAssignmentId').value.trim();
+  const absenceDate = $('absenceDate')?.value;
+  const workerId = $('absenceWorker')?.value;
+  const serviceId = $('absenceService')?.value;
+  const scheduledStart = $('absenceScheduledStart')?.value || null;
+  const scheduledEnd = $('absenceScheduledEnd')?.value || null;
+  const coverageStatus = $('absenceCoverageStatus')?.value || 'uncovered';
+  const coverageWorkerId = $('absenceCoverageWorker')?.value || null;
+  const coverageDate = $('absenceCoverageDate')?.value || null;
+  const coverageStart = $('absenceCoverageStart')?.value || null;
+  const coverageEnd = $('absenceCoverageEnd')?.value || null;
+  const notes = $('absenceNotes')?.value.trim() || null;
+
+  if (!absenceDate || !workerId || !serviceId) {
+    alert('Completá fecha, operario y servicio.');
+    return;
+  }
+
+  const dayOfWeek = getDateKeyDayOfWeek(absenceDate);
+  if (dayOfWeek == null) {
+    alert('La fecha de ausencia no es válida.');
+    return;
+  }
+
+  if ((coverageStatus === 'covered' || coverageStatus === 'partial') && (!coverageWorkerId || !coverageDate || !coverageStart || !coverageEnd)) {
+    alert('Completá quién cubrió, fecha y horario de cobertura.');
+    return;
+  }
+
+  if (coverageStart && coverageEnd && calculateHours(coverageStart, coverageEnd) <= 0) {
+    alert('El horario de cobertura no es válido.');
+    return;
+  }
+
+  if (scheduledStart && scheduledEnd && calculateHours(scheduledStart, scheduledEnd) <= 0) {
+    alert('El horario asignado no es válido.');
+    return;
+  }
+
+  const submitBtn = el.absenceForm?.querySelector('button[type="submit"]');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Guardando...';
+  }
+
+  try {
+    await ensureWriteSession();
+
+    const payload = {
+      assignment_id: assignmentId || null,
+      worker_id: workerId,
+      service_id: serviceId,
+      absence_date: absenceDate,
+      day_of_week: dayOfWeek,
+      scheduled_start_time: scheduledStart || null,
+      scheduled_end_time: scheduledEnd || null,
+      coverage_status: coverageStatus,
+      coverage_worker_id: coverageStatus === 'uncovered' ? null : coverageWorkerId,
+      coverage_date: coverageStatus === 'uncovered' ? null : coverageDate,
+      coverage_start_time: coverageStatus === 'uncovered' ? null : coverageStart,
+      coverage_end_time: coverageStatus === 'uncovered' ? null : coverageEnd,
+      notes,
+    };
+
+    const request = absenceId
+      ? supabase.from('absences').update(payload).eq('id', absenceId)
+      : supabase.from('absences').insert(payload);
+
+    markLocalMutation();
+
+    const { error } = await withTimeout(
+      request,
+      12000,
+      'Guardar ausencia tardó demasiado.'
+    );
+
+    if (error) {
+      console.error(error);
+      alert(error.message);
+      return;
+    }
+
+    el.absenceDialog.close();
+    if (el.absenceDateFilter) el.absenceDateFilter.value = absenceDate;
+    goToView('absences');
+    await loadAllDataWithRetry(3, 300, { hardLock: false, silent: false });
+  } catch (error) {
+    console.error(error);
+    alert(error.message || 'No se pudo guardar la ausencia.');
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Guardar ausencia';
+    }
+  }
+}
+
+async function deleteAbsence() {
+  if (!ensureDataReady('eliminar la ausencia')) return;
+
+  const absenceId = $('absenceId').value.trim();
+  if (!absenceId) return;
+
+  if (!confirm('¿Eliminar esta ausencia?')) return;
+
+  markLocalMutation();
+
+  const { error } = await supabase.from('absences').delete().eq('id', absenceId);
+
+  if (error) {
+    console.error(error);
+    alert(error.message);
+    return;
+  }
+
+  el.absenceDialog.close();
+  await loadAllDataWithRetry(2, 250, { hardLock: false, silent: false });
+}
+
+
 async function deleteWorker() {
   if (!ensureDataReady('eliminar el operario')) return;
 
@@ -1482,6 +1981,18 @@ function handleDynamicClicks(event) {
     return;
   }
 
+  const markAbsenceBtn = event.target.closest('[data-mark-absence]');
+  if (markAbsenceBtn) {
+    openAbsenceDialog({ assignmentId: markAbsenceBtn.dataset.markAbsence });
+    return;
+  }
+
+  const editAbsenceBtn = event.target.closest('[data-edit-absence]');
+  if (editAbsenceBtn) {
+    openAbsenceDialog({ absenceId: editAbsenceBtn.dataset.editAbsence });
+    return;
+  }
+
   const workerBtn = event.target.closest('[data-edit-worker]');
   if (workerBtn) {
     openWorkerDialog(workerBtn.dataset.editWorker);
@@ -1506,6 +2017,7 @@ function getCurrentViewTitle() {
     workers: 'Operarios',
     services: 'Servicios',
     planner: 'Planner semanal',
+    absences: 'Ausencias',
   };
   return titles[state.currentView] || 'Vista';
 }
@@ -1706,6 +2218,70 @@ function buildPlannerExportData() {
   };
 }
 
+function buildAbsencesExportData() {
+  const dateKey = getSelectedAbsenceDate();
+  const dayOfWeek = getDateKeyDayOfWeek(dateKey);
+  const assignments = getAssignmentsByDay(dayOfWeek).map((assignment) => {
+    const worker = getWorkerById(assignment.worker_id);
+    const service = getServiceById(assignment.service_id);
+    const absence = findAbsenceForAssignmentOnDate(assignment, dateKey);
+
+    return [
+      formatDateLabel(dateKey),
+      DAYS.find((day) => day.value === assignment.day_of_week)?.fullLabel || '',
+      service?.name || '',
+      worker?.name || '',
+      `${assignment.start_time.slice(0, 5)}-${assignment.end_time.slice(0, 5)}`,
+      absence ? 'Sí' : 'No',
+      absence ? absence.coverage_status : '',
+    ];
+  });
+
+  const absences = getFilteredAbsencesForDate(dateKey).map((absence) => {
+    const worker = getWorkerById(absence.worker_id);
+    const service = getServiceById(absence.service_id);
+    const coverageWorker = absence.coverage_worker_id ? getWorkerById(absence.coverage_worker_id) : null;
+    const coveredHours = calculateCoverageHours(absence);
+
+    return [
+      formatDateLabel(absence.absence_date),
+      worker?.name || '',
+      service?.name || '',
+      absence.scheduled_start_time && absence.scheduled_end_time
+        ? `${absence.scheduled_start_time.slice(0, 5)}-${absence.scheduled_end_time.slice(0, 5)}`
+        : '',
+      absence.coverage_status,
+      coverageWorker?.name || '',
+      absence.coverage_date ? formatDateLabel(absence.coverage_date) : '',
+      absence.coverage_start_time && absence.coverage_end_time
+        ? `${absence.coverage_start_time.slice(0, 5)}-${absence.coverage_end_time.slice(0, 5)}`
+        : '',
+      coveredHours == null ? '' : coveredHours,
+      absence.notes || '',
+    ];
+  });
+
+  return {
+    sheets: [
+      {
+        name: 'Programacion del dia',
+        rows: [
+          ['Fecha', 'Día', 'Servicio', 'Operario', 'Horario', 'Ausencia registrada', 'Estado'],
+          ...assignments,
+        ],
+      },
+      {
+        name: 'Ausencias',
+        rows: [
+          ['Fecha', 'Operario ausente', 'Servicio', 'Horario asignado', 'Resultado', 'Operario cobertura', 'Fecha cobertura', 'Horario cobertura', 'Horas cubiertas', 'Notas'],
+          ...absences,
+        ],
+      },
+    ],
+  };
+}
+
+
 function buildCurrentExportData() {
   switch (state.currentView) {
     case 'workers':
@@ -1714,6 +2290,8 @@ function buildCurrentExportData() {
       return buildServicesExportData();
     case 'planner':
       return buildPlannerExportData();
+    case 'absences':
+      return buildAbsencesExportData();
     case 'dashboard':
     default:
       return buildDashboardExportData();
@@ -1830,19 +2408,29 @@ function bindEvents() {
   el.addServiceBtn?.addEventListener('click', () => openServiceDialog());
   el.addAssignmentBtn?.addEventListener('click', () => openAssignmentDialog());
   el.bulkAssignmentBtn?.addEventListener('click', () => openBulkAssignmentDialog());
+  el.addAbsenceBtn?.addEventListener('click', () => openAbsenceDialog());
 
   el.workerForm?.addEventListener('submit', saveWorker);
   el.serviceForm?.addEventListener('submit', saveService);
   el.assignmentForm?.addEventListener('submit', saveAssignment);
   el.bulkAssignmentForm?.addEventListener('submit', saveBulkAssignments);
+  el.absenceForm?.addEventListener('submit', saveAbsence);
 
   $('deleteWorkerBtn')?.addEventListener('click', deleteWorker);
   $('deleteServiceBtn')?.addEventListener('click', deleteService);
   $('deleteAssignmentBtn')?.addEventListener('click', deleteAssignment);
+  $('deleteAbsenceBtn')?.addEventListener('click', deleteAbsence);
+
+  el.absenceDateFilter?.addEventListener('change', () => scheduleRenderCurrentView());
+  $('absenceCoverageStatus')?.addEventListener('change', toggleAbsenceCoverageFields);
+  $('absenceCoverageStart')?.addEventListener('input', updateAbsenceCoverageInfo);
+  $('absenceCoverageEnd')?.addEventListener('input', updateAbsenceCoverageInfo);
 
   el.workersTableBody?.addEventListener('click', handleDynamicClicks);
   el.servicesGrid?.addEventListener('click', handleDynamicClicks);
   el.plannerBoard?.addEventListener('click', handleDynamicClicks);
+  el.absenceScheduleBoard?.addEventListener('click', handleDynamicClicks);
+  el.absenceHistoryBoard?.addEventListener('click', handleDynamicClicks);
 
   document.querySelectorAll('[data-close]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -1886,18 +2474,25 @@ function boot() {
       workerAvailabilityBoard: $('workerAvailabilityBoard'),
       servicesGrid: $('servicesGrid'),
       plannerBoard: $('plannerBoard'),
+      absenceDateFilter: $('absenceDateFilter'),
+      absenceScheduleBoard: $('absenceScheduleBoard'),
+      absenceHistoryBoard: $('absenceHistoryBoard'),
       addWorkerBtn: $('addWorkerBtn'),
       addServiceBtn: $('addServiceBtn'),
       addAssignmentBtn: $('addAssignmentBtn'),
       bulkAssignmentBtn: $('bulkAssignmentBtn'),
+      addAbsenceBtn: $('addAbsenceBtn'),
       workerDialog: $('workerDialog'),
       serviceDialog: $('serviceDialog'),
       assignmentDialog: $('assignmentDialog'),
       bulkAssignmentDialog: $('bulkAssignmentDialog'),
+      absenceDialog: $('absenceDialog'),
       workerForm: $('workerForm'),
       serviceForm: $('serviceForm'),
       assignmentForm: $('assignmentForm'),
       bulkAssignmentForm: $('bulkAssignmentForm'),
+      absenceForm: $('absenceForm'),
+      absenceCoverageHoursInfo: $('absenceCoverageHoursInfo'),
     });
 
     if (!el.loginForm) {

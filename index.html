@@ -66,6 +66,7 @@
             <button class="nav-tab" data-view="workers">Operarios</button>
             <button class="nav-tab" data-view="services">Servicios</button>
             <button class="nav-tab" data-view="planner">Planner semanal</button>
+            <button class="nav-tab" data-view="absences">Ausencias</button>
           </nav>
 
           <div class="sidebar-panel stack-md">
@@ -184,6 +185,47 @@
               </div>
             </article>
           </section>
+
+          <section id="absencesView" class="view hidden stack-lg">
+            <article class="card">
+              <div class="section-head with-action section-head-stack-mobile">
+                <div>
+                  <h3>Ausencias</h3>
+                  <span class="muted">Registro simple por fecha, servicio y cobertura</span>
+                </div>
+                <div class="inline-actions section-actions-mobile">
+                  <div class="field absence-date-field">
+                    <label for="absenceDateFilter">Fecha</label>
+                    <input id="absenceDateFilter" type="date" />
+                  </div>
+                  <button id="addAbsenceBtn" class="btn btn-primary" type="button">Registrar ausencia</button>
+                </div>
+              </div>
+
+              <div class="split-grid">
+                <article class="card-lite">
+                  <div class="section-head">
+                    <div>
+                      <h3>Programación del día</h3>
+                      <span class="muted">Marcá ausencias desde la agenda prevista</span>
+                    </div>
+                  </div>
+                  <div id="absenceScheduleBoard" class="stack-list"></div>
+                </article>
+
+                <article class="card-lite">
+                  <div class="section-head">
+                    <div>
+                      <h3>Ausencias registradas</h3>
+                      <span class="muted">Con cobertura, parcial o sin cubrir</span>
+                    </div>
+                  </div>
+                  <div id="absenceHistoryBoard" class="stack-list"></div>
+                </article>
+              </div>
+            </article>
+          </section>
+
         </section>
       </main>
     </section>
@@ -368,6 +410,96 @@
       </div>
     </form>
   </dialog>
+
+
+  <dialog id="absenceDialog" class="modal">
+    <form id="absenceForm" class="modal-card stack-md">
+      <div class="section-head with-action">
+        <h3 id="absenceDialogTitle">Registrar ausencia</h3>
+        <button class="icon-btn" type="button" data-close="absenceDialog">✕</button>
+      </div>
+
+      <input type="hidden" id="absenceId" />
+      <input type="hidden" id="absenceAssignmentId" />
+
+      <div class="grid-2">
+        <div class="field">
+          <label for="absenceDate">Fecha</label>
+          <input id="absenceDate" type="date" required />
+        </div>
+        <div class="field">
+          <label for="absenceCoverageStatus">Resultado</label>
+          <select id="absenceCoverageStatus" required>
+            <option value="uncovered">Quedó descubierto</option>
+            <option value="covered">Se cubrió completo</option>
+            <option value="partial">Cobertura parcial</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="absenceWorker">Operario ausente</label>
+        <select id="absenceWorker" required></select>
+      </div>
+
+      <div class="field">
+        <label for="absenceService">Servicio</label>
+        <select id="absenceService" required></select>
+      </div>
+
+      <div class="grid-2">
+        <div class="field">
+          <label for="absenceScheduledStart">Horario asignado desde</label>
+          <input id="absenceScheduledStart" type="time" />
+        </div>
+        <div class="field">
+          <label for="absenceScheduledEnd">Horario asignado hasta</label>
+          <input id="absenceScheduledEnd" type="time" />
+        </div>
+      </div>
+
+      <div id="absenceCoverageFields" class="stack-md hidden">
+        <div class="field">
+          <label for="absenceCoverageWorker">Operario que cubrió</label>
+          <select id="absenceCoverageWorker"></select>
+        </div>
+
+        <div class="grid-2">
+          <div class="field">
+            <label for="absenceCoverageDate">Fecha de cobertura</label>
+            <input id="absenceCoverageDate" type="date" />
+          </div>
+          <div class="field">
+            <label for="absenceCoverageHoursInfo">Horas cubiertas</label>
+            <input id="absenceCoverageHoursInfo" type="text" placeholder="Se calcula con el horario" readonly />
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="field">
+            <label for="absenceCoverageStart">Hora inicio cobertura</label>
+            <input id="absenceCoverageStart" type="time" />
+          </div>
+          <div class="field">
+            <label for="absenceCoverageEnd">Hora fin cobertura</label>
+            <input id="absenceCoverageEnd" type="time" />
+          </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="absenceNotes">Observaciones</label>
+        <textarea id="absenceNotes" rows="3" placeholder="Opcional"></textarea>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-secondary" type="button" data-close="absenceDialog">Cancelar</button>
+        <button id="deleteAbsenceBtn" class="btn btn-ghost hidden" type="button">Eliminar</button>
+        <button class="btn btn-primary" type="submit">Guardar ausencia</button>
+      </div>
+    </form>
+  </dialog>
+
 
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>

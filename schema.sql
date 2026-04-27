@@ -42,6 +42,36 @@ create table if not exists public.assignments (
   constraint valid_shift check (end_time > start_time)
 );
 
+-- Tabla de ausencias operativas
+create table if not exists public.absences (
+  id uuid primary key default gen_random_uuid(),
+  worker_id uuid not null references public.workers(id) on delete cascade,
+  service_id uuid not null references public.services(id) on delete cascade,
+  assignment_id uuid references public.assignments(id) on delete set null,
+  absence_date date not null,
+  day_of_week int not null check (day_of_week between 0 and 6),
+  scheduled_start_time time,
+  scheduled_end_time time,
+  coverage_status text not null default 'uncovered' check (coverage_status in ('uncovered', 'covered', 'partial')),
+  coverage_worker_id uuid references public.workers(id) on delete set null,
+  coverage_date date,
+  coverage_start_time time,
+  coverage_end_time time,
+  notes text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint absences_planned_shift_valid check (
+    scheduled_start_time is null
+    or scheduled_end_time is null
+    or scheduled_end_time > scheduled_start_time
+  ),
+  constraint absences_coverage_shift_valid check (
+    coverage_start_time is null
+    or coverage_end_time is null
+    or coverage_end_time > coverage_start_time
+  )
+);
+
 create or replace function public.set_updated_at()
 returns trigger
 language plpgsql
@@ -68,10 +98,16 @@ CREATE TRIGGER assignments_set_updated_at
 before update on public.assignments
 for each row execute function public.set_updated_at();
 
+DROP TRIGGER IF EXISTS absences_set_updated_at ON public.absences;
+CREATE TRIGGER absences_set_updated_at
+before update on public.absences
+for each row execute function public.set_updated_at();
+
 -- RLS
 alter table public.workers enable row level security;
 alter table public.services enable row level security;
 alter table public.assignments enable row level security;
+alter table public.absences enable row level security;
 
 -- Políticas: usuarios autenticados pueden leer y escribir.
 DROP POLICY IF EXISTS workers_auth_all ON public.workers;
@@ -88,6 +124,12 @@ with check (true);
 
 DROP POLICY IF EXISTS assignments_auth_all ON public.assignments;
 CREATE POLICY assignments_auth_all ON public.assignments
+for all to authenticated
+using (true)
+with check (true);
+
+DROP POLICY IF EXISTS absences_auth_all ON public.absences;
+CREATE POLICY absences_auth_all ON public.absences
 for all to authenticated
 using (true)
 with check (true);
@@ -132,6 +174,19 @@ BEGIN
       AND c.relname = 'assignments'
   ) THEN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.assignments;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_publication_rel pr
+    JOIN pg_class c ON c.oid = pr.prrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_publication p ON p.oid = pr.prpubid
+    WHERE p.pubname = 'supabase_realtime'
+      AND n.nspname = 'public'
+      AND c.relname = 'absences'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.absences;
   END IF;
 END $$;
 
