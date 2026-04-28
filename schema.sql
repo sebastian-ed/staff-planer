@@ -7,10 +7,13 @@ create table if not exists public.workers (
   name text not null,
   worker_type text not null check (worker_type in ('full_time', 'part_time', 'insurance')),
   target_hours numeric(6,2),
+  hire_date date,
   notes text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.workers add column if not exists hire_date date;
 
 -- Tabla de servicios
 create table if not exists public.services (
@@ -112,6 +115,10 @@ create table if not exists public.material_consumptions (
   updated_at timestamptz not null default now()
 );
 
+
+
+create index if not exists idx_absences_worker_date on public.absences (worker_id, absence_date desc);
+create index if not exists idx_absences_service_date on public.absences (service_id, absence_date desc);
 
 create or replace function public.set_updated_at()
 returns trigger

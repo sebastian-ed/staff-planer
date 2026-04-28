@@ -1,7 +1,7 @@
-insert into public.workers (name, worker_type, target_hours, notes) values
-  ('Ramirez Melina', 'full_time', 44, 'Operaria fija'),
-  ('Human Romina', 'part_time', 24, 'Media jornada'),
-  ('Zerpa Sabrina', 'insurance', null, 'Seguro por horas');
+insert into public.workers (name, worker_type, target_hours, hire_date, notes) values
+  ('Ramirez Melina', 'full_time', 44, current_date - 240, 'Operaria fija'),
+  ('Human Romina', 'part_time', 24, current_date - 120, 'Media jornada'),
+  ('Zerpa Sabrina', 'insurance', null, current_date - 45, 'Seguro por horas');
 
 insert into public.services (name, client_address, zone, frequency_type, notes) values
   ('Cons. Thomas Le Bretón 5153', 'Villa Urquiza', 'CABA Norte', 'fixed', ''),

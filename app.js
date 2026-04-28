@@ -338,6 +338,32 @@ function getAbsencesByDate(dateKey) {
   return state.derived.absencesByDateKey.get(dateKey) || [];
 }
 
+function getAbsencesByWorkerId(workerId) {
+  return state.derived.absencesByWorkerId.get(workerId) || [];
+}
+
+function parseDateKey(dateKey) {
+  if (!dateKey) return null;
+  const [year, month, day] = String(dateKey).split('-').map(Number);
+  if (!year || !month || !day) return null;
+  return new Date(year, month - 1, day, 12, 0, 0, 0);
+}
+
+function formatPercent(value) {
+  if (value == null || Number.isNaN(value)) return '—';
+  return `${Number(value).toFixed(2).replace(/\.00$/, '')}%`;
+}
+
+function diffDaysInclusive(startDate, endDate) {
+  if (!(startDate instanceof Date) || Number.isNaN(startDate)) return 0;
+  if (!(endDate instanceof Date) || Number.isNaN(endDate)) return 0;
+
+  const utcStart = Date.UTC(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+  const utcEnd = Date.UTC(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
+  if (utcEnd < utcStart) return 0;
+  return Math.floor((utcEnd - utcStart) / 86400000) + 1;
+}
+
 function getDateKeyDayOfWeek(dateKey) {
   if (!dateKey) return null;
   const [year, month, day] = String(dateKey).split('-').map(Number);
@@ -354,6 +380,230 @@ function formatDateLabel(dateKey) {
     month: '2-digit',
     year: 'numeric',
   }).format(new Date(year, month - 1, day));
+}
+
+function getSelectedAbsenceHistoryWorkerId() {
+  return el.absenceWorkerHistoryFilter?.value || 'all';
+}
+
+function getAbsenceTrackingReferenceDateKey() {
+  return getSelectedAbsenceDate() || new Date().toISOString().slice(0, 10);
+}
+
+function getWorkerAbsenceUniqueDateKeys(workerId, startKey = '', endKey = '') {
+  const uniqueDates = new Set();
+
+  getAbsencesByWorkerId(workerId).forEach((absence) => {
+    const dateKey = absence.absence_date || '';
+    if (!dateKey) return;
+    if (startKey && dateKey < startKey) return;
+    if (endKey && dateKey > endKey) return;
+    uniqueDates.add(dateKey);
+  });
+
+  return [...uniqueDates].sort();
+}
+
+function getWorkerAbsenceStats(worker, referenceDateKey = getAbsenceTrackingReferenceDateKey()) {
+  if (!worker) return null;
+
+  const referenceDate = parseDateKey(referenceDateKey);
+  if (!referenceDate) return null;
+
+  const hireDate = parseDateKey(worker.hire_date);
+  if (!hireDate) {
+    return {
+      worker,
+      referenceDateKey,
+      hireDateMissing: true,
+      startedYet: true,
+      year: referenceDate.getFullYear(),
+      thresholdPercent: 3,
+      thresholdAnnualAbsences: 365 * 0.03,
+      uniqueAbsenceDates: [],
+      absenceCount: 0,
+      elapsedDays: 0,
+      actualPercent: null,
+      annualizedPercent: null,
+      projectedAnnualAbsences: null,
+      allowedAbsencesToDate: null,
+      remainingAbsencesToThreshold: null,
+      status: 'missing',
+    };
+  }
+
+  const yearStart = new Date(referenceDate.getFullYear(), 0, 1, 12, 0, 0, 0);
+  const periodStart = hireDate > yearStart ? hireDate : yearStart;
+  const startedYet = periodStart.getTime() <= referenceDate.getTime();
+
+  if (!startedYet) {
+    return {
+      worker,
+      referenceDateKey,
+      hireDateMissing: false,
+      startedYet: false,
+      year: referenceDate.getFullYear(),
+      thresholdPercent: 3,
+      thresholdAnnualAbsences: 365 * 0.03,
+      uniqueAbsenceDates: [],
+      absenceCount: 0,
+      elapsedDays: 0,
+      actualPercent: 0,
+      annualizedPercent: 0,
+      projectedAnnualAbsences: 0,
+      allowedAbsencesToDate: 0,
+      remainingAbsencesToThreshold: 365 * 0.03,
+      status: 'balanced',
+      periodStartKey: periodStart.toISOString().slice(0, 10),
+    };
+  }
+
+  const periodStartKey = periodStart.toISOString().slice(0, 10);
+  const referenceKey = referenceDate.toISOString().slice(0, 10);
+  const uniqueAbsenceDates = getWorkerAbsenceUniqueDateKeys(worker.id, periodStartKey, referenceKey);
+  const absenceCount = uniqueAbsenceDates.length;
+  const elapsedDays = diffDaysInclusive(periodStart, referenceDate);
+  const actualPercent = elapsedDays ? Number(((absenceCount / elapsedDays) * 100).toFixed(2)) : 0;
+  const annualizedPercent = actualPercent;
+  const projectedAnnualAbsences = elapsedDays ? Number(((absenceCount / elapsedDays) * 365).toFixed(2)) : 0;
+  const allowedAbsencesToDate = Number(((elapsedDays * 0.03)).toFixed(2));
+  const remainingAbsencesToThreshold = Number(Math.max(0, (365 * 0.03) - projectedAnnualAbsences).toFixed(2));
+
+  let status = 'available';
+  if (annualizedPercent >= 3) status = 'over';
+  else if (annualizedPercent >= 2) status = 'balanced';
+
+  return {
+    worker,
+    referenceDateKey,
+    hireDateMissing: false,
+    startedYet: true,
+    year: referenceDate.getFullYear(),
+    thresholdPercent: 3,
+    thresholdAnnualAbsences: 365 * 0.03,
+    uniqueAbsenceDates,
+    absenceCount,
+    elapsedDays,
+    actualPercent,
+    annualizedPercent,
+    projectedAnnualAbsences,
+    allowedAbsencesToDate,
+    remainingAbsencesToThreshold,
+    status,
+    periodStartKey,
+  };
+}
+
+function getFilteredWorkersForAbsenceTracking() {
+  const term = state.filters.search;
+  const workerTypeFilter = state.filters.workerType;
+
+  return state.workers
+    .filter((worker) => {
+      if (workerTypeFilter !== 'all' && worker.worker_type !== workerTypeFilter) {
+        return false;
+      }
+
+      if (!term) return true;
+
+      const hay = [
+        worker.name || '',
+        worker.notes || '',
+        worker.hire_date || '',
+        ...getWorkerAssignments(worker.id).map((assignment) => {
+          const service = getServiceById(assignment.service_id);
+          return `${service?.name || ''} ${service?.zone || ''} ${service?.client_address || ''}`;
+        }),
+      ]
+        .join(' ')
+        .toLowerCase();
+
+      return hay.includes(term);
+    })
+    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es', { sensitivity: 'base' }));
+}
+
+function getFilteredWorkerAbsenceStats(referenceDateKey = getAbsenceTrackingReferenceDateKey()) {
+  return getFilteredWorkersForAbsenceTracking().map((worker) => getWorkerAbsenceStats(worker, referenceDateKey));
+}
+
+function summarizeCoverageStatus(absences) {
+  if (absences.some((absence) => absence.coverage_status === 'uncovered')) return 'uncovered';
+  if (absences.some((absence) => absence.coverage_status === 'partial')) return 'partial';
+  return 'covered';
+}
+
+function buildAbsenceTimelineEntries(workerId = 'all') {
+  const workers = workerId === 'all'
+    ? getFilteredWorkersForAbsenceTracking()
+    : [getWorkerById(workerId)].filter(Boolean);
+
+  const entries = [];
+
+  workers.forEach((worker) => {
+    const grouped = new Map();
+
+    getAbsencesByWorkerId(worker.id).forEach((absence) => {
+      const dateKey = absence.absence_date || '';
+      if (!dateKey) return;
+      pushToMapArray(grouped, dateKey, absence);
+    });
+
+    [...grouped.entries()].forEach(([dateKey, absences]) => {
+      const services = [];
+      const coveredWorkers = new Set();
+      let totalScheduledHours = 0;
+      let totalCoveredHours = 0;
+
+      absences.forEach((absence) => {
+        const service = getServiceById(absence.service_id);
+        if (service?.name) services.push(service.name);
+
+        if (absence.coverage_worker_id) {
+          const coverageWorker = getWorkerById(absence.coverage_worker_id);
+          if (coverageWorker?.name) coveredWorkers.add(coverageWorker.name);
+        }
+
+        totalScheduledHours += calculateHours(absence.scheduled_start_time, absence.scheduled_end_time);
+        totalCoveredHours += calculateHours(absence.coverage_start_time, absence.coverage_end_time);
+      });
+
+      const statsAtThatDate = getWorkerAbsenceStats(worker, dateKey);
+      entries.push({
+        worker,
+        dateKey,
+        absences,
+        serviceNames: [...new Set(services)],
+        coveredWorkerNames: [...coveredWorkers],
+        coverageStatus: summarizeCoverageStatus(absences),
+        totalScheduledHours: Number(totalScheduledHours.toFixed(2)),
+        totalCoveredHours: Number(totalCoveredHours.toFixed(2)),
+        totalUncoveredHours: Number(Math.max(0, totalScheduledHours - totalCoveredHours).toFixed(2)),
+        cumulativeAbsences: statsAtThatDate?.absenceCount || 0,
+        cumulativePercent: statsAtThatDate?.annualizedPercent,
+        projectedAnnualAbsences: statsAtThatDate?.projectedAnnualAbsences,
+      });
+    });
+  });
+
+  return entries.sort((a, b) => String(b.dateKey || '').localeCompare(String(a.dateKey || '')));
+}
+
+function renderAbsenteeismPill(stats) {
+  if (!stats) return '';
+  if (stats.hireDateMissing) {
+    return '<span class="status-pill status-insurance">Falta fecha de ingreso</span>';
+  }
+  if (!stats.startedYet) {
+    return '<span class="status-pill status-balanced">Ingreso pendiente</span>';
+  }
+  if (stats.status === 'over') {
+    return `<span class="status-pill status-over">Superó 3%</span>`;
+  }
+  if (stats.status === 'balanced') {
+    return `<span class="status-pill status-balanced">En seguimiento</span>`;
+  }
+  return `<span class="status-pill status-available">Dentro del criterio</span>`;
 }
 
 function findAbsenceForAssignmentOnDate(assignment, dateKey) {
@@ -461,6 +711,31 @@ function goToWorkerPlanner(workerId) {
   });
 }
 
+function goToAbsenceWorkerHistory(workerId) {
+  if (!ensureDataReady('abrir el historial de ausencias')) return;
+
+  const worker = getWorkerById(workerId);
+  if (!worker) return;
+
+  if (el.absenceWorkerHistoryFilter) {
+    el.absenceWorkerHistoryFilter.value = workerId;
+  }
+
+  if (el.globalSearch) {
+    el.globalSearch.value = worker.name || '';
+  }
+
+  state.filters.search = String(worker.name || '').toLowerCase();
+  goToView('absences');
+
+  window.requestAnimationFrame(() => {
+    const firstCard = el.absenceEmployeeHistoryBoard?.querySelector('.absence-card');
+    if (!firstCard) return;
+    firstCard.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+    flashElement(firstCard);
+  });
+}
+
 function getTargetHours(worker) {
   return worker.target_hours ?? TYPE_META[worker.worker_type]?.defaultHours ?? null;
 }
@@ -488,6 +763,7 @@ function setDataReady(isReady) {
     'bulkAssignmentBtn',
     'addAbsenceBtn',
     'absenceDateFilter',
+    'absenceWorkerHistoryFilter',
     'addMaterialCatalogBtn',
     'addServiceMaterialBtn',
     'addMaterialConsumptionBtn',
@@ -713,6 +989,7 @@ function populateSelects() {
   const absenceWorker = $('absenceWorker');
   const absenceService = $('absenceService');
   const absenceCoverageWorker = $('absenceCoverageWorker');
+  const absenceWorkerHistoryFilter = $('absenceWorkerHistoryFilter');
   const materialsServiceFilter = $('materialsServiceFilter');
   const serviceMaterialService = $('serviceMaterialService');
   const materialConsumptionService = $('materialConsumptionService');
@@ -733,6 +1010,12 @@ function populateSelects() {
 
   if (absenceCoverageWorker) {
     absenceCoverageWorker.innerHTML = `<option value="">Seleccionar cobertura</option>${workerOptions}`;
+  }
+
+  if (absenceWorkerHistoryFilter) {
+    const currentValue = absenceWorkerHistoryFilter.value || 'all';
+    absenceWorkerHistoryFilter.innerHTML = `<option value="all">Todos</option>${workerOptions}`;
+    absenceWorkerHistoryFilter.value = state.workers.some((worker) => worker.id === currentValue) ? currentValue : 'all';
   }
 
   if (materialsServiceFilter) {
@@ -1228,6 +1511,185 @@ function renderAbsenceHistoryBoard(dateKey) {
     `;
 }
 
+function renderAbsenceKpis(referenceDateKey) {
+  if (!el.absenceKpiCards) return;
+
+  const stats = getFilteredWorkerAbsenceStats(referenceDateKey);
+  const tracked = stats.filter((item) => !item.hireDateMissing && item.startedYet);
+  const totalAbsenceDays = tracked.reduce((sum, item) => sum + item.absenceCount, 0);
+  const aboveThreshold = tracked.filter((item) => (item.annualizedPercent || 0) >= 3).length;
+  const averagePercent = tracked.length
+    ? Number((tracked.reduce((sum, item) => sum + Number(item.annualizedPercent || 0), 0) / tracked.length).toFixed(2))
+    : 0;
+  const missingHireDate = stats.filter((item) => item.hireDateMissing).length;
+
+  const cards = [
+    {
+      label: 'Faltas acumuladas del año',
+      value: totalAbsenceDays,
+      foot: `Días únicos al ${formatDateLabel(referenceDateKey)}`,
+    },
+    {
+      label: 'Operarios sobre 3%',
+      value: aboveThreshold,
+      foot: 'Según criterio anual sobre 365 días',
+    },
+    {
+      label: 'Ausentismo promedio',
+      value: formatPercent(averagePercent),
+      foot: 'Promedio anualizado de operarios con fecha de ingreso',
+    },
+    {
+      label: 'Sin fecha de ingreso',
+      value: missingHireDate,
+      foot: 'Completalos para medir correctamente',
+    },
+  ];
+
+  el.absenceKpiCards.innerHTML = cards
+    .map(
+      (card) => `
+        <article class="kpi-card card-lite">
+          <span class="kpi-label">${card.label}</span>
+          <strong class="kpi-value">${card.value}</strong>
+          <small class="kpi-foot">${card.foot}</small>
+        </article>
+      `
+    )
+    .join('');
+}
+
+function renderAbsenceWorkerTrackerBoard(referenceDateKey) {
+  if (!el.absenceWorkerTrackerBoard) return;
+
+  const stats = getFilteredWorkerAbsenceStats(referenceDateKey);
+
+  el.absenceWorkerTrackerBoard.innerHTML = stats.length
+    ? stats
+        .map((item) => {
+          const worker = item.worker;
+          return `
+            <article class="absence-tracker-card">
+              <div class="absence-tracker-head">
+                <div>
+                  <h3>${escapeHtml(worker?.name || 'Operario')}</h3>
+                  <p>
+                    ${TYPE_META[worker?.worker_type]?.label || 'Operario'}
+                    ${worker?.hire_date ? ` · Ingreso: ${formatDateLabel(worker.hire_date)}` : ' · Fecha de ingreso pendiente'}
+                  </p>
+                </div>
+                <div class="absence-card-meta">
+                  ${renderAbsenteeismPill(item)}
+                  <button class="btn btn-secondary btn-sm" type="button" data-focus-absence-worker="${worker.id}">Ver historial</button>
+                </div>
+              </div>
+
+              ${
+                item.hireDateMissing
+                  ? `
+                    <div class="empty-state">
+                      Cargá la fecha de ingreso para medir su ausentismo real. Sin eso, el porcentaje queda maquillado y no sirve para decidir.
+                    </div>
+                  `
+                  : !item.startedYet
+                    ? `
+                      <div class="empty-state">
+                        Su fecha de ingreso es posterior a la fecha analizada.
+                      </div>
+                    `
+                    : `
+                      <div class="absence-tracker-metrics">
+                        <div class="absence-metric-box">
+                          <span class="muted">Faltas acumuladas</span>
+                          <strong>${item.absenceCount}</strong>
+                          <p>1 falta por día, aunque afecte más de un servicio</p>
+                        </div>
+                        <div class="absence-metric-box">
+                          <span class="muted">% anualizado</span>
+                          <strong>${formatPercent(item.annualizedPercent)}</strong>
+                          <p>Límite interno: 3%</p>
+                        </div>
+                        <div class="absence-metric-box">
+                          <span class="muted">Proyección anual</span>
+                          <strong>${formatNumber(item.projectedAnnualAbsences)}</strong>
+                          <p>Sobre un año de 365 días</p>
+                        </div>
+                        <div class="absence-metric-box">
+                          <span class="muted">Días computados</span>
+                          <strong>${item.elapsedDays}</strong>
+                          <p>Desde ${formatDateLabel(item.periodStartKey)} hasta ${formatDateLabel(referenceDateKey)}</p>
+                        </div>
+                      </div>
+                    `
+              }
+            </article>
+          `;
+        })
+        .join('')
+    : `
+      <div class="empty-state">
+        No hay operarios visibles con los filtros actuales.
+      </div>
+    `;
+}
+
+function renderAbsenceEmployeeHistoryBoard() {
+  if (!el.absenceEmployeeHistoryBoard) return;
+
+  const workerId = getSelectedAbsenceHistoryWorkerId();
+  const entries = buildAbsenceTimelineEntries(workerId);
+  const limitedEntries = workerId === 'all' ? entries.slice(0, 20) : entries;
+
+  el.absenceEmployeeHistoryBoard.innerHTML = limitedEntries.length
+    ? `
+      <div class="absence-history-timeline">
+        ${limitedEntries
+          .map((entry) => `
+            <article class="absence-card">
+              <div class="absence-card-head">
+                <div>
+                  <h3>${escapeHtml(entry.worker?.name || 'Operario')}</h3>
+                  <p>${entry.serviceNames.length ? escapeHtml(entry.serviceNames.join(' · ')) : 'Sin servicio asociado'}</p>
+                </div>
+                <div class="absence-card-meta">
+                  <span class="chip">${formatDateLabel(entry.dateKey)}</span>
+                  ${renderAbsenceStatusPill(entry.coverageStatus)}
+                </div>
+              </div>
+
+              <div class="absence-tracker-metrics">
+                <div class="absence-metric-box">
+                  <span class="muted">Acumulado a esa fecha</span>
+                  <strong>${entry.cumulativeAbsences}</strong>
+                  <p>${formatPercent(entry.cumulativePercent)} anualizado</p>
+                </div>
+                <div class="absence-metric-box">
+                  <span class="muted">Horas afectadas</span>
+                  <strong>${formatHours(entry.totalScheduledHours)}</strong>
+                  <p>${formatHours(entry.totalCoveredHours)} hs cubiertas · ${formatHours(entry.totalUncoveredHours)} hs descubiertas</p>
+                </div>
+                <div class="absence-metric-box">
+                  <span class="muted">Cobertura</span>
+                  <strong>${entry.coveredWorkerNames.length ? escapeHtml(entry.coveredWorkerNames.join(', ')) : 'Sin cobertura'}</strong>
+                  <p>${entry.projectedAnnualAbsences != null ? `Proyección anual: ${formatNumber(entry.projectedAnnualAbsences)} faltas` : 'Sin proyección disponible'}</p>
+                </div>
+              </div>
+            </article>
+          `)
+          .join('')}
+      </div>
+    `
+    : `
+      <div class="empty-state">
+        ${
+          workerId === 'all'
+            ? 'No hay historial de ausencias para los filtros actuales.'
+            : 'Ese operario todavía no tiene ausencias históricas registradas.'
+        }
+      </div>
+    `;
+}
+
 function renderMaterialsKpis() {
   if (!el.materialKpiCards) return;
 
@@ -1503,8 +1965,11 @@ function renderMaterials() {
 
 function renderAbsences() {
   const dateKey = getSelectedAbsenceDate();
+  renderAbsenceKpis(dateKey);
   renderAbsenceScheduleBoard(dateKey);
   renderAbsenceHistoryBoard(dateKey);
+  renderAbsenceWorkerTrackerBoard(dateKey);
+  renderAbsenceEmployeeHistoryBoard();
 }
 
 let renderFrameId = 0;
@@ -1879,6 +2344,7 @@ function openWorkerDialog(workerId = null) {
     $('workerName').value = worker.name || '';
     $('workerType').value = worker.worker_type || 'full_time';
     $('workerTargetHours').value = worker.target_hours ?? '';
+    $('workerHireDate').value = worker.hire_date || '';
     $('workerNotes').value = worker.notes || '';
   }
 
@@ -2580,6 +3046,7 @@ async function saveWorker(event) {
   const nameInput = $('workerName');
   const typeInput = $('workerType');
   const targetInput = $('workerTargetHours');
+  const hireDateInput = $('workerHireDate');
   const notesInput = $('workerNotes');
 
   if (!nameInput || !typeInput) {
@@ -2600,6 +3067,7 @@ async function saveWorker(event) {
       name: nameInput.value.trim(),
       worker_type: typeInput.value,
       target_hours: targetInput?.value ? Number(targetInput.value) : null,
+      hire_date: hireDateInput?.value || null,
       notes: notesInput?.value.trim() || null,
     };
 
@@ -3052,6 +3520,12 @@ function handleDynamicClicks(event) {
     return;
   }
 
+  const focusAbsenceWorkerBtn = event.target.closest('[data-focus-absence-worker]');
+  if (focusAbsenceWorkerBtn) {
+    goToAbsenceWorkerHistory(focusAbsenceWorkerBtn.dataset.focusAbsenceWorker);
+    return;
+  }
+
   const editServiceMaterialBtn = event.target.closest('[data-edit-service-material]');
   if (editServiceMaterialBtn) {
     openServiceMaterialDialog({ serviceMaterialId: editServiceMaterialBtn.dataset.editServiceMaterial });
@@ -3178,10 +3652,11 @@ function buildWorkersExportData() {
       {
         name: 'Operarios',
         rows: [
-          ['Operario', 'Tipo', 'Horas objetivo', 'Horas asignadas', 'Diferencia', 'Estado', 'Servicios'],
+          ['Operario', 'Tipo', 'Fecha de ingreso', 'Horas objetivo', 'Horas asignadas', 'Diferencia', 'Estado', 'Servicios'],
           ...summaries.map((worker) => [
             worker.name,
             TYPE_META[worker.worker_type].label,
+            worker.hire_date ? formatDateLabel(worker.hire_date) : '',
             worker.targetHours == null ? 'SEGURO' : worker.targetHours,
             worker.totalHours,
             worker.difference == null ? 'SEGURO' : worker.difference,
@@ -3321,6 +3796,7 @@ function buildAbsencesExportData() {
       DAYS.find((day) => day.value === assignment.day_of_week)?.fullLabel || '',
       service?.name || '',
       worker?.name || '',
+      worker?.hire_date ? formatDateLabel(worker.hire_date) : '',
       `${assignment.start_time.slice(0, 5)}-${assignment.end_time.slice(0, 5)}`,
       absence ? 'Sí' : 'No',
       absence ? absence.coverage_status : '',
@@ -3332,10 +3808,12 @@ function buildAbsencesExportData() {
     const service = getServiceById(absence.service_id);
     const coverageWorker = absence.coverage_worker_id ? getWorkerById(absence.coverage_worker_id) : null;
     const coveredHours = calculateCoverageHours(absence);
+    const stats = getWorkerAbsenceStats(worker, absence.absence_date);
 
     return [
       formatDateLabel(absence.absence_date),
       worker?.name || '',
+      worker?.hire_date ? formatDateLabel(worker.hire_date) : '',
       service?.name || '',
       absence.scheduled_start_time && absence.scheduled_end_time
         ? `${absence.scheduled_start_time.slice(0, 5)}-${absence.scheduled_end_time.slice(0, 5)}`
@@ -3347,31 +3825,76 @@ function buildAbsencesExportData() {
         ? `${absence.coverage_start_time.slice(0, 5)}-${absence.coverage_end_time.slice(0, 5)}`
         : '',
       coveredHours == null ? '' : coveredHours,
+      stats?.absenceCount ?? '',
+      stats?.annualizedPercent ?? '',
+      stats?.projectedAnnualAbsences ?? '',
       absence.notes || '',
     ];
   });
+
+  const annualTracking = getFilteredWorkerAbsenceStats(dateKey).map((item) => [
+    item.worker?.name || '',
+    TYPE_META[item.worker?.worker_type]?.label || '',
+    item.worker?.hire_date ? formatDateLabel(item.worker.hire_date) : '',
+    item.periodStartKey ? formatDateLabel(item.periodStartKey) : '',
+    formatDateLabel(dateKey),
+    item.elapsedDays,
+    item.absenceCount,
+    item.actualPercent == null ? '' : item.actualPercent,
+    item.projectedAnnualAbsences == null ? '' : item.projectedAnnualAbsences,
+    item.remainingAbsencesToThreshold == null ? '' : item.remainingAbsencesToThreshold,
+    item.hireDateMissing ? 'Falta fecha de ingreso' : item.startedYet ? (item.annualizedPercent >= 3 ? 'Superó 3%' : item.annualizedPercent >= 2 ? 'En seguimiento' : 'Dentro del criterio') : 'Ingreso posterior',
+  ]);
+
+  const historyWorkerId = getSelectedAbsenceHistoryWorkerId();
+  const historyRows = buildAbsenceTimelineEntries(historyWorkerId).map((entry) => [
+    entry.worker?.name || '',
+    entry.worker?.hire_date ? formatDateLabel(entry.worker.hire_date) : '',
+    formatDateLabel(entry.dateKey),
+    entry.serviceNames.join(' | '),
+    entry.coverageStatus,
+    entry.coveredWorkerNames.join(' | '),
+    entry.totalScheduledHours,
+    entry.totalCoveredHours,
+    entry.totalUncoveredHours,
+    entry.cumulativeAbsences,
+    entry.cumulativePercent == null ? '' : entry.cumulativePercent,
+    entry.projectedAnnualAbsences == null ? '' : entry.projectedAnnualAbsences,
+  ]);
 
   return {
     sheets: [
       {
         name: 'Programacion del dia',
         rows: [
-          ['Fecha', 'Día', 'Servicio', 'Operario', 'Horario', 'Ausencia registrada', 'Estado'],
+          ['Fecha', 'Día', 'Servicio', 'Operario', 'Fecha ingreso', 'Horario', 'Ausencia registrada', 'Estado'],
           ...assignments,
         ],
       },
       {
         name: 'Ausencias',
         rows: [
-          ['Fecha', 'Operario ausente', 'Servicio', 'Horario asignado', 'Resultado', 'Operario cobertura', 'Fecha cobertura', 'Horario cobertura', 'Horas cubiertas', 'Notas'],
+          ['Fecha', 'Operario ausente', 'Fecha ingreso', 'Servicio', 'Horario asignado', 'Resultado', 'Operario cobertura', 'Fecha cobertura', 'Horario cobertura', 'Horas cubiertas', 'Faltas acumuladas a esa fecha', '% anualizado a esa fecha', 'Proyección anual', 'Notas'],
           ...absences,
+        ],
+      },
+      {
+        name: 'Seguimiento anual',
+        rows: [
+          ['Operario', 'Tipo', 'Fecha ingreso', 'Inicio de cálculo', 'Fecha analizada', 'Días computados', 'Faltas acumuladas', '% anualizado', 'Proyección anual', 'Margen hasta 3%', 'Estado'],
+          ...annualTracking,
+        ],
+      },
+      {
+        name: 'Historial operario',
+        rows: [
+          ['Operario', 'Fecha ingreso', 'Fecha falta', 'Servicios afectados', 'Resultado', 'Cubrió', 'Horas afectadas', 'Horas cubiertas', 'Horas descubiertas', 'Acumulado a esa fecha', '% anualizado a esa fecha', 'Proyección anual'],
+          ...historyRows,
         ],
       },
     ],
   };
 }
-
-
 
 function buildMaterialsExportData() {
   const monthKey = getSelectedMaterialsMonth();
@@ -3606,6 +4129,7 @@ function bindEvents() {
   $('deleteMaterialConsumptionBtn')?.addEventListener('click', deleteMaterialConsumption);
 
   el.absenceDateFilter?.addEventListener('change', () => scheduleRenderCurrentView());
+  el.absenceWorkerHistoryFilter?.addEventListener('change', () => scheduleRenderCurrentView());
   el.materialsMonthFilter?.addEventListener('change', () => scheduleRenderCurrentView());
   el.materialsServiceFilter?.addEventListener('change', () => scheduleRenderCurrentView());
   $('absenceCoverageStatus')?.addEventListener('change', toggleAbsenceCoverageFields);
@@ -3620,6 +4144,8 @@ function bindEvents() {
   el.plannerBoard?.addEventListener('click', handleDynamicClicks);
   el.absenceScheduleBoard?.addEventListener('click', handleDynamicClicks);
   el.absenceHistoryBoard?.addEventListener('click', handleDynamicClicks);
+  el.absenceWorkerTrackerBoard?.addEventListener('click', handleDynamicClicks);
+  el.absenceEmployeeHistoryBoard?.addEventListener('click', handleDynamicClicks);
   el.serviceMaterialsBoard?.addEventListener('click', handleDynamicClicks);
   el.materialsConsumptionHistoryBoard?.addEventListener('click', handleDynamicClicks);
 
@@ -3666,8 +4192,12 @@ function boot() {
       servicesGrid: $('servicesGrid'),
       plannerBoard: $('plannerBoard'),
       absenceDateFilter: $('absenceDateFilter'),
+      absenceWorkerHistoryFilter: $('absenceWorkerHistoryFilter'),
+      absenceKpiCards: $('absenceKpiCards'),
       absenceScheduleBoard: $('absenceScheduleBoard'),
       absenceHistoryBoard: $('absenceHistoryBoard'),
+      absenceWorkerTrackerBoard: $('absenceWorkerTrackerBoard'),
+      absenceEmployeeHistoryBoard: $('absenceEmployeeHistoryBoard'),
       materialsMonthFilter: $('materialsMonthFilter'),
       materialsServiceFilter: $('materialsServiceFilter'),
       materialKpiCards: $('materialKpiCards'),

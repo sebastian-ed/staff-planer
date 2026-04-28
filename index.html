@@ -199,9 +199,17 @@
                     <label for="absenceDateFilter">Fecha</label>
                     <input id="absenceDateFilter" type="date" />
                   </div>
+                  <div class="field absence-date-field">
+                    <label for="absenceWorkerHistoryFilter">Operario</label>
+                    <select id="absenceWorkerHistoryFilter">
+                      <option value="all">Todos</option>
+                    </select>
+                  </div>
                   <button id="addAbsenceBtn" class="btn btn-primary" type="button">Registrar ausencia</button>
                 </div>
               </div>
+
+              <div class="cards-grid" id="absenceKpiCards"></div>
 
               <div class="split-grid">
                 <article class="card-lite">
@@ -222,6 +230,28 @@
                     </div>
                   </div>
                   <div id="absenceHistoryBoard" class="stack-list"></div>
+                </article>
+              </div>
+
+              <div class="split-grid">
+                <article class="card-lite">
+                  <div class="section-head">
+                    <div>
+                      <h3>Seguimiento anual por operario</h3>
+                      <span class="muted">Se computa sobre 365 días y se considera 1 falta por día, aunque impacte varios servicios</span>
+                    </div>
+                  </div>
+                  <div id="absenceWorkerTrackerBoard" class="stack-list"></div>
+                </article>
+
+                <article class="card-lite">
+                  <div class="section-head">
+                    <div>
+                      <h3>Historial del operario</h3>
+                      <span class="muted">Registro histórico para ver acumulado, cobertura y evolución</span>
+                    </div>
+                  </div>
+                  <div id="absenceEmployeeHistoryBoard" class="stack-list"></div>
                 </article>
               </div>
             </article>
@@ -312,9 +342,15 @@
           <option value="insurance">Seguro / por hora</option>
         </select>
       </div>
-      <div class="field">
-        <label for="workerTargetHours">Horas objetivo semanales</label>
-        <input id="workerTargetHours" type="number" min="0" step="0.5" />
+      <div class="grid-2">
+        <div class="field">
+          <label for="workerTargetHours">Horas objetivo semanales</label>
+          <input id="workerTargetHours" type="number" min="0" step="0.5" />
+        </div>
+        <div class="field">
+          <label for="workerHireDate">Fecha de ingreso</label>
+          <input id="workerHireDate" type="date" />
+        </div>
       </div>
       <div class="field">
         <label for="workerNotes">Observaciones</label>
