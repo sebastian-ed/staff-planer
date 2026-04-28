@@ -67,6 +67,7 @@
             <button class="nav-tab" data-view="services">Servicios</button>
             <button class="nav-tab" data-view="planner">Planner semanal</button>
             <button class="nav-tab" data-view="absences">Ausencias</button>
+            <button class="nav-tab" data-view="materials">Materiales</button>
           </nav>
 
           <div class="sidebar-panel stack-md">
@@ -223,6 +224,67 @@
                   <div id="absenceHistoryBoard" class="stack-list"></div>
                 </article>
               </div>
+            </article>
+          </section>
+
+
+          <section id="materialsView" class="view hidden stack-lg">
+            <article class="card">
+              <div class="section-head with-action section-head-stack-mobile">
+                <div>
+                  <h3>Materiales por servicio</h3>
+                  <span class="muted">Stock real, consumo histórico y resumen mensual para anticipar pedidos</span>
+                </div>
+                <div class="inline-actions section-actions-mobile">
+                  <div class="field absence-date-field">
+                    <label for="materialsMonthFilter">Mes</label>
+                    <input id="materialsMonthFilter" type="month" />
+                  </div>
+                  <div class="field absence-date-field">
+                    <label for="materialsServiceFilter">Servicio</label>
+                    <select id="materialsServiceFilter">
+                      <option value="all">Todos</option>
+                    </select>
+                  </div>
+                  <button id="addMaterialCatalogBtn" class="btn btn-secondary" type="button">Nuevo material base</button>
+                  <button id="addServiceMaterialBtn" class="btn btn-secondary" type="button">Asignar material</button>
+                  <button id="addMaterialConsumptionBtn" class="btn btn-primary" type="button">Registrar consumo</button>
+                </div>
+              </div>
+
+              <div class="cards-grid" id="materialKpiCards"></div>
+
+              <div class="split-grid materials-split-grid">
+                <article class="card-lite">
+                  <div class="section-head">
+                    <div>
+                      <h3>Stock por servicio</h3>
+                      <span class="muted">Qué tiene hoy cada servicio y cuánto viene consumiendo</span>
+                    </div>
+                  </div>
+                  <div id="serviceMaterialsBoard" class="service-materials-board"></div>
+                </article>
+
+                <article class="card-lite">
+                  <div class="section-head">
+                    <div>
+                      <h3>Resumen del mes</h3>
+                      <span class="muted">Consolidado automático para estimar próximos pedidos</span>
+                    </div>
+                  </div>
+                  <div id="materialsMonthlySummaryBoard" class="stack-list"></div>
+                </article>
+              </div>
+
+              <article class="card-lite">
+                <div class="section-head">
+                  <div>
+                    <h3>Historial de consumos</h3>
+                    <span class="muted">Movimientos registrados en el mes seleccionado</span>
+                  </div>
+                </div>
+                <div id="materialsConsumptionHistoryBoard" class="stack-list"></div>
+              </article>
             </article>
           </section>
 
@@ -499,6 +561,152 @@
       </div>
     </form>
   </dialog>
+
+
+
+
+  <dialog id="materialCatalogDialog" class="modal">
+    <form id="materialCatalogForm" class="modal-card stack-md">
+      <div class="section-head with-action">
+        <h3 id="materialCatalogDialogTitle">Nuevo material base</h3>
+        <button class="icon-btn" type="button" data-close="materialCatalogDialog">✕</button>
+      </div>
+
+      <input type="hidden" id="materialCatalogId" />
+
+      <div class="field">
+        <label for="materialCatalogName">Material</label>
+        <input id="materialCatalogName" list="materialCatalogOptionsList" placeholder="Ej. Bolsa negra 60x90" required />
+      </div>
+
+      <div class="grid-2">
+        <div class="field">
+          <label for="materialCatalogUnit">Unidad</label>
+          <input id="materialCatalogUnit" placeholder="Ej. un, lt, kg, paq" required />
+        </div>
+        <div class="field">
+          <label for="materialCatalogPresentation">Presentación</label>
+          <input id="materialCatalogPresentation" placeholder="Ej. Bidón 5 lt" />
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="materialCatalogNotes">Observaciones</label>
+        <textarea id="materialCatalogNotes" rows="3"></textarea>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-secondary" type="button" data-close="materialCatalogDialog">Cancelar</button>
+        <button id="deleteMaterialCatalogBtn" class="btn btn-ghost hidden" type="button">Eliminar</button>
+        <button class="btn btn-primary" type="submit">Guardar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="serviceMaterialDialog" class="modal">
+    <form id="serviceMaterialForm" class="modal-card stack-md">
+      <div class="section-head with-action">
+        <h3 id="serviceMaterialDialogTitle">Asignar material al servicio</h3>
+        <button class="icon-btn" type="button" data-close="serviceMaterialDialog">✕</button>
+      </div>
+
+      <input type="hidden" id="serviceMaterialId" />
+
+      <div class="field">
+        <label for="serviceMaterialService">Servicio</label>
+        <select id="serviceMaterialService" required></select>
+      </div>
+
+      <div class="field">
+        <label for="serviceMaterialCatalog">Material</label>
+        <input id="serviceMaterialCatalog" list="materialCatalogOptionsList" placeholder="Escribí para autocompletar o crear uno nuevo" required />
+      </div>
+
+      <div class="grid-2">
+        <div class="field">
+          <label for="serviceMaterialUnit">Unidad</label>
+          <input id="serviceMaterialUnit" placeholder="Ej. un, lt, kg" required />
+        </div>
+        <div class="field">
+          <label for="serviceMaterialPresentation">Presentación</label>
+          <input id="serviceMaterialPresentation" placeholder="Ej. Caja x 100" />
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="field">
+          <label for="serviceMaterialCurrentStock">Stock actual</label>
+          <input id="serviceMaterialCurrentStock" type="number" min="0" step="0.01" />
+        </div>
+        <div class="field">
+          <label for="serviceMaterialMinimumStock">Stock mínimo sugerido</label>
+          <input id="serviceMaterialMinimumStock" type="number" min="0" step="0.01" />
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="serviceMaterialNotes">Observaciones</label>
+        <textarea id="serviceMaterialNotes" rows="3"></textarea>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-secondary" type="button" data-close="serviceMaterialDialog">Cancelar</button>
+        <button id="deleteServiceMaterialBtn" class="btn btn-ghost hidden" type="button">Eliminar</button>
+        <button class="btn btn-primary" type="submit">Guardar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="materialConsumptionDialog" class="modal">
+    <form id="materialConsumptionForm" class="modal-card stack-md">
+      <div class="section-head with-action">
+        <h3 id="materialConsumptionDialogTitle">Registrar consumo</h3>
+        <button class="icon-btn" type="button" data-close="materialConsumptionDialog">✕</button>
+      </div>
+
+      <input type="hidden" id="materialConsumptionId" />
+
+      <div class="grid-2">
+        <div class="field">
+          <label for="materialConsumptionDate">Fecha</label>
+          <input id="materialConsumptionDate" type="date" required />
+        </div>
+        <div class="field">
+          <label for="materialConsumptionQuantity">Cantidad consumida</label>
+          <input id="materialConsumptionQuantity" type="number" min="0.01" step="0.01" required />
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="materialConsumptionService">Servicio</label>
+        <select id="materialConsumptionService" required></select>
+      </div>
+
+      <div class="field">
+        <label for="materialConsumptionMaterial">Material</label>
+        <input id="materialConsumptionMaterial" list="serviceMaterialOptionsList" placeholder="Escribí para autocompletar" required />
+      </div>
+
+      <div class="field">
+        <label for="materialConsumptionStockInfo">Estado actual</label>
+        <input id="materialConsumptionStockInfo" type="text" readonly placeholder="Seleccioná servicio y material" />
+      </div>
+
+      <div class="field">
+        <label for="materialConsumptionNotes">Observaciones</label>
+        <textarea id="materialConsumptionNotes" rows="3"></textarea>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-secondary" type="button" data-close="materialConsumptionDialog">Cancelar</button>
+        <button id="deleteMaterialConsumptionBtn" class="btn btn-ghost hidden" type="button">Eliminar</button>
+        <button class="btn btn-primary" type="submit">Guardar consumo</button>
+      </div>
+    </form>
+  </dialog>
+
+  <datalist id="materialCatalogOptionsList"></datalist>
+  <datalist id="serviceMaterialOptionsList"></datalist>
 
 
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>

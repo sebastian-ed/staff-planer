@@ -22,6 +22,7 @@ const VIEW_IDS = {
   services: 'servicesView',
   planner: 'plannerView',
   absences: 'absencesView',
+  materials: 'materialsView',
 };
 
 function createEmptyDerivedState() {
@@ -30,14 +31,24 @@ function createEmptyDerivedState() {
     serviceById: new Map(),
     assignmentById: new Map(),
     absenceById: new Map(),
+    materialById: new Map(),
+    materialByNormalizedName: new Map(),
+    serviceMaterialById: new Map(),
+    materialConsumptionById: new Map(),
     assignmentsByWorkerId: new Map(),
     assignmentsByServiceId: new Map(),
     assignmentsByDay: new Map(),
     absencesByDateKey: new Map(),
     absencesByWorkerId: new Map(),
+    serviceMaterialsByServiceId: new Map(),
+    serviceMaterialsByMaterialId: new Map(),
+    materialConsumptionsByServiceMaterialId: new Map(),
+    materialConsumptionsByMonthKey: new Map(),
     serviceSearchById: new Map(),
     assignmentSearchById: new Map(),
     absenceSearchById: new Map(),
+    materialSearchById: new Map(),
+    serviceMaterialSearchById: new Map(),
   };
 }
 
@@ -47,6 +58,9 @@ const state = {
   services: [],
   assignments: [],
   absences: [],
+  materials: [],
+  serviceMaterials: [],
+  materialConsumptions: [],
   currentView: 'dashboard',
   authMode: 'login',
   filters: {
@@ -77,6 +91,39 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#039;');
+}
+
+function normalizeText(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+function formatNumber(value) {
+  if (value == null || Number.isNaN(value)) return '—';
+  const num = Number(value);
+  return Number.isInteger(num)
+    ? String(num)
+    : num.toFixed(2).replace(/\.00$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
+}
+
+function getMonthKey(dateKey) {
+  if (!dateKey) return '';
+  return String(dateKey).slice(0, 7);
+}
+
+function getCurrentMonthKey() {
+  return new Date().toISOString().slice(0, 7);
+}
+
+function formatMonthLabel(monthKey) {
+  if (!monthKey || !/^\d{4}-\d{2}$/.test(monthKey)) return monthKey || '—';
+  const [year, month] = monthKey.split('-').map(Number);
+  return new Intl.DateTimeFormat('es-AR', {
+    month: 'long',
+    year: 'numeric',
+  }).format(new Date(year, month - 1, 1));
 }
 
 function formatHours(value) {
@@ -161,6 +208,48 @@ function rebuildDerivedState() {
     );
   });
 
+  state.materials.forEach((material) => {
+    derived.materialById.set(material.id, material);
+    derived.materialByNormalizedName.set(normalizeText(material.name), material);
+    derived.materialSearchById.set(
+      material.id,
+      [material.name || '', material.unit || '', material.presentation || '', material.notes || '']
+        .join(' ')
+        .toLowerCase()
+    );
+  });
+
+  state.serviceMaterials.forEach((serviceMaterial) => {
+    derived.serviceMaterialById.set(serviceMaterial.id, serviceMaterial);
+    pushToMapArray(derived.serviceMaterialsByServiceId, serviceMaterial.service_id, serviceMaterial);
+    pushToMapArray(derived.serviceMaterialsByMaterialId, serviceMaterial.material_id, serviceMaterial);
+
+    const service = derived.serviceById.get(serviceMaterial.service_id);
+    const material = derived.materialById.get(serviceMaterial.material_id);
+
+    derived.serviceMaterialSearchById.set(
+      serviceMaterial.id,
+      [
+        service?.name || '',
+        service?.zone || '',
+        service?.client_address || '',
+        service?.supervisor_name || '',
+        material?.name || '',
+        material?.unit || '',
+        material?.presentation || '',
+        serviceMaterial.notes || '',
+      ]
+        .join(' ')
+        .toLowerCase()
+    );
+  });
+
+  state.materialConsumptions.forEach((consumption) => {
+    derived.materialConsumptionById.set(consumption.id, consumption);
+    pushToMapArray(derived.materialConsumptionsByServiceMaterialId, consumption.service_material_id, consumption);
+    pushToMapArray(derived.materialConsumptionsByMonthKey, getMonthKey(consumption.consumption_date), consumption);
+  });
+
   state.absences.forEach((absence) => {
     derived.absenceById.set(absence.id, absence);
     pushToMapArray(derived.absencesByDateKey, absence.absence_date, absence);
@@ -207,6 +296,38 @@ function getAssignmentById(assignmentId) {
 
 function getAbsenceById(absenceId) {
   return state.derived.absenceById.get(absenceId) || null;
+}
+
+function getMaterialById(materialId) {
+  return state.derived.materialById.get(materialId) || null;
+}
+
+function getMaterialByName(materialName) {
+  return state.derived.materialByNormalizedName.get(normalizeText(materialName)) || null;
+}
+
+function getServiceMaterialById(serviceMaterialId) {
+  return state.derived.serviceMaterialById.get(serviceMaterialId) || null;
+}
+
+function getMaterialConsumptionById(consumptionId) {
+  return state.derived.materialConsumptionById.get(consumptionId) || null;
+}
+
+function getServiceMaterialsByServiceId(serviceId) {
+  return state.derived.serviceMaterialsByServiceId.get(serviceId) || [];
+}
+
+function findServiceMaterial(serviceId, materialId) {
+  return getServiceMaterialsByServiceId(serviceId).find((item) => item.material_id === materialId) || null;
+}
+
+function getMaterialConsumptionsByServiceMaterialId(serviceMaterialId) {
+  return state.derived.materialConsumptionsByServiceMaterialId.get(serviceMaterialId) || [];
+}
+
+function getMaterialConsumptionsByMonth(monthKey) {
+  return state.derived.materialConsumptionsByMonthKey.get(monthKey) || [];
 }
 
 function getAssignmentsByDay(dayOfWeek) {
@@ -367,6 +488,11 @@ function setDataReady(isReady) {
     'bulkAssignmentBtn',
     'addAbsenceBtn',
     'absenceDateFilter',
+    'addMaterialCatalogBtn',
+    'addServiceMaterialBtn',
+    'addMaterialConsumptionBtn',
+    'materialsMonthFilter',
+    'materialsServiceFilter',
     'workerTypeFilter',
     'statusFilter',
     'globalSearch',
@@ -393,6 +519,88 @@ function getFilteredServices() {
     const hay = state.derived.serviceSearchById.get(service.id) || '';
     return !term || hay.includes(term);
   });
+}
+
+function getSelectedMaterialsMonth() {
+  if (!el.materialsMonthFilter) return getCurrentMonthKey();
+  if (!el.materialsMonthFilter.value) {
+    el.materialsMonthFilter.value = getCurrentMonthKey();
+  }
+  return el.materialsMonthFilter.value;
+}
+
+function getSelectedMaterialsServiceId() {
+  return el.materialsServiceFilter?.value || 'all';
+}
+
+function getFilteredServiceMaterials() {
+  const term = state.filters.search;
+  const serviceId = getSelectedMaterialsServiceId();
+
+  return state.serviceMaterials
+    .filter((serviceMaterial) => {
+      if (serviceId !== 'all' && serviceMaterial.service_id !== serviceId) return false;
+      const hay = state.derived.serviceMaterialSearchById.get(serviceMaterial.id) || '';
+      return !term || hay.includes(term);
+    })
+    .sort((a, b) => {
+      const serviceA = getServiceById(a.service_id);
+      const serviceB = getServiceById(b.service_id);
+      const materialA = getMaterialById(a.material_id);
+      const materialB = getMaterialById(b.material_id);
+      const serviceNameCompare = String(serviceA?.name || '').localeCompare(String(serviceB?.name || ''), 'es', { sensitivity: 'base' });
+      if (serviceNameCompare !== 0) return serviceNameCompare;
+      return String(materialA?.name || '').localeCompare(String(materialB?.name || ''), 'es', { sensitivity: 'base' });
+    });
+}
+
+function getFilteredMaterialConsumptions(monthKey = getSelectedMaterialsMonth()) {
+  const term = state.filters.search;
+  const serviceId = getSelectedMaterialsServiceId();
+
+  return state.materialConsumptions
+    .filter((consumption) => {
+      if (monthKey && getMonthKey(consumption.consumption_date) !== monthKey) return false;
+      if (serviceId !== 'all' && consumption.service_id !== serviceId) return false;
+
+      if (!term) return true;
+
+      const serviceMaterial = getServiceMaterialById(consumption.service_material_id);
+      const hay = serviceMaterial
+        ? (state.derived.serviceMaterialSearchById.get(serviceMaterial.id) || '')
+        : [
+            getServiceById(consumption.service_id)?.name || '',
+            getMaterialById(consumption.material_id)?.name || '',
+            consumption.notes || '',
+          ].join(' ').toLowerCase();
+
+      return hay.includes(term);
+    })
+    .sort((a, b) => {
+      const byDate = String(b.consumption_date || '').localeCompare(String(a.consumption_date || ''));
+      if (byDate !== 0) return byDate;
+      return String(b.created_at || '').localeCompare(String(a.created_at || ''));
+    });
+}
+
+function calculateAverageMonthlyConsumption(serviceMaterialId) {
+  const consumptions = getMaterialConsumptionsByServiceMaterialId(serviceMaterialId);
+  if (!consumptions.length) return 0;
+
+  const monthTotals = new Map();
+  consumptions.forEach((consumption) => {
+    const monthKey = getMonthKey(consumption.consumption_date);
+    monthTotals.set(monthKey, (monthTotals.get(monthKey) || 0) + Number(consumption.quantity || 0));
+  });
+
+  const total = [...monthTotals.values()].reduce((sum, value) => sum + value, 0);
+  return monthTotals.size ? Number((total / monthTotals.size).toFixed(2)) : 0;
+}
+
+function calculateMonthConsumptionForServiceMaterial(serviceMaterialId, monthKey = getSelectedMaterialsMonth()) {
+  return getMaterialConsumptionsByServiceMaterialId(serviceMaterialId)
+    .filter((consumption) => getMonthKey(consumption.consumption_date) === monthKey)
+    .reduce((sum, consumption) => sum + Number(consumption.quantity || 0), 0);
 }
 
 function getWorkerSummaries() {
@@ -505,6 +713,10 @@ function populateSelects() {
   const absenceWorker = $('absenceWorker');
   const absenceService = $('absenceService');
   const absenceCoverageWorker = $('absenceCoverageWorker');
+  const materialsServiceFilter = $('materialsServiceFilter');
+  const serviceMaterialService = $('serviceMaterialService');
+  const materialConsumptionService = $('materialConsumptionService');
+  const materialCatalogOptionsList = $('materialCatalogOptionsList');
 
   if (assignmentWorker) assignmentWorker.innerHTML = workerOptions;
   if (assignmentService) assignmentService.innerHTML = serviceOptions;
@@ -522,6 +734,28 @@ function populateSelects() {
   if (absenceCoverageWorker) {
     absenceCoverageWorker.innerHTML = `<option value="">Seleccionar cobertura</option>${workerOptions}`;
   }
+
+  if (materialsServiceFilter) {
+    const currentValue = materialsServiceFilter.value || 'all';
+    materialsServiceFilter.innerHTML = `<option value="all">Todos</option>${serviceOptions}`;
+    materialsServiceFilter.value = state.services.some((service) => service.id === currentValue) ? currentValue : 'all';
+  }
+
+  if (serviceMaterialService) {
+    serviceMaterialService.innerHTML = `<option value="">Seleccionar servicio</option>${serviceOptions}`;
+  }
+
+  if (materialConsumptionService) {
+    materialConsumptionService.innerHTML = `<option value="">Seleccionar servicio</option>${serviceOptions}`;
+  }
+
+  if (materialCatalogOptionsList) {
+    materialCatalogOptionsList.innerHTML = state.materials
+      .map((material) => `<option value="${escapeHtml(material.name)}"></option>`)
+      .join('');
+  }
+
+  updateMaterialConsumptionOptions();
 }
 
 function renderKpis(summaries) {
@@ -994,6 +1228,279 @@ function renderAbsenceHistoryBoard(dateKey) {
     `;
 }
 
+function renderMaterialsKpis() {
+  if (!el.materialKpiCards) return;
+
+  const monthKey = getSelectedMaterialsMonth();
+  const serviceMaterials = getFilteredServiceMaterials();
+  const consumptions = getFilteredMaterialConsumptions(monthKey);
+  const servicesWithStock = new Set(serviceMaterials.map((item) => item.service_id)).size;
+  const materialsWithMovement = new Set(consumptions.map((item) => item.material_id)).size;
+  const totalConsumed = consumptions.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  const lowStockCount = serviceMaterials.filter((item) => item.minimum_stock != null && Number(item.current_stock || 0) <= Number(item.minimum_stock || 0)).length;
+
+  const cards = [
+    {
+      label: 'Materiales base',
+      value: state.materials.length,
+      foot: 'Catálogo reutilizable',
+    },
+    {
+      label: 'Servicios con stock',
+      value: servicesWithStock,
+      foot: 'Con materiales cargados',
+    },
+    {
+      label: 'Consumo del mes',
+      value: formatNumber(totalConsumed),
+      foot: `${materialsWithMovement} materiales con movimiento`,
+    },
+    {
+      label: 'Stock bajo mínimo',
+      value: lowStockCount,
+      foot: 'Para anticipar pedidos',
+    },
+  ];
+
+  el.materialKpiCards.innerHTML = cards
+    .map((card) => `
+      <article class="kpi-card card-lite">
+        <span class="kpi-label">${card.label}</span>
+        <strong class="kpi-value">${card.value}</strong>
+        <small class="kpi-foot">${card.foot}</small>
+      </article>
+    `)
+    .join('');
+}
+
+function renderServiceMaterialsBoard() {
+  if (!el.serviceMaterialsBoard) return;
+
+  const serviceMaterials = getFilteredServiceMaterials();
+  const monthKey = getSelectedMaterialsMonth();
+
+  if (!serviceMaterials.length) {
+    el.serviceMaterialsBoard.innerHTML = `
+      <div class="empty-state">
+        No hay materiales cargados para los filtros actuales.
+      </div>
+    `;
+    return;
+  }
+
+  const grouped = new Map();
+  serviceMaterials.forEach((item) => {
+    if (!grouped.has(item.service_id)) grouped.set(item.service_id, []);
+    grouped.get(item.service_id).push(item);
+  });
+
+  el.serviceMaterialsBoard.innerHTML = [...grouped.entries()]
+    .map(([serviceId, items]) => {
+      const service = getServiceById(serviceId);
+
+      return `
+        <article class="service-material-card">
+          <div class="service-material-card-head">
+            <div>
+              <h3>${escapeHtml(service?.name || 'Servicio')}</h3>
+              <p>${escapeHtml(service?.client_address || 'Sin dirección')}</p>
+            </div>
+            <div class="service-meta">
+              ${service?.supervisor_name ? `<span class="chip">Sup. ${escapeHtml(service.supervisor_name)}</span>` : ''}
+              <span class="chip">${escapeHtml(service?.zone || 'Sin zona')}</span>
+            </div>
+          </div>
+
+          <div class="service-material-list">
+            ${items
+              .map((item) => {
+                const material = getMaterialById(item.material_id);
+                const monthConsumption = calculateMonthConsumptionForServiceMaterial(item.id, monthKey);
+                const averageMonthly = calculateAverageMonthlyConsumption(item.id);
+                const lowStock = item.minimum_stock != null && Number(item.current_stock || 0) <= Number(item.minimum_stock || 0);
+
+                return `
+                  <div class="material-stock-row ${lowStock ? 'material-stock-row-warning' : ''}">
+                    <div>
+                      <strong>${escapeHtml(material?.name || 'Material')}</strong>
+                      <p>
+                        Stock actual: ${formatNumber(item.current_stock)} ${escapeHtml(material?.unit || '')}
+                        ${item.minimum_stock != null ? ` · Mínimo: ${formatNumber(item.minimum_stock)} ${escapeHtml(material?.unit || '')}` : ''}
+                        · Mes: ${formatNumber(monthConsumption)} ${escapeHtml(material?.unit || '')}
+                        · Promedio: ${formatNumber(averageMonthly)} ${escapeHtml(material?.unit || '')}/mes
+                      </p>
+                      ${material?.presentation ? `<small>${escapeHtml(material.presentation)}</small>` : ''}
+                    </div>
+                    <div class="inline-actions">
+                      <button class="btn btn-secondary btn-sm" type="button" data-edit-service-material="${item.id}">Editar</button>
+                      <button class="btn btn-primary btn-sm" type="button" data-log-service-material="${item.id}">Consumo</button>
+                    </div>
+                  </div>
+                `;
+              })
+              .join('')}
+          </div>
+        </article>
+      `;
+    })
+    .join('');
+}
+
+function buildMonthlyMaterialSummary(monthKey = getSelectedMaterialsMonth()) {
+  const serviceFilterId = getSelectedMaterialsServiceId();
+  const serviceMaterials = getFilteredServiceMaterials();
+  const allowedServiceMaterialIds = new Set(serviceMaterials.map((item) => item.id));
+
+  const summary = new Map();
+  const historicalByMaterialMonth = new Map();
+
+  state.materialConsumptions.forEach((consumption) => {
+    if (!allowedServiceMaterialIds.has(consumption.service_material_id)) return;
+    if (serviceFilterId !== 'all' && consumption.service_id !== serviceFilterId) return;
+
+    const material = getMaterialById(consumption.material_id);
+    if (!summary.has(consumption.material_id)) {
+      summary.set(consumption.material_id, {
+        materialId: consumption.material_id,
+        name: material?.name || 'Material',
+        unit: material?.unit || '',
+        totalConsumed: 0,
+        services: new Set(),
+        currentStockTotal: 0,
+        averageMonthly: 0,
+      });
+    }
+
+    const historyKey = `${consumption.material_id}__${getMonthKey(consumption.consumption_date)}`;
+    historicalByMaterialMonth.set(
+      historyKey,
+      (historicalByMaterialMonth.get(historyKey) || 0) + Number(consumption.quantity || 0)
+    );
+
+    if (getMonthKey(consumption.consumption_date) !== monthKey) return;
+
+    const row = summary.get(consumption.material_id);
+    row.totalConsumed += Number(consumption.quantity || 0);
+    row.services.add(consumption.service_id);
+  });
+
+  serviceMaterials.forEach((serviceMaterial) => {
+    const material = getMaterialById(serviceMaterial.material_id);
+    if (!summary.has(serviceMaterial.material_id)) {
+      summary.set(serviceMaterial.material_id, {
+        materialId: serviceMaterial.material_id,
+        name: material?.name || 'Material',
+        unit: material?.unit || '',
+        totalConsumed: 0,
+        services: new Set(),
+        currentStockTotal: 0,
+        averageMonthly: 0,
+      });
+    }
+
+    const row = summary.get(serviceMaterial.material_id);
+    row.currentStockTotal += Number(serviceMaterial.current_stock || 0);
+  });
+
+  const historicalByMaterial = new Map();
+  historicalByMaterialMonth.forEach((qty, key) => {
+    const [materialId] = key.split('__');
+    if (!historicalByMaterial.has(materialId)) historicalByMaterial.set(materialId, []);
+    historicalByMaterial.get(materialId).push(qty);
+  });
+
+  return [...summary.values()]
+    .map((row) => {
+      const historical = historicalByMaterial.get(row.materialId) || [];
+      const averageMonthly = historical.length
+        ? historical.reduce((sum, value) => sum + value, 0) / historical.length
+        : 0;
+
+      return {
+        ...row,
+        servicesCount: row.services.size,
+        averageMonthly: Number(averageMonthly.toFixed(2)),
+        totalConsumed: Number(row.totalConsumed.toFixed(2)),
+        currentStockTotal: Number(row.currentStockTotal.toFixed(2)),
+      };
+    })
+    .sort((a, b) => b.totalConsumed - a.totalConsumed || a.name.localeCompare(b.name, 'es', { sensitivity: 'base' }));
+}
+
+function renderMaterialsMonthlySummaryBoard() {
+  if (!el.materialsMonthlySummaryBoard) return;
+
+  const monthKey = getSelectedMaterialsMonth();
+  const summary = buildMonthlyMaterialSummary(monthKey);
+
+  el.materialsMonthlySummaryBoard.innerHTML = summary.length
+    ? summary
+        .map((item) => `
+          <article class="mini-card">
+            <div>
+              <strong>${escapeHtml(item.name)}</strong>
+              <div class="muted">
+                Consumido: ${formatNumber(item.totalConsumed)} ${escapeHtml(item.unit)}
+                · Servicios: ${item.servicesCount}
+                · Promedio histórico: ${formatNumber(item.averageMonthly)} ${escapeHtml(item.unit)}/mes
+              </div>
+            </div>
+            <div class="status-pill ${item.currentStockTotal <= item.averageMonthly && item.averageMonthly > 0 ? 'status-over' : 'status-available'}">
+              Stock total ${formatNumber(item.currentStockTotal)} ${escapeHtml(item.unit)}
+            </div>
+          </article>
+        `)
+        .join('')
+    : `
+      <div class="empty-state">
+        No hay consumo ni stock cargado para ${formatMonthLabel(monthKey)}.
+      </div>
+    `;
+}
+
+function renderMaterialsConsumptionHistoryBoard() {
+  if (!el.materialsConsumptionHistoryBoard) return;
+
+  const monthKey = getSelectedMaterialsMonth();
+  const consumptions = getFilteredMaterialConsumptions(monthKey);
+
+  el.materialsConsumptionHistoryBoard.innerHTML = consumptions.length
+    ? consumptions
+        .map((consumption) => {
+          const service = getServiceById(consumption.service_id);
+          const material = getMaterialById(consumption.material_id);
+
+          return `
+            <article class="material-consumption-row">
+              <div>
+                <strong>${escapeHtml(material?.name || 'Material')}</strong>
+                <p>
+                  ${formatDateLabel(consumption.consumption_date)} · ${escapeHtml(service?.name || 'Servicio')}
+                  · ${formatNumber(consumption.quantity)} ${escapeHtml(material?.unit || '')}
+                </p>
+                ${consumption.notes ? `<small>${escapeHtml(consumption.notes)}</small>` : ''}
+              </div>
+              <div class="inline-actions">
+                <button class="btn btn-secondary btn-sm" type="button" data-edit-material-consumption="${consumption.id}">Editar</button>
+              </div>
+            </article>
+          `;
+        })
+        .join('')
+    : `
+      <div class="empty-state">
+        No hay consumos registrados para ${formatMonthLabel(monthKey)}.
+      </div>
+    `;
+}
+
+function renderMaterials() {
+  renderMaterialsKpis();
+  renderServiceMaterialsBoard();
+  renderMaterialsMonthlySummaryBoard();
+  renderMaterialsConsumptionHistoryBoard();
+}
+
 function renderAbsences() {
   const dateKey = getSelectedAbsenceDate();
   renderAbsenceScheduleBoard(dateKey);
@@ -1019,6 +1526,9 @@ function renderCurrentView() {
       break;
     case 'absences':
       renderAbsences();
+      break;
+    case 'materials':
+      renderMaterials();
       break;
     case 'dashboard':
     default: {
@@ -1058,12 +1568,23 @@ function handleFilterChange() {
 }
 
 async function loadAllData() {
-  const [workersRes, servicesRes, assignmentsRes, absencesRes] = await withTimeout(
+  const [
+    workersRes,
+    servicesRes,
+    assignmentsRes,
+    absencesRes,
+    materialsRes,
+    serviceMaterialsRes,
+    materialConsumptionsRes,
+  ] = await withTimeout(
     Promise.all([
       supabase.from('workers').select('*').order('name'),
       supabase.from('services').select('*').order('name'),
       supabase.from('assignments').select('*').eq('is_active', true).order('day_of_week').order('start_time'),
       supabase.from('absences').select('*').order('absence_date', { ascending: false }).order('created_at', { ascending: false }),
+      supabase.from('materials').select('*').order('name'),
+      supabase.from('service_materials').select('*').order('created_at', { ascending: false }),
+      supabase.from('material_consumptions').select('*').order('consumption_date', { ascending: false }).order('created_at', { ascending: false }),
     ]),
     12000,
     'La actualización de datos tardó demasiado.'
@@ -1077,10 +1598,23 @@ async function loadAllData() {
   state.services = servicesRes.data || [];
   state.assignments = assignmentsRes.data || [];
   state.absences = absencesRes.error ? [] : (absencesRes.data || []);
+  state.materials = materialsRes.error ? [] : (materialsRes.data || []);
+  state.serviceMaterials = serviceMaterialsRes.error ? [] : (serviceMaterialsRes.data || []);
+  state.materialConsumptions = materialConsumptionsRes.error ? [] : (materialConsumptionsRes.data || []);
 
   if (absencesRes.error) {
     console.warn('La tabla de ausencias todavía no está disponible o devolvió error.', absencesRes.error);
   }
+  if (materialsRes.error) {
+    console.warn('La tabla de materiales todavía no está disponible o devolvió error.', materialsRes.error);
+  }
+  if (serviceMaterialsRes.error) {
+    console.warn('La tabla de stock por servicio todavía no está disponible o devolvió error.', serviceMaterialsRes.error);
+  }
+  if (materialConsumptionsRes.error) {
+    console.warn('La tabla de consumos de materiales todavía no está disponible o devolvió error.', materialConsumptionsRes.error);
+  }
+
   state.hasLoadedOnce = true;
 
   rebuildDerivedState();
@@ -1170,6 +1704,9 @@ function subscribeRealtime() {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'services' }, scheduleRealtimeRefresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, scheduleRealtimeRefresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'absences' }, scheduleRealtimeRefresh)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'materials' }, scheduleRealtimeRefresh)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'service_materials' }, scheduleRealtimeRefresh)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'material_consumptions' }, scheduleRealtimeRefresh)
     .subscribe();
 }
 
@@ -1500,6 +2037,540 @@ function openAbsenceDialog(options = {}) {
 
   toggleAbsenceCoverageFields();
   el.absenceDialog.showModal();
+}
+
+
+function updateMaterialCatalogAutocomplete(inputId, unitId, presentationId) {
+  const name = $(inputId)?.value || '';
+  const material = getMaterialByName(name);
+
+  if (!material) return;
+
+  if ($(unitId) && !$(unitId).value) $(unitId).value = material.unit || '';
+  if ($(presentationId) && !$(presentationId).value) $(presentationId).value = material.presentation || '';
+}
+
+function updateMaterialConsumptionOptions() {
+  const datalist = $('serviceMaterialOptionsList');
+  const serviceId = $('materialConsumptionService')?.value || '';
+
+  if (!datalist) return;
+
+  const materials = serviceId
+    ? getServiceMaterialsByServiceId(serviceId)
+        .map((item) => getMaterialById(item.material_id))
+        .filter(Boolean)
+    : state.materials;
+
+  const deduped = new Map();
+  materials.forEach((material) => {
+    if (!deduped.has(material.id)) deduped.set(material.id, material);
+  });
+
+  datalist.innerHTML = [...deduped.values()]
+    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es', { sensitivity: 'base' }))
+    .map((material) => `<option value="${escapeHtml(material.name)}"></option>`)
+    .join('');
+
+  updateMaterialConsumptionMeta();
+}
+
+function updateMaterialConsumptionMeta() {
+  const serviceId = $('materialConsumptionService')?.value || '';
+  const materialName = $('materialConsumptionMaterial')?.value || '';
+  const info = $('materialConsumptionStockInfo');
+
+  if (!info) return;
+
+  if (!serviceId || !materialName) {
+    info.value = '';
+    return;
+  }
+
+  const material = getMaterialByName(materialName);
+  const serviceMaterial = material ? findServiceMaterial(serviceId, material.id) : null;
+
+  if (!material) {
+    info.value = 'Material no encontrado en el catálogo.';
+    return;
+  }
+
+  if (!serviceMaterial) {
+    info.value = 'Primero asigná este material al servicio.';
+    return;
+  }
+
+  info.value = `Stock actual: ${formatNumber(serviceMaterial.current_stock)} ${material.unit || ''}${serviceMaterial.minimum_stock != null ? ` · Mínimo: ${formatNumber(serviceMaterial.minimum_stock)} ${material.unit || ''}` : ''}`;
+}
+
+function getSelectedMaterialFromServiceForm() {
+  const materialName = $('serviceMaterialCatalog')?.value || '';
+  const unit = $('serviceMaterialUnit')?.value.trim() || 'un';
+  const presentation = $('serviceMaterialPresentation')?.value.trim() || null;
+  return {
+    name: materialName.trim(),
+    unit,
+    presentation,
+  };
+}
+
+async function ensureMaterialRecord({ name, unit = 'un', presentation = null, notes = null }) {
+  const normalized = normalizeText(name);
+  if (!normalized) throw new Error('Ingresá un material.');
+
+  const existing = getMaterialByName(name);
+  if (existing) return existing;
+
+  const payload = {
+    name: name.trim(),
+    normalized_name: normalized,
+    unit: unit || 'un',
+    presentation,
+    notes,
+  };
+
+  markLocalMutation();
+
+  const { data, error } = await withTimeout(
+    supabase.from('materials').insert(payload).select().single(),
+    12000,
+    'Guardar material base tardó demasiado.'
+  );
+
+  if (error) throw error;
+  return data;
+}
+
+function openMaterialCatalogDialog(materialId = null) {
+  if (!ensureDataReady('abrir materiales base')) return;
+
+  el.materialCatalogForm?.reset();
+  $('materialCatalogId').value = '';
+  $('materialCatalogDialogTitle').textContent = materialId ? 'Editar material base' : 'Nuevo material base';
+  $('deleteMaterialCatalogBtn').classList.toggle('hidden', !materialId);
+
+  if (materialId) {
+    const material = getMaterialById(materialId);
+    if (!material) return;
+
+    $('materialCatalogId').value = material.id;
+    $('materialCatalogName').value = material.name || '';
+    $('materialCatalogUnit').value = material.unit || '';
+    $('materialCatalogPresentation').value = material.presentation || '';
+    $('materialCatalogNotes').value = material.notes || '';
+  }
+
+  el.materialCatalogDialog.showModal();
+}
+
+function openServiceMaterialDialog(options = {}) {
+  if (!ensureDataReady('abrir stock de materiales')) return;
+
+  const { serviceMaterialId = null, prefillServiceId = '' } = typeof options === 'string'
+    ? { serviceMaterialId: options }
+    : options;
+
+  el.serviceMaterialForm?.reset();
+  $('serviceMaterialId').value = '';
+  $('serviceMaterialDialogTitle').textContent = serviceMaterialId ? 'Editar material del servicio' : 'Asignar material al servicio';
+  $('deleteServiceMaterialBtn').classList.toggle('hidden', !serviceMaterialId);
+
+  if (serviceMaterialId) {
+    const item = getServiceMaterialById(serviceMaterialId);
+    if (!item) return;
+    const material = getMaterialById(item.material_id);
+
+    $('serviceMaterialId').value = item.id;
+    $('serviceMaterialService').value = item.service_id || '';
+    $('serviceMaterialCatalog').value = material?.name || '';
+    $('serviceMaterialUnit').value = material?.unit || '';
+    $('serviceMaterialPresentation').value = material?.presentation || '';
+    $('serviceMaterialCurrentStock').value = item.current_stock ?? '';
+    $('serviceMaterialMinimumStock').value = item.minimum_stock ?? '';
+    $('serviceMaterialNotes').value = item.notes || '';
+  } else if (prefillServiceId) {
+    $('serviceMaterialService').value = prefillServiceId;
+  }
+
+  el.serviceMaterialDialog.showModal();
+}
+
+function openMaterialConsumptionDialog(options = {}) {
+  if (!ensureDataReady('abrir consumo de materiales')) return;
+
+  const {
+    consumptionId = null,
+    prefillServiceId = '',
+    prefillServiceMaterialId = '',
+  } = typeof options === 'string'
+    ? { consumptionId: options }
+    : options;
+
+  el.materialConsumptionForm?.reset();
+  $('materialConsumptionId').value = '';
+  $('materialConsumptionDialogTitle').textContent = consumptionId ? 'Editar consumo' : 'Registrar consumo';
+  $('deleteMaterialConsumptionBtn').classList.toggle('hidden', !consumptionId);
+  $('materialConsumptionDate').value = new Date().toISOString().slice(0, 10);
+
+  if (consumptionId) {
+    const consumption = getMaterialConsumptionById(consumptionId);
+    if (!consumption) return;
+
+    const material = getMaterialById(consumption.material_id);
+
+    $('materialConsumptionId').value = consumption.id;
+    $('materialConsumptionDate').value = consumption.consumption_date || new Date().toISOString().slice(0, 10);
+    $('materialConsumptionService').value = consumption.service_id || '';
+    updateMaterialConsumptionOptions();
+    $('materialConsumptionMaterial').value = material?.name || '';
+    $('materialConsumptionQuantity').value = consumption.quantity ?? '';
+    $('materialConsumptionNotes').value = consumption.notes || '';
+  } else if (prefillServiceMaterialId) {
+    const serviceMaterial = getServiceMaterialById(prefillServiceMaterialId);
+    const material = serviceMaterial ? getMaterialById(serviceMaterial.material_id) : null;
+    $('materialConsumptionService').value = serviceMaterial?.service_id || '';
+    updateMaterialConsumptionOptions();
+    $('materialConsumptionMaterial').value = material?.name || '';
+  } else if (prefillServiceId) {
+    $('materialConsumptionService').value = prefillServiceId;
+    updateMaterialConsumptionOptions();
+  } else {
+    updateMaterialConsumptionOptions();
+  }
+
+  updateMaterialConsumptionMeta();
+  el.materialConsumptionDialog.showModal();
+}
+
+async function saveMaterialCatalog(event) {
+  event.preventDefault();
+
+  const materialId = $('materialCatalogId').value.trim();
+  const name = $('materialCatalogName')?.value.trim();
+  const unit = $('materialCatalogUnit')?.value.trim() || 'un';
+  const presentation = $('materialCatalogPresentation')?.value.trim() || null;
+  const notes = $('materialCatalogNotes')?.value.trim() || null;
+
+  if (!name) {
+    alert('Completá el nombre del material.');
+    return;
+  }
+
+  const submitBtn = el.materialCatalogForm?.querySelector('button[type="submit"]');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Guardando...';
+  }
+
+  try {
+    await ensureWriteSession();
+
+    const payload = {
+      name,
+      normalized_name: normalizeText(name),
+      unit,
+      presentation,
+      notes,
+    };
+
+    const request = materialId
+      ? supabase.from('materials').update(payload).eq('id', materialId)
+      : supabase.from('materials').insert(payload);
+
+    markLocalMutation();
+
+    const { error } = await withTimeout(request, 12000, 'Guardar material base tardó demasiado.');
+    if (error) {
+      console.error(error);
+      alert(error.message);
+      return;
+    }
+
+    el.materialCatalogDialog.close();
+    goToView('materials');
+    await loadAllDataWithRetry(3, 300, { hardLock: false, silent: false });
+  } catch (error) {
+    console.error(error);
+    alert(error.message || 'No se pudo guardar el material base.');
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Guardar';
+    }
+  }
+}
+
+async function saveServiceMaterial(event) {
+  event.preventDefault();
+
+  const serviceMaterialId = $('serviceMaterialId').value.trim();
+  const serviceId = $('serviceMaterialService')?.value;
+  const currentStockValue = $('serviceMaterialCurrentStock')?.value;
+  const minimumStockValue = $('serviceMaterialMinimumStock')?.value;
+  const notes = $('serviceMaterialNotes')?.value.trim() || null;
+  const materialPayload = getSelectedMaterialFromServiceForm();
+
+  if (!serviceId || !materialPayload.name) {
+    alert('Completá servicio y material.');
+    return;
+  }
+
+  const submitBtn = el.serviceMaterialForm?.querySelector('button[type="submit"]');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Guardando...';
+  }
+
+  try {
+    await ensureWriteSession();
+
+    const material = await ensureMaterialRecord(materialPayload);
+    const duplicated = findServiceMaterial(serviceId, material.id);
+    const targetId = duplicated && duplicated.id !== serviceMaterialId ? duplicated.id : serviceMaterialId;
+
+    const payload = {
+      service_id: serviceId,
+      material_id: material.id,
+      current_stock: currentStockValue === '' ? 0 : Number(currentStockValue),
+      minimum_stock: minimumStockValue === '' ? null : Number(minimumStockValue),
+      notes,
+    };
+
+    const request = targetId
+      ? supabase.from('service_materials').update(payload).eq('id', targetId)
+      : supabase.from('service_materials').insert(payload);
+
+    markLocalMutation();
+
+    const { error } = await withTimeout(request, 12000, 'Guardar material del servicio tardó demasiado.');
+    if (error) {
+      console.error(error);
+      alert(error.message);
+      return;
+    }
+
+    el.serviceMaterialDialog.close();
+    goToView('materials');
+    await loadAllDataWithRetry(3, 300, { hardLock: false, silent: false });
+  } catch (error) {
+    console.error(error);
+    alert(error.message || 'No se pudo guardar el material del servicio.');
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Guardar';
+    }
+  }
+}
+
+async function applyConsumptionStockImpact(previousConsumption, nextServiceMaterialId, nextQuantity) {
+  const updates = [];
+
+  if (previousConsumption?.service_material_id) {
+    const previousServiceMaterial = getServiceMaterialById(previousConsumption.service_material_id);
+    if (previousServiceMaterial) {
+      updates.push({
+        id: previousServiceMaterial.id,
+        current_stock: Number(previousServiceMaterial.current_stock || 0) + Number(previousConsumption.quantity || 0),
+      });
+    }
+  }
+
+  const existingNextIndex = updates.findIndex((item) => item.id === nextServiceMaterialId);
+  const nextServiceMaterial = getServiceMaterialById(nextServiceMaterialId);
+  if (!nextServiceMaterial) throw new Error('No se encontró el stock del material seleccionado.');
+
+  if (existingNextIndex >= 0) {
+    updates[existingNextIndex].current_stock -= Number(nextQuantity || 0);
+  } else {
+    updates.push({
+      id: nextServiceMaterial.id,
+      current_stock: Number(nextServiceMaterial.current_stock || 0) - Number(nextQuantity || 0),
+    });
+  }
+
+  for (const update of updates) {
+    const { error } = await withTimeout(
+      supabase.from('service_materials').update({ current_stock: update.current_stock }).eq('id', update.id),
+      12000,
+      'Actualizar stock tardó demasiado.'
+    );
+    if (error) throw error;
+  }
+}
+
+async function saveMaterialConsumption(event) {
+  event.preventDefault();
+
+  const consumptionId = $('materialConsumptionId').value.trim();
+  const consumptionDate = $('materialConsumptionDate')?.value;
+  const serviceId = $('materialConsumptionService')?.value;
+  const materialName = $('materialConsumptionMaterial')?.value.trim() || '';
+  const quantityValue = $('materialConsumptionQuantity')?.value;
+  const notes = $('materialConsumptionNotes')?.value.trim() || null;
+
+  if (!consumptionDate || !serviceId || !materialName || !quantityValue) {
+    alert('Completá fecha, servicio, material y cantidad.');
+    return;
+  }
+
+  const material = getMaterialByName(materialName);
+  if (!material) {
+    alert('Ese material no existe en el catálogo. Cargalo primero o elegí uno existente.');
+    return;
+  }
+
+  const serviceMaterial = findServiceMaterial(serviceId, material.id);
+  if (!serviceMaterial) {
+    alert('Primero asigná ese material al servicio.');
+    return;
+  }
+
+  const quantity = Number(quantityValue);
+  if (!(quantity > 0)) {
+    alert('La cantidad consumida debe ser mayor a cero.');
+    return;
+  }
+
+  const submitBtn = el.materialConsumptionForm?.querySelector('button[type="submit"]');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Guardando...';
+  }
+
+  try {
+    await ensureWriteSession();
+
+    const previousConsumption = consumptionId ? getMaterialConsumptionById(consumptionId) : null;
+    markLocalMutation();
+
+    await applyConsumptionStockImpact(previousConsumption, serviceMaterial.id, quantity);
+
+    const payload = {
+      service_material_id: serviceMaterial.id,
+      service_id: serviceId,
+      material_id: material.id,
+      consumption_date: consumptionDate,
+      quantity,
+      notes,
+    };
+
+    const request = consumptionId
+      ? supabase.from('material_consumptions').update(payload).eq('id', consumptionId)
+      : supabase.from('material_consumptions').insert(payload);
+
+    const { error } = await withTimeout(request, 12000, 'Guardar consumo tardó demasiado.');
+    if (error) {
+      console.error(error);
+      alert(error.message);
+      return;
+    }
+
+    el.materialConsumptionDialog.close();
+    if (el.materialsMonthFilter) el.materialsMonthFilter.value = getMonthKey(consumptionDate);
+    goToView('materials');
+    await loadAllDataWithRetry(3, 300, { hardLock: false, silent: false });
+  } catch (error) {
+    console.error(error);
+    alert(error.message || 'No se pudo guardar el consumo.');
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Guardar consumo';
+    }
+  }
+}
+
+async function deleteMaterialCatalog() {
+  if (!ensureDataReady('eliminar el material base')) return;
+
+  const materialId = $('materialCatalogId').value.trim();
+  if (!materialId) return;
+
+  const hasServiceMaterials = state.serviceMaterials.some((item) => item.material_id === materialId);
+  if (hasServiceMaterials) {
+    alert('No podés eliminar este material porque ya está asignado a uno o más servicios.');
+    return;
+  }
+
+  if (!confirm('¿Eliminar este material base?')) return;
+
+  markLocalMutation();
+
+  const { error } = await supabase.from('materials').delete().eq('id', materialId);
+  if (error) {
+    console.error(error);
+    alert(error.message);
+    return;
+  }
+
+  el.materialCatalogDialog.close();
+  await loadAllDataWithRetry(2, 250, { hardLock: false, silent: false });
+}
+
+async function deleteServiceMaterial() {
+  if (!ensureDataReady('eliminar el material del servicio')) return;
+
+  const serviceMaterialId = $('serviceMaterialId').value.trim();
+  if (!serviceMaterialId) return;
+
+  const hasConsumptions = state.materialConsumptions.some((item) => item.service_material_id === serviceMaterialId);
+  if (hasConsumptions) {
+    alert('No podés eliminar este material del servicio porque ya tiene consumos históricos.');
+    return;
+  }
+
+  if (!confirm('¿Eliminar este material del servicio?')) return;
+
+  markLocalMutation();
+
+  const { error } = await supabase.from('service_materials').delete().eq('id', serviceMaterialId);
+  if (error) {
+    console.error(error);
+    alert(error.message);
+    return;
+  }
+
+  el.serviceMaterialDialog.close();
+  await loadAllDataWithRetry(2, 250, { hardLock: false, silent: false });
+}
+
+async function deleteMaterialConsumption() {
+  if (!ensureDataReady('eliminar el consumo')) return;
+
+  const consumptionId = $('materialConsumptionId').value.trim();
+  if (!consumptionId) return;
+
+  const consumption = getMaterialConsumptionById(consumptionId);
+  if (!consumption) return;
+
+  if (!confirm('¿Eliminar este consumo?')) return;
+
+  try {
+    await ensureWriteSession();
+    markLocalMutation();
+
+    const serviceMaterial = getServiceMaterialById(consumption.service_material_id);
+    if (serviceMaterial) {
+      const { error: stockError } = await withTimeout(
+        supabase.from('service_materials').update({
+          current_stock: Number(serviceMaterial.current_stock || 0) + Number(consumption.quantity || 0),
+        }).eq('id', serviceMaterial.id),
+        12000,
+        'Revertir stock tardó demasiado.'
+      );
+      if (stockError) throw stockError;
+    }
+
+    const { error } = await supabase.from('material_consumptions').delete().eq('id', consumptionId);
+    if (error) throw error;
+
+    el.materialConsumptionDialog.close();
+    await loadAllDataWithRetry(2, 250, { hardLock: false, silent: false });
+  } catch (error) {
+    console.error(error);
+    alert(error.message || 'No se pudo eliminar el consumo.');
+  }
 }
 
 async function saveWorker(event) {
@@ -1981,6 +3052,24 @@ function handleDynamicClicks(event) {
     return;
   }
 
+  const editServiceMaterialBtn = event.target.closest('[data-edit-service-material]');
+  if (editServiceMaterialBtn) {
+    openServiceMaterialDialog({ serviceMaterialId: editServiceMaterialBtn.dataset.editServiceMaterial });
+    return;
+  }
+
+  const logServiceMaterialBtn = event.target.closest('[data-log-service-material]');
+  if (logServiceMaterialBtn) {
+    openMaterialConsumptionDialog({ prefillServiceMaterialId: logServiceMaterialBtn.dataset.logServiceMaterial });
+    return;
+  }
+
+  const editMaterialConsumptionBtn = event.target.closest('[data-edit-material-consumption]');
+  if (editMaterialConsumptionBtn) {
+    openMaterialConsumptionDialog({ consumptionId: editMaterialConsumptionBtn.dataset.editMaterialConsumption });
+    return;
+  }
+
   const markAbsenceBtn = event.target.closest('[data-mark-absence]');
   if (markAbsenceBtn) {
     openAbsenceDialog({ assignmentId: markAbsenceBtn.dataset.markAbsence });
@@ -2018,6 +3107,7 @@ function getCurrentViewTitle() {
     services: 'Servicios',
     planner: 'Planner semanal',
     absences: 'Ausencias',
+    materials: 'Materiales',
   };
   return titles[state.currentView] || 'Vista';
 }
@@ -2221,59 +3311,19 @@ function buildPlannerExportData() {
 function buildAbsencesExportData() {
   const dateKey = getSelectedAbsenceDate();
   const dayOfWeek = getDateKeyDayOfWeek(dateKey);
-
-  const statusLabelMap = {
-    uncovered: 'Descubierto',
-    covered: 'Cubierto',
-    partial: 'Parcial',
-  };
-
-  const getCoverageModeLabel = (absence, coveredHours, uncoveredHours) => {
-    if (!absence) return '';
-    if (absence.coverage_status === 'uncovered') return 'Sin cobertura';
-    if (absence.coverage_status === 'covered') return 'Cobertura completa';
-    if (absence.coverage_status === 'partial') {
-      if (coveredHours != null && uncoveredHours != null) {
-        return `Cobertura parcial (${formatHours(coveredHours)} hs cubiertas / ${formatHours(uncoveredHours)} hs descubiertas)`;
-      }
-      return 'Cobertura parcial';
-    }
-    return absence.coverage_status || '';
-  };
-
   const assignments = getAssignmentsByDay(dayOfWeek).map((assignment) => {
     const worker = getWorkerById(assignment.worker_id);
     const service = getServiceById(assignment.service_id);
     const absence = findAbsenceForAssignmentOnDate(assignment, dateKey);
-    const scheduledHours = calculateHours(assignment.start_time, assignment.end_time);
-    const coveredHours = absence ? calculateCoverageHours(absence) : null;
-    const uncoveredHours =
-      absence && coveredHours != null
-        ? Math.max(0, Number((scheduledHours - coveredHours).toFixed(2)))
-        : absence?.coverage_status === 'uncovered'
-          ? scheduledHours
-          : '';
 
     return [
       formatDateLabel(dateKey),
       DAYS.find((day) => day.value === assignment.day_of_week)?.fullLabel || '',
       service?.name || '',
-      service?.supervisor_name || '',
       worker?.name || '',
-      TYPE_META[worker?.worker_type]?.label || '',
       `${assignment.start_time.slice(0, 5)}-${assignment.end_time.slice(0, 5)}`,
-      scheduledHours,
       absence ? 'Sí' : 'No',
-      absence ? (statusLabelMap[absence.coverage_status] || absence.coverage_status || '') : '',
-      absence ? getCoverageModeLabel(absence, coveredHours, uncoveredHours) : '',
-      absence?.coverage_worker_id ? (getWorkerById(absence.coverage_worker_id)?.name || '') : '',
-      absence?.coverage_date ? formatDateLabel(absence.coverage_date) : '',
-      absence?.coverage_start_time && absence?.coverage_end_time
-        ? `${absence.coverage_start_time.slice(0, 5)}-${absence.coverage_end_time.slice(0, 5)}`
-        : '',
-      coveredHours == null ? '' : coveredHours,
-      uncoveredHours === '' ? '' : uncoveredHours,
-      absence?.notes || '',
+      absence ? absence.coverage_status : '',
     ];
   });
 
@@ -2282,39 +3332,21 @@ function buildAbsencesExportData() {
     const service = getServiceById(absence.service_id);
     const coverageWorker = absence.coverage_worker_id ? getWorkerById(absence.coverage_worker_id) : null;
     const coveredHours = calculateCoverageHours(absence);
-    const scheduledHours =
-      absence.scheduled_start_time && absence.scheduled_end_time
-        ? calculateHours(absence.scheduled_start_time, absence.scheduled_end_time)
-        : null;
-    const uncoveredHours =
-      scheduledHours != null
-        ? Math.max(0, Number((scheduledHours - (coveredHours || 0)).toFixed(2)))
-        : null;
 
     return [
       formatDateLabel(absence.absence_date),
-      DAYS.find((day) => day.value === getDateKeyDayOfWeek(absence.absence_date))?.fullLabel || '',
       worker?.name || '',
-      TYPE_META[worker?.worker_type]?.label || '',
       service?.name || '',
-      service?.supervisor_name || '',
-      service?.zone || '',
-      service?.client_address || '',
       absence.scheduled_start_time && absence.scheduled_end_time
         ? `${absence.scheduled_start_time.slice(0, 5)}-${absence.scheduled_end_time.slice(0, 5)}`
         : '',
-      scheduledHours == null ? '' : scheduledHours,
-      statusLabelMap[absence.coverage_status] || absence.coverage_status || '',
-      getCoverageModeLabel(absence, coveredHours, uncoveredHours),
-      absence.coverage_status === 'uncovered' ? 'No' : absence.coverage_status === 'partial' ? 'Parcial' : 'Sí',
+      absence.coverage_status,
       coverageWorker?.name || '',
-      TYPE_META[coverageWorker?.worker_type]?.label || '',
       absence.coverage_date ? formatDateLabel(absence.coverage_date) : '',
       absence.coverage_start_time && absence.coverage_end_time
         ? `${absence.coverage_start_time.slice(0, 5)}-${absence.coverage_end_time.slice(0, 5)}`
         : '',
       coveredHours == null ? '' : coveredHours,
-      uncoveredHours == null ? '' : uncoveredHours,
       absence.notes || '',
     ];
   });
@@ -2324,14 +3356,14 @@ function buildAbsencesExportData() {
       {
         name: 'Programacion del dia',
         rows: [
-          ['Fecha', 'Día', 'Servicio', 'Supervisor', 'Operario', 'Tipo operario', 'Horario asignado', 'Horas asignadas', 'Ausencia registrada', 'Resultado', 'Cómo se cubrió', 'Operario cobertura', 'Fecha cobertura', 'Horario cobertura', 'Horas cubiertas', 'Horas descubiertas', 'Notas'],
+          ['Fecha', 'Día', 'Servicio', 'Operario', 'Horario', 'Ausencia registrada', 'Estado'],
           ...assignments,
         ],
       },
       {
         name: 'Ausencias',
         rows: [
-          ['Fecha', 'Día', 'Operario ausente', 'Tipo operario', 'Servicio afectado', 'Supervisor', 'Zona', 'Dirección', 'Horario asignado', 'Horas asignadas', 'Resultado', 'Cómo se cubrió', '¿Se cubrió?', 'Operario cobertura', 'Tipo cobertura', 'Fecha cobertura', 'Horario cobertura', 'Horas cubiertas', 'Horas descubiertas', 'Notas'],
+          ['Fecha', 'Operario ausente', 'Servicio', 'Horario asignado', 'Resultado', 'Operario cobertura', 'Fecha cobertura', 'Horario cobertura', 'Horas cubiertas', 'Notas'],
           ...absences,
         ],
       },
@@ -2339,6 +3371,89 @@ function buildAbsencesExportData() {
   };
 }
 
+
+
+function buildMaterialsExportData() {
+  const monthKey = getSelectedMaterialsMonth();
+  const serviceMaterials = getFilteredServiceMaterials();
+  const consumptions = getFilteredMaterialConsumptions(monthKey);
+  const summary = buildMonthlyMaterialSummary(monthKey);
+
+  return {
+    sheets: [
+      {
+        name: 'Stock por servicio',
+        rows: [
+          ['Servicio', 'Supervisor', 'Zona', 'Material', 'Unidad', 'Presentación', 'Stock actual', 'Stock mínimo', 'Consumo mes', 'Promedio histórico mensual', 'Notas'],
+          ...serviceMaterials.map((item) => {
+            const service = getServiceById(item.service_id);
+            const material = getMaterialById(item.material_id);
+            return [
+              service?.name || '',
+              service?.supervisor_name || '',
+              service?.zone || '',
+              material?.name || '',
+              material?.unit || '',
+              material?.presentation || '',
+              item.current_stock ?? '',
+              item.minimum_stock ?? '',
+              calculateMonthConsumptionForServiceMaterial(item.id, monthKey),
+              calculateAverageMonthlyConsumption(item.id),
+              item.notes || '',
+            ];
+          }),
+        ],
+      },
+      {
+        name: 'Consumos',
+        rows: [
+          ['Fecha', 'Mes', 'Servicio', 'Supervisor', 'Material', 'Cantidad', 'Unidad', 'Notas'],
+          ...consumptions.map((consumption) => {
+            const service = getServiceById(consumption.service_id);
+            const material = getMaterialById(consumption.material_id);
+            return [
+              formatDateLabel(consumption.consumption_date),
+              formatMonthLabel(getMonthKey(consumption.consumption_date)),
+              service?.name || '',
+              service?.supervisor_name || '',
+              material?.name || '',
+              consumption.quantity,
+              material?.unit || '',
+              consumption.notes || '',
+            ];
+          }),
+        ],
+      },
+      {
+        name: 'Resumen mensual',
+        rows: [
+          ['Mes', 'Material', 'Unidad', 'Consumido', 'Servicios con movimiento', 'Promedio histórico mensual', 'Stock total actual'],
+          ...summary.map((item) => [
+            formatMonthLabel(monthKey),
+            item.name,
+            item.unit,
+            item.totalConsumed,
+            item.servicesCount,
+            item.averageMonthly,
+            item.currentStockTotal,
+          ]),
+        ],
+      },
+      {
+        name: 'Catalogo',
+        rows: [
+          ['Material', 'Unidad', 'Presentación', 'Notas'],
+          ...state.materials.map((material) => [
+            material.name || '',
+            material.unit || '',
+            material.presentation || '',
+            material.notes || '',
+          ]),
+        ],
+      },
+    ],
+  };
+}
 
 function buildCurrentExportData() {
   switch (state.currentView) {
@@ -2350,6 +3465,8 @@ function buildCurrentExportData() {
       return buildPlannerExportData();
     case 'absences':
       return buildAbsencesExportData();
+    case 'materials':
+      return buildMaterialsExportData();
     case 'dashboard':
     default:
       return buildDashboardExportData();
@@ -2467,28 +3584,44 @@ function bindEvents() {
   el.addAssignmentBtn?.addEventListener('click', () => openAssignmentDialog());
   el.bulkAssignmentBtn?.addEventListener('click', () => openBulkAssignmentDialog());
   el.addAbsenceBtn?.addEventListener('click', () => openAbsenceDialog());
+  el.addMaterialCatalogBtn?.addEventListener('click', () => openMaterialCatalogDialog());
+  el.addServiceMaterialBtn?.addEventListener('click', () => openServiceMaterialDialog());
+  el.addMaterialConsumptionBtn?.addEventListener('click', () => openMaterialConsumptionDialog());
 
   el.workerForm?.addEventListener('submit', saveWorker);
   el.serviceForm?.addEventListener('submit', saveService);
   el.assignmentForm?.addEventListener('submit', saveAssignment);
   el.bulkAssignmentForm?.addEventListener('submit', saveBulkAssignments);
   el.absenceForm?.addEventListener('submit', saveAbsence);
+  el.materialCatalogForm?.addEventListener('submit', saveMaterialCatalog);
+  el.serviceMaterialForm?.addEventListener('submit', saveServiceMaterial);
+  el.materialConsumptionForm?.addEventListener('submit', saveMaterialConsumption);
 
   $('deleteWorkerBtn')?.addEventListener('click', deleteWorker);
   $('deleteServiceBtn')?.addEventListener('click', deleteService);
   $('deleteAssignmentBtn')?.addEventListener('click', deleteAssignment);
   $('deleteAbsenceBtn')?.addEventListener('click', deleteAbsence);
+  $('deleteMaterialCatalogBtn')?.addEventListener('click', deleteMaterialCatalog);
+  $('deleteServiceMaterialBtn')?.addEventListener('click', deleteServiceMaterial);
+  $('deleteMaterialConsumptionBtn')?.addEventListener('click', deleteMaterialConsumption);
 
   el.absenceDateFilter?.addEventListener('change', () => scheduleRenderCurrentView());
+  el.materialsMonthFilter?.addEventListener('change', () => scheduleRenderCurrentView());
+  el.materialsServiceFilter?.addEventListener('change', () => scheduleRenderCurrentView());
   $('absenceCoverageStatus')?.addEventListener('change', toggleAbsenceCoverageFields);
   $('absenceCoverageStart')?.addEventListener('input', updateAbsenceCoverageInfo);
   $('absenceCoverageEnd')?.addEventListener('input', updateAbsenceCoverageInfo);
+  $('serviceMaterialCatalog')?.addEventListener('input', () => updateMaterialCatalogAutocomplete('serviceMaterialCatalog', 'serviceMaterialUnit', 'serviceMaterialPresentation'));
+  $('materialConsumptionService')?.addEventListener('change', updateMaterialConsumptionOptions);
+  $('materialConsumptionMaterial')?.addEventListener('input', updateMaterialConsumptionMeta);
 
   el.workersTableBody?.addEventListener('click', handleDynamicClicks);
   el.servicesGrid?.addEventListener('click', handleDynamicClicks);
   el.plannerBoard?.addEventListener('click', handleDynamicClicks);
   el.absenceScheduleBoard?.addEventListener('click', handleDynamicClicks);
   el.absenceHistoryBoard?.addEventListener('click', handleDynamicClicks);
+  el.serviceMaterialsBoard?.addEventListener('click', handleDynamicClicks);
+  el.materialsConsumptionHistoryBoard?.addEventListener('click', handleDynamicClicks);
 
   document.querySelectorAll('[data-close]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -2535,21 +3668,36 @@ function boot() {
       absenceDateFilter: $('absenceDateFilter'),
       absenceScheduleBoard: $('absenceScheduleBoard'),
       absenceHistoryBoard: $('absenceHistoryBoard'),
+      materialsMonthFilter: $('materialsMonthFilter'),
+      materialsServiceFilter: $('materialsServiceFilter'),
+      materialKpiCards: $('materialKpiCards'),
+      serviceMaterialsBoard: $('serviceMaterialsBoard'),
+      materialsMonthlySummaryBoard: $('materialsMonthlySummaryBoard'),
+      materialsConsumptionHistoryBoard: $('materialsConsumptionHistoryBoard'),
       addWorkerBtn: $('addWorkerBtn'),
       addServiceBtn: $('addServiceBtn'),
       addAssignmentBtn: $('addAssignmentBtn'),
       bulkAssignmentBtn: $('bulkAssignmentBtn'),
       addAbsenceBtn: $('addAbsenceBtn'),
+      addMaterialCatalogBtn: $('addMaterialCatalogBtn'),
+      addServiceMaterialBtn: $('addServiceMaterialBtn'),
+      addMaterialConsumptionBtn: $('addMaterialConsumptionBtn'),
       workerDialog: $('workerDialog'),
       serviceDialog: $('serviceDialog'),
       assignmentDialog: $('assignmentDialog'),
       bulkAssignmentDialog: $('bulkAssignmentDialog'),
       absenceDialog: $('absenceDialog'),
+      materialCatalogDialog: $('materialCatalogDialog'),
+      serviceMaterialDialog: $('serviceMaterialDialog'),
+      materialConsumptionDialog: $('materialConsumptionDialog'),
       workerForm: $('workerForm'),
       serviceForm: $('serviceForm'),
       assignmentForm: $('assignmentForm'),
       bulkAssignmentForm: $('bulkAssignmentForm'),
       absenceForm: $('absenceForm'),
+      materialCatalogForm: $('materialCatalogForm'),
+      serviceMaterialForm: $('serviceMaterialForm'),
+      materialConsumptionForm: $('materialConsumptionForm'),
       absenceCoverageHoursInfo: $('absenceCoverageHoursInfo'),
     });
 
