@@ -14,6 +14,7 @@ create table if not exists public.workers (
 );
 
 alter table public.workers add column if not exists hire_date date;
+alter table public.absences add column if not exists absence_type text;
 
 -- Tabla de servicios
 create table if not exists public.services (
@@ -55,6 +56,7 @@ create table if not exists public.absences (
   day_of_week int not null check (day_of_week between 0 and 6),
   scheduled_start_time time,
   scheduled_end_time time,
+  absence_type text check (absence_type in ('injustificada', 'justificada', 'suspension')),
   coverage_status text not null default 'uncovered' check (coverage_status in ('uncovered', 'covered', 'partial')),
   coverage_worker_id uuid references public.workers(id) on delete set null,
   coverage_date date,

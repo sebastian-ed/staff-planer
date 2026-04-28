@@ -17,6 +17,7 @@ insert into public.absences (
   day_of_week,
   scheduled_start_time,
   scheduled_end_time,
+  absence_type,
   coverage_status,
   notes
 )
@@ -27,6 +28,7 @@ select
   extract(dow from current_date)::int,
   '08:00',
   '12:00',
+  'injustificada',
   'uncovered',
   'Ejemplo de ausencia cargada'
 from public.workers w

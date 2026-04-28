@@ -16,6 +16,12 @@ const TYPE_META = {
   insurance: { label: 'Seguro / por hora', defaultHours: null },
 };
 
+const ABSENCE_TYPE_META = {
+  injustificada: 'Injustificada',
+  justificada: 'Justificada',
+  suspension: 'Suspensión',
+};
+
 const VIEW_IDS = {
   dashboard: 'dashboardView',
   workers: 'workersView',
@@ -124,6 +130,77 @@ function formatMonthLabel(monthKey) {
     month: 'long',
     year: 'numeric',
   }).format(new Date(year, month - 1, 1));
+}
+
+function formatAbsenceTypeLabel(value) {
+  return ABSENCE_TYPE_META[value] || 'Sin clasificar';
+}
+
+function parseDateKeyToLocalDate(dateKey) {
+  if (!dateKey || !/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return null;
+  const [year, month, day] = dateKey.split('-').map(Number);
+  return new Date(year, month - 1, day);
+}
+
+function getMonthStartDate(monthKey) {
+  if (!monthKey || !/^\d{4}-\d{2}$/.test(monthKey)) return null;
+  const [year, month] = monthKey.split('-').map(Number);
+  return new Date(year, month - 1, 1);
+}
+
+function getMonthEndDate(monthKey) {
+  const start = getMonthStartDate(monthKey);
+  if (!start) return null;
+  return new Date(start.getFullYear(), start.getMonth() + 1, 0);
+}
+
+function toDateKey(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function getScheduledHoursForWorkerTypeOnDate(workerType, date) {
+  const weekday = date?.getDay?.();
+  if (weekday == null) return 0;
+
+  if (workerType === 'full_time') {
+    if (weekday >= 1 && weekday <= 5) return 8;
+    if (weekday === 6) return 4;
+    return 0;
+  }
+
+  if (workerType === 'part_time' || workerType === 'insurance') {
+    if (weekday >= 1 && weekday <= 6) return 4;
+    return 0;
+  }
+
+  return 0;
+}
+
+function calculateMonthlyTargetHours(worker, monthKey) {
+  const monthStart = getMonthStartDate(monthKey);
+  const monthEnd = getMonthEndDate(monthKey);
+  if (!monthStart || !monthEnd || !worker) return 0;
+
+  const hireDate = parseDateKeyToLocalDate(worker.hire_date);
+  if (hireDate && hireDate > monthEnd) return 0;
+
+  const effectiveStart = hireDate && hireDate > monthStart
+    ? hireDate
+    : monthStart;
+
+  let totalHours = 0;
+  const cursor = new Date(effectiveStart);
+
+  while (cursor <= monthEnd) {
+    totalHours += getScheduledHoursForWorkerTypeOnDate(worker.worker_type, cursor);
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return Number(totalHours.toFixed(2));
 }
 
 function formatHours(value) {
@@ -273,6 +350,8 @@ function rebuildDerivedState() {
         coverageWorker?.name || '',
         absence.notes || '',
         absence.coverage_status || '',
+        absence.absence_type || '',
+        formatAbsenceTypeLabel(absence.absence_type),
       ]
         .join(' ')
         .toLowerCase()
@@ -576,6 +655,7 @@ function buildAbsenceTimelineEntries(workerId = 'all') {
         serviceNames: [...new Set(services)],
         coveredWorkerNames: [...coveredWorkers],
         coverageStatus: summarizeCoverageStatus(absences),
+        absenceType: summarizeAbsenceType(absences),
         totalScheduledHours: Number(totalScheduledHours.toFixed(2)),
         totalCoveredHours: Number(totalCoveredHours.toFixed(2)),
         totalUncoveredHours: Number(Math.max(0, totalScheduledHours - totalCoveredHours).toFixed(2)),
@@ -1387,6 +1467,70 @@ function getFilteredAbsencesForDate(dateKey) {
       const bStart = b.scheduled_start_time || '';
       return aStart.localeCompare(bStart);
     });
+}
+
+function getFilteredAbsencesForMonth(monthKey) {
+  if (!monthKey) return [];
+
+  return state.absences
+    .filter((absence) => getMonthKey(absence.absence_date) === monthKey)
+    .filter((absence) => {
+      const searchTerm = state.filters.search;
+      const workerTypeFilter = state.filters.workerType;
+
+      if (searchTerm) {
+        const hay = state.derived.absenceSearchById.get(absence.id) || '';
+        if (!hay.includes(searchTerm)) return false;
+      }
+
+      if (workerTypeFilter !== 'all') {
+        const worker = getWorkerById(absence.worker_id);
+        if (worker?.worker_type !== workerTypeFilter) return false;
+      }
+
+      return true;
+    })
+    .sort((a, b) => {
+      const byDate = String(a.absence_date || '').localeCompare(String(b.absence_date || ''));
+      if (byDate !== 0) return byDate;
+      const byService = String(getServiceById(a.service_id)?.name || '').localeCompare(String(getServiceById(b.service_id)?.name || ''));
+      if (byService !== 0) return byService;
+      return String(a.scheduled_start_time || '').localeCompare(String(b.scheduled_start_time || ''));
+    });
+}
+
+function summarizeAbsenceType(absences) {
+  const normalized = [...new Set(
+    absences
+      .map((absence) => absence.absence_type || '')
+      .filter(Boolean)
+  )];
+
+  if (!normalized.length) return '';
+  if (normalized.length === 1) return normalized[0];
+  return normalized[0];
+}
+
+function buildMonthlyWorkerClosureRows(monthKey) {
+  return getFilteredWorkersForAbsenceTracking().map((worker) => {
+    const entries = buildAbsenceTimelineEntries(worker.id)
+      .filter((entry) => getMonthKey(entry.dateKey) === monthKey);
+
+    const totalAbsences = entries.length;
+    const unjustified = entries.filter((entry) => entry.absenceType === 'injustificada').length;
+    const justified = entries.filter((entry) => entry.absenceType === 'justificada').length;
+    const suspensions = entries.filter((entry) => entry.absenceType === 'suspension').length;
+    const monthlyHours = calculateMonthlyTargetHours(worker, monthKey);
+
+    return [
+      worker.name || '',
+      totalAbsences,
+      unjustified,
+      justified,
+      suspensions,
+      monthlyHours,
+    ];
+  });
 }
 
 function renderAbsenceScheduleBoard(dateKey) {
@@ -2463,6 +2607,7 @@ function openAbsenceDialog(options = {}) {
   const defaultDate = getSelectedAbsenceDate();
   if ($('absenceDate')) $('absenceDate').value = defaultDate;
   if ($('absenceCoverageStatus')) $('absenceCoverageStatus').value = 'uncovered';
+  if ($('absenceType')) $('absenceType').value = '';
 
   if (absenceId) {
     const absence = getAbsenceById(absenceId);
@@ -2475,6 +2620,7 @@ function openAbsenceDialog(options = {}) {
     $('absenceService').value = absence.service_id || '';
     $('absenceScheduledStart').value = absence.scheduled_start_time?.slice(0, 5) || '';
     $('absenceScheduledEnd').value = absence.scheduled_end_time?.slice(0, 5) || '';
+    $('absenceType').value = absence.absence_type || '';
     $('absenceCoverageStatus').value = absence.coverage_status || 'uncovered';
     $('absenceCoverageWorker').value = absence.coverage_worker_id || '';
     $('absenceCoverageDate').value = absence.coverage_date || '';
@@ -3321,6 +3467,7 @@ async function saveAbsence(event) {
   const serviceId = $('absenceService')?.value;
   const scheduledStart = $('absenceScheduledStart')?.value || null;
   const scheduledEnd = $('absenceScheduledEnd')?.value || null;
+  const absenceType = $('absenceType')?.value || null;
   const coverageStatus = $('absenceCoverageStatus')?.value || 'uncovered';
   const coverageWorkerId = $('absenceCoverageWorker')?.value || null;
   const coverageDate = $('absenceCoverageDate')?.value || null;
@@ -3371,6 +3518,7 @@ async function saveAbsence(event) {
       day_of_week: dayOfWeek,
       scheduled_start_time: scheduledStart || null,
       scheduled_end_time: scheduledEnd || null,
+      absence_type: absenceType,
       coverage_status: coverageStatus,
       coverage_worker_id: coverageStatus === 'uncovered' ? null : coverageWorkerId,
       coverage_date: coverageStatus === 'uncovered' ? null : coverageDate,
@@ -3785,6 +3933,8 @@ function buildPlannerExportData() {
 
 function buildAbsencesExportData() {
   const dateKey = getSelectedAbsenceDate();
+  const monthKey = getMonthKey(dateKey);
+  const monthLabel = formatMonthLabel(monthKey);
   const dayOfWeek = getDateKeyDayOfWeek(dateKey);
   const assignments = getAssignmentsByDay(dayOfWeek).map((assignment) => {
     const worker = getWorkerById(assignment.worker_id);
@@ -3799,11 +3949,12 @@ function buildAbsencesExportData() {
       worker?.hire_date ? formatDateLabel(worker.hire_date) : '',
       `${assignment.start_time.slice(0, 5)}-${assignment.end_time.slice(0, 5)}`,
       absence ? 'Sí' : 'No',
+      absence ? formatAbsenceTypeLabel(absence.absence_type) : '',
       absence ? absence.coverage_status : '',
     ];
   });
 
-  const absences = getFilteredAbsencesForDate(dateKey).map((absence) => {
+  const absencesForDate = getFilteredAbsencesForDate(dateKey).map((absence) => {
     const worker = getWorkerById(absence.worker_id);
     const service = getServiceById(absence.service_id);
     const coverageWorker = absence.coverage_worker_id ? getWorkerById(absence.coverage_worker_id) : null;
@@ -3814,6 +3965,7 @@ function buildAbsencesExportData() {
       formatDateLabel(absence.absence_date),
       worker?.name || '',
       worker?.hire_date ? formatDateLabel(worker.hire_date) : '',
+      formatAbsenceTypeLabel(absence.absence_type),
       service?.name || '',
       absence.scheduled_start_time && absence.scheduled_end_time
         ? `${absence.scheduled_start_time.slice(0, 5)}-${absence.scheduled_end_time.slice(0, 5)}`
@@ -3851,6 +4003,7 @@ function buildAbsencesExportData() {
     entry.worker?.name || '',
     entry.worker?.hire_date ? formatDateLabel(entry.worker.hire_date) : '',
     formatDateLabel(entry.dateKey),
+    formatAbsenceTypeLabel(entry.absenceType),
     entry.serviceNames.join(' | '),
     entry.coverageStatus,
     entry.coveredWorkerNames.join(' | '),
@@ -3862,20 +4015,32 @@ function buildAbsencesExportData() {
     entry.projectedAnnualAbsences == null ? '' : entry.projectedAnnualAbsences,
   ]);
 
+  const monthlyServiceRows = getFilteredAbsencesForMonth(monthKey).map((absence) => {
+    const service = getServiceById(absence.service_id);
+    return [
+      service?.name || '',
+      'Sí',
+      formatDateLabel(absence.absence_date),
+      absence.coverage_status,
+    ];
+  });
+
+  const monthlyWorkerRows = buildMonthlyWorkerClosureRows(monthKey);
+
   return {
     sheets: [
       {
         name: 'Programacion del dia',
         rows: [
-          ['Fecha', 'Día', 'Servicio', 'Operario', 'Fecha ingreso', 'Horario', 'Ausencia registrada', 'Estado'],
+          ['Fecha', 'Día', 'Servicio', 'Operario', 'Fecha ingreso', 'Horario', 'Ausencia registrada', 'Tipo falta', 'Estado'],
           ...assignments,
         ],
       },
       {
         name: 'Ausencias',
         rows: [
-          ['Fecha', 'Operario ausente', 'Fecha ingreso', 'Servicio', 'Horario asignado', 'Resultado', 'Operario cobertura', 'Fecha cobertura', 'Horario cobertura', 'Horas cubiertas', 'Faltas acumuladas a esa fecha', '% anualizado a esa fecha', 'Proyección anual', 'Notas'],
-          ...absences,
+          ['Fecha', 'Operario ausente', 'Fecha ingreso', 'Tipo falta', 'Servicio', 'Horario asignado', 'Resultado', 'Operario cobertura', 'Fecha cobertura', 'Horario cobertura', 'Horas cubiertas', 'Faltas acumuladas a esa fecha', '% anualizado a esa fecha', 'Proyección anual', 'Notas'],
+          ...absencesForDate,
         ],
       },
       {
@@ -3888,8 +4053,22 @@ function buildAbsencesExportData() {
       {
         name: 'Historial operario',
         rows: [
-          ['Operario', 'Fecha ingreso', 'Fecha falta', 'Servicios afectados', 'Resultado', 'Cubrió', 'Horas afectadas', 'Horas cubiertas', 'Horas descubiertas', 'Acumulado a esa fecha', '% anualizado a esa fecha', 'Proyección anual'],
+          ['Operario', 'Fecha ingreso', 'Fecha falta', 'Tipo falta', 'Servicios afectados', 'Resultado', 'Cubrió', 'Horas afectadas', 'Horas cubiertas', 'Horas descubiertas', 'Acumulado a esa fecha', '% anualizado a esa fecha', 'Proyección anual'],
           ...historyRows,
+        ],
+      },
+      {
+        name: 'cierre servicios mes',
+        rows: [
+          ['Mes', 'Servicio', 'Ausencia registrada', 'Fecha falta', 'Resultado'],
+          ...monthlyServiceRows.map((row) => [monthLabel, ...row]),
+        ],
+      },
+      {
+        name: 'cierre operarios mes',
+        rows: [
+          ['Mes', 'Operario', 'Ausencia registrada total', 'injustificada', 'justificada', 'suspensión', 'horas totales mensuales'],
+          ...monthlyWorkerRows.map((row) => [monthLabel, ...row]),
         ],
       },
     ],
