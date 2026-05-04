@@ -672,8 +672,7 @@ function getSelectedAbsenceHistoryWorkerId() {
 
 function getAbsenceTrackingReferenceDateKey() {
   const period = getAbsenceActivePeriod();
-  if (period.endKey) return period.endKey;
-  return getLatestAbsenceDateKey() || getSelectedAbsenceDate() || new Date().toISOString().slice(0, 10);
+  return period.endKey || getSelectedAbsenceDate() || new Date().toISOString().slice(0, 10);
 }
 
 function getWorkerAbsenceUniqueDateKeys(workerId, startKey = '', endKey = '') {
@@ -1835,90 +1834,65 @@ function formatDateRangeLabel(startKey, endKey) {
   return `${formatDateLabel(startKey)} al ${formatDateLabel(endKey)}`;
 }
 
-function getLatestAbsenceDateKey() {
+function getFilteredAbsenceDateKeys() {
   return state.absences
-    .map((absence) => absence.absence_date || '')
+    .filter((absence) => {
+      const dateKey = absence.absence_date || '';
+      if (!dateKey) return false;
+
+      const searchTerm = state.filters.search;
+      const workerTypeFilter = state.filters.workerType;
+
+      if (searchTerm) {
+        const hay = state.derived.absenceSearchById.get(absence.id) || '';
+        if (!hay.includes(searchTerm)) return false;
+      }
+
+      if (workerTypeFilter !== 'all') {
+        const worker = getWorkerById(absence.worker_id);
+        if (worker?.worker_type !== workerTypeFilter) return false;
+      }
+
+      return true;
+    })
+    .map((absence) => absence.absence_date)
     .filter(Boolean)
-    .sort()
-    .at(-1) || '';
+    .sort();
 }
 
-function getEarliestAbsenceDateKey() {
-  return state.absences
-    .map((absence) => absence.absence_date || '')
-    .filter(Boolean)
-    .sort()[0] || '';
-}
+function getAbsencePeriodMonthKeys(period, absences = []) {
+  const monthKeys = new Set();
 
-function getFiniteAbsencePeriod(period = getAbsenceActivePeriod()) {
-  if (period?.startKey && period?.endKey) return period;
+  absences.forEach((absence) => {
+    const monthKey = getMonthKey(absence.absence_date);
+    if (monthKey) monthKeys.add(monthKey);
+  });
 
-  const earliestDate = getEarliestAbsenceDateKey();
-  const latestDate = getLatestAbsenceDateKey();
-  const fallbackDate = getSelectedAbsenceDate();
+  if (monthKeys.size) {
+    return [...monthKeys].sort();
+  }
 
-  return {
-    ...period,
-    startKey: earliestDate || fallbackDate,
-    endKey: latestDate || earliestDate || fallbackDate,
-    label: period?.label || 'Histórico total',
-  };
-}
+  if (!period?.startKey || !period?.endKey) {
+    return [];
+  }
 
-function listMonthKeysBetween(startKey, endKey) {
-  const startDate = parseDateKey(startKey);
-  const endDate = parseDateKey(endKey);
+  const startDate = parseDateKey(period.startKey);
+  const endDate = parseDateKey(period.endKey);
   if (!startDate || !endDate) return [];
 
-  const keys = [];
-  const cursor = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
-  const last = new Date(endDate.getFullYear(), endDate.getMonth(), 1);
+  const cursor = new Date(startDate.getFullYear(), startDate.getMonth(), 1, 12, 0, 0, 0);
+  const endCursor = new Date(endDate.getFullYear(), endDate.getMonth(), 1, 12, 0, 0, 0);
 
-  while (cursor <= last) {
-    keys.push(`${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`);
+  while (cursor <= endCursor) {
+    monthKeys.add(`${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`);
     cursor.setMonth(cursor.getMonth() + 1);
   }
 
-  return keys;
-}
-
-function getAbsenceExportMonthKeys(period, absences = []) {
-  if (period?.mode === 'month' && period.monthKey) {
-    return [period.monthKey];
-  }
-
-  if (period?.startKey && period?.endKey) {
-    return listMonthKeysBetween(period.startKey, period.endKey);
-  }
-
-  if (absences.length) {
-    const keys = [...new Set(absences.map((absence) => getMonthKey(absence.absence_date)).filter(Boolean))].sort();
-    if (keys.length) return keys;
-  }
-
-  const latestDate = getLatestAbsenceDateKey() || getSelectedAbsenceDate();
-  return [getMonthKey(latestDate)].filter(Boolean);
-}
-
-function getAbsencePeriodExportLabel(period = getAbsenceActivePeriod()) {
-  if (period?.mode === 'all') return 'Histórico total';
-  if (period?.mode === 'month') return formatMonthLabel(period.monthKey);
-  if (period?.mode === 'range') return formatDateRangeLabel(period.startKey, period.endKey);
-  return formatDateLabel(period?.startKey || getSelectedAbsenceDate());
+  return [...monthKeys].sort();
 }
 
 function getAbsenceActivePeriod() {
   const mode = getSelectedAbsenceFilterMode();
-
-  if (mode === 'all') {
-    return {
-      mode,
-      startKey: '',
-      endKey: '',
-      monthKey: '',
-      label: 'Histórico total',
-    };
-  }
 
   if (mode === 'month') {
     const monthKey = getSelectedAbsenceMonthKey();
@@ -1951,6 +1925,21 @@ function getAbsenceActivePeriod() {
       endKey,
       monthKey: getMonthKey(startKey),
       label: formatDateRangeLabel(startKey, endKey),
+    };
+  }
+
+  if (mode == 'all') {
+    const dateKeys = getFilteredAbsenceDateKeys();
+    const fallbackKey = getSelectedAbsenceDate();
+    const startKey = dateKeys[0] || fallbackKey;
+    const endKey = dateKeys[dateKeys.length - 1] || fallbackKey;
+
+    return {
+      mode,
+      startKey,
+      endKey,
+      monthKey: getMonthKey(startKey),
+      label: 'Histórico total',
     };
   }
 
@@ -1996,7 +1985,7 @@ function updateAbsenceViewHeadings(period) {
       : activePeriod.mode === 'month'
         ? 'Programación del mes'
         : activePeriod.mode === 'all'
-          ? 'Programación histórica'
+          ? 'Programación del histórico'
           : 'Programación del rango';
   }
 
@@ -2004,7 +1993,7 @@ function updateAbsenceViewHeadings(period) {
     el.absenceScheduleSubtitle.textContent = activePeriod.mode === 'day'
       ? 'Marcá ausencias desde la agenda prevista'
       : activePeriod.mode === 'all'
-        ? 'Turnos y ausencias dentro de todo el histórico registrado'
+        ? 'Turnos comprendidos en todo el histórico filtrado'
         : `Turnos comprendidos en ${label}`;
   }
 
@@ -2014,7 +2003,7 @@ function updateAbsenceViewHeadings(period) {
       : activePeriod.mode === 'month'
         ? 'Ausencias del mes'
         : activePeriod.mode === 'all'
-          ? 'Ausencias históricas'
+          ? 'Ausencias del histórico'
           : 'Ausencias del rango';
   }
 
@@ -2022,7 +2011,7 @@ function updateAbsenceViewHeadings(period) {
     el.absenceHistorySubtitle.textContent = activePeriod.mode === 'day'
       ? 'Con cobertura, parcial o sin cubrir'
       : activePeriod.mode === 'all'
-        ? 'Resultados registrados del histórico completo'
+        ? 'Resultados registrados para todo el histórico filtrado'
         : `Resultados registrados para ${label}`;
   }
 
@@ -2073,11 +2062,12 @@ function getFilteredAbsencesForDate(dateKey) {
 }
 
 function getFilteredAbsencesForPeriod(period = getAbsenceActivePeriod()) {
+  if (!period?.startKey || !period?.endKey) return [];
+
   return state.absences
     .filter((absence) => {
       const dateKey = absence.absence_date || '';
       if (!dateKey) return false;
-      if (!period?.startKey || !period?.endKey) return true;
       return dateKey >= period.startKey && dateKey <= period.endKey;
     })
     .filter((absence) => {
@@ -2119,12 +2109,10 @@ function getFilteredAbsencesForMonth(monthKey) {
 }
 
 function getAssignmentOccurrencesForPeriod(period = getAbsenceActivePeriod()) {
-  const effectivePeriod = getFiniteAbsencePeriod(period);
+  if (!period?.startKey || !period?.endKey) return [];
 
-  if (!effectivePeriod?.startKey || !effectivePeriod?.endKey) return [];
-
-  const startDate = parseDateKey(effectivePeriod.startKey);
-  const endDate = parseDateKey(effectivePeriod.endKey);
+  const startDate = parseDateKey(period.startKey);
+  const endDate = parseDateKey(period.endKey);
   if (!startDate || !endDate) return [];
 
   const searchTerm = state.filters.search;
@@ -2325,17 +2313,9 @@ function renderAbsenceMonthlyKpis(period = getAbsenceActivePeriod()) {
   const uniqueDates = new Set(absences.map((absence) => absence.absence_date).filter(Boolean));
   const uncovered = absences.filter((absence) => absence.coverage_status === 'uncovered').length;
 
-  const primaryLabel = period.mode === 'day'
-    ? 'Ausencias del día'
-    : period.mode === 'month'
-      ? 'Ausencias del mes'
-      : period.mode === 'all'
-        ? 'Ausencias históricas'
-        : 'Ausencias del rango';
-
   const cards = [
     {
-      label: primaryLabel,
+      label: 'Ausencias del mes',
       value: absences.length,
       foot: `Registros de ${period.label}`,
     },
@@ -4793,34 +4773,95 @@ function buildPlannerExportData() {
   };
 }
 
+function getAbsencePeriodDescription(period = getAbsenceActivePeriod()) {
+  if (!period) return 'Sin filtro';
+  if (period.mode === 'day') return `Día: ${period.label}`;
+  if (period.mode === 'month') return `Mes: ${period.label}`;
+  if (period.mode === 'range') return `Rango: ${period.label}`;
+  if (period.mode === 'all') return 'Histórico total';
+  return period.label || 'Sin filtro';
+}
+
+function getAbsenceExportFileSuffix(period = getAbsenceActivePeriod()) {
+  if (!period) return 'sin-filtro';
+  if (period.mode === 'day') return `dia-${period.startKey}`;
+  if (period.mode === 'month') return `mes-${period.monthKey}`;
+  if (period.mode === 'range') return `rango-${period.startKey}-${period.endKey}`;
+  if (period.mode === 'all') return 'historico-total';
+  return 'sin-filtro';
+}
+
+function getAssignmentOccurrencesForExport(period, absences) {
+  if (period?.mode !== 'all') {
+    return getAssignmentOccurrencesForPeriod(period);
+  }
+
+  return absences
+    .map((absence) => {
+      const assignment = absence.assignment_id ? getAssignmentById(absence.assignment_id) : null;
+      return {
+        id: assignment?.id || absence.id,
+        worker_id: absence.worker_id,
+        service_id: absence.service_id,
+        day_of_week: absence.day_of_week,
+        start_time: absence.scheduled_start_time || assignment?.start_time || '',
+        end_time: absence.scheduled_end_time || assignment?.end_time || '',
+        occurrence_date: absence.absence_date,
+      };
+    })
+    .sort((a, b) => {
+      const byDate = String(a.occurrence_date || '').localeCompare(String(b.occurrence_date || ''));
+      if (byDate !== 0) return byDate;
+      const byService = String(getServiceById(a.service_id)?.name || '').localeCompare(String(getServiceById(b.service_id)?.name || ''));
+      if (byService !== 0) return byService;
+      return String(a.start_time || '').localeCompare(String(b.start_time || ''));
+    });
+}
+
+function buildMonthlyWorkerClosureRowsForPeriod(period, monthKeys) {
+  return monthKeys.flatMap((monthKey) => {
+    const monthLabel = formatMonthLabel(monthKey);
+    return buildMonthlyWorkerClosureRows(monthKey).map((row) => [monthLabel, ...row]);
+  });
+}
+
 function buildAbsencesExportData() {
   const period = getAbsenceActivePeriod();
-  const effectivePeriod = getFiniteAbsencePeriod(period);
-  const periodLabel = getAbsencePeriodExportLabel(period);
-  const referenceDateKey = getAbsenceTrackingReferenceDateKey();
-  const occurrences = getAssignmentOccurrencesForPeriod(period);
-  const absences = getFilteredAbsencesForPeriod(period);
+  const periodDescription = getAbsencePeriodDescription(period);
+  const referenceDateKey = period.endKey || getSelectedAbsenceDate();
+  const absencesForPeriod = getFilteredAbsencesForPeriod(period);
+  const occurrences = getAssignmentOccurrencesForExport(period, absencesForPeriod);
+  const monthKeys = getAbsencePeriodMonthKeys(period, absencesForPeriod);
 
-  const assignmentsRows = occurrences.map((assignment) => {
+  const assignments = occurrences.map((assignment) => {
     const worker = getWorkerById(assignment.worker_id);
     const service = getServiceById(assignment.service_id);
-    const absence = findAbsenceForAssignmentOnDate(assignment, assignment.occurrence_date);
+    const occurrenceDate = assignment.occurrence_date || referenceDateKey;
+    const absence = absencesForPeriod.find((item) => {
+      if (item.assignment_id && assignment.id) {
+        return item.assignment_id === assignment.id && item.absence_date === occurrenceDate;
+      }
+      return item.worker_id === assignment.worker_id
+        && item.service_id === assignment.service_id
+        && item.absence_date === occurrenceDate;
+    });
 
     return [
-      periodLabel,
-      formatDateLabel(assignment.occurrence_date),
+      formatDateLabel(occurrenceDate),
       DAYS.find((day) => day.value === assignment.day_of_week)?.fullLabel || '',
       service?.name || '',
       worker?.name || '',
       worker?.hire_date ? formatDateLabel(worker.hire_date) : '',
-      `${assignment.start_time.slice(0, 5)}-${assignment.end_time.slice(0, 5)}`,
+      assignment.start_time && assignment.end_time
+        ? `${assignment.start_time.slice(0, 5)}-${assignment.end_time.slice(0, 5)}`
+        : '',
       absence ? 'Sí' : 'No',
       absence ? formatAbsenceTypeLabel(absence.absence_type) : '',
       absence ? absence.coverage_status : '',
     ];
   });
 
-  const absencesRows = absences.map((absence) => {
+  const absencesRows = absencesForPeriod.map((absence) => {
     const worker = getWorkerById(absence.worker_id);
     const service = getServiceById(absence.service_id);
     const coverageWorker = absence.coverage_worker_id ? getWorkerById(absence.coverage_worker_id) : null;
@@ -4828,14 +4869,11 @@ function buildAbsencesExportData() {
     const stats = getWorkerAbsenceStats(worker, absence.absence_date);
 
     return [
-      periodLabel,
       formatDateLabel(absence.absence_date),
       worker?.name || '',
       worker?.hire_date ? formatDateLabel(worker.hire_date) : '',
       formatAbsenceTypeLabel(absence.absence_type),
       service?.name || '',
-      service?.supervisor_name || '',
-      service?.zone || '',
       absence.scheduled_start_time && absence.scheduled_end_time
         ? `${absence.scheduled_start_time.slice(0, 5)}-${absence.scheduled_end_time.slice(0, 5)}`
         : '',
@@ -4855,7 +4893,6 @@ function buildAbsencesExportData() {
   });
 
   const annualTracking = getFilteredWorkerAbsenceStats(referenceDateKey).map((item) => [
-    periodLabel,
     item.worker?.name || '',
     TYPE_META[item.worker?.worker_type]?.label || '',
     item.worker?.hire_date ? formatDateLabel(item.worker.hire_date) : '',
@@ -4863,7 +4900,7 @@ function buildAbsencesExportData() {
     formatDateLabel(referenceDateKey),
     item.elapsedDays,
     item.absenceCount,
-    item.annualizedPercent == null ? '' : item.annualizedPercent,
+    item.actualPercent == null ? '' : item.actualPercent,
     item.calendarYearPercent == null ? '' : item.calendarYearPercent,
     item.projectedAnnualAbsences == null ? '' : item.projectedAnnualAbsences,
     item.remainingAbsencesToThreshold == null ? '' : item.remainingAbsencesToThreshold,
@@ -4872,12 +4909,8 @@ function buildAbsencesExportData() {
 
   const historyWorkerId = getSelectedAbsenceHistoryWorkerId();
   const historyRows = buildAbsenceTimelineEntries(historyWorkerId)
-    .filter((entry) => {
-      if (!period?.startKey || !period?.endKey) return true;
-      return entry.dateKey >= period.startKey && entry.dateKey <= period.endKey;
-    })
+    .filter((entry) => entry.dateKey >= period.startKey && entry.dateKey <= period.endKey)
     .map((entry) => [
-      periodLabel,
       entry.worker?.name || '',
       entry.worker?.hire_date ? formatDateLabel(entry.worker.hire_date) : '',
       formatDateLabel(entry.dateKey),
@@ -4893,54 +4926,63 @@ function buildAbsencesExportData() {
       entry.projectedAnnualAbsences == null ? '' : entry.projectedAnnualAbsences,
     ]);
 
-  const monthKeys = getAbsenceExportMonthKeys(period, absences);
-  const monthlyServiceRows = monthKeys.flatMap((monthKey) =>
-    getFilteredAbsencesForMonth(monthKey).map((absence) => {
-      const service = getServiceById(absence.service_id);
-      return [
-        formatMonthLabel(monthKey),
-        service?.name || '',
-        'Sí',
-        formatDateLabel(absence.absence_date),
-        absence.coverage_status,
-      ];
-    })
-  );
+  const serviceClosureRows = absencesForPeriod.map((absence) => {
+    const service = getServiceById(absence.service_id);
+    return [
+      formatMonthLabel(getMonthKey(absence.absence_date)),
+      service?.name || '',
+      'Sí',
+      formatDateLabel(absence.absence_date),
+      absence.coverage_status,
+    ];
+  });
 
-  const monthlyWorkerRows = monthKeys.flatMap((monthKey) =>
-    buildMonthlyWorkerClosureRows(monthKey).map((row) => [formatMonthLabel(monthKey), ...row])
-  );
+  const workerClosureRows = buildMonthlyWorkerClosureRowsForPeriod(period, monthKeys);
 
   return {
-    period,
-    periodLabel,
-    effectivePeriod,
+    meta: {
+      period,
+      description: periodDescription,
+      fileSuffix: getAbsenceExportFileSuffix(period),
+    },
     sheets: [
+      {
+        name: 'Filtro aplicado',
+        rows: [
+          ['Concepto', 'Valor'],
+          ['Vista', 'Ausencias'],
+          ['Filtro', periodDescription],
+          ['Desde', period.startKey ? formatDateLabel(period.startKey) : ''],
+          ['Hasta', period.endKey ? formatDateLabel(period.endKey) : ''],
+          ['Búsqueda', state.filters.search || 'Sin filtro'],
+          ['Tipo de operario', state.filters.workerType || 'all'],
+        ],
+      },
       {
         name: 'Programacion periodo',
         rows: [
-          ['Período', 'Fecha', 'Día', 'Servicio', 'Operario', 'Fecha ingreso', 'Horario', 'Ausencia registrada', 'Tipo falta', 'Estado'],
-          ...assignmentsRows,
+          ['Fecha', 'Día', 'Servicio', 'Operario', 'Fecha ingreso', 'Horario', 'Ausencia registrada', 'Tipo falta', 'Estado'],
+          ...assignments,
         ],
       },
       {
         name: 'Ausencias',
         rows: [
-          ['Período', 'Fecha', 'Operario ausente', 'Fecha ingreso', 'Tipo falta', 'Servicio', 'Supervisor', 'Zona', 'Horario asignado', 'Resultado', 'Operario cobertura', 'Fecha cobertura', 'Horario cobertura', 'Horas cubiertas', 'Faltas acumuladas a esa fecha', '% anualizado a esa fecha', '% año calendario', 'Proyección anual', 'Notas'],
+          ['Fecha', 'Operario ausente', 'Fecha ingreso', 'Tipo falta', 'Servicio', 'Horario asignado', 'Resultado', 'Operario cobertura', 'Fecha cobertura', 'Horario cobertura', 'Horas cubiertas', 'Faltas acumuladas a esa fecha', '% anualizado a esa fecha', '% sobre año calendario', 'Proyección anual', 'Notas'],
           ...absencesRows,
         ],
       },
       {
         name: 'Seguimiento anual',
         rows: [
-          ['Período', 'Operario', 'Tipo', 'Fecha ingreso', 'Inicio de cálculo', 'Fecha analizada', 'Días computados', 'Faltas acumuladas', '% anualizado', '% año calendario', 'Proyección anual', 'Margen hasta 3%', 'Estado'],
+          ['Operario', 'Tipo', 'Fecha ingreso', 'Inicio de cálculo', 'Fecha analizada', 'Días computados', 'Faltas acumuladas', '% anualizado', '% sobre año calendario', 'Proyección anual', 'Margen hasta 3%', 'Estado'],
           ...annualTracking,
         ],
       },
       {
         name: 'Historial operario',
         rows: [
-          ['Período', 'Operario', 'Fecha ingreso', 'Fecha falta', 'Tipo falta', 'Servicios afectados', 'Resultado', 'Cubrió', 'Horas afectadas', 'Horas cubiertas', 'Horas descubiertas', 'Acumulado a esa fecha', '% anualizado a esa fecha', 'Proyección anual'],
+          ['Operario', 'Fecha ingreso', 'Fecha falta', 'Tipo falta', 'Servicios afectados', 'Resultado', 'Cubrió', 'Horas afectadas', 'Horas cubiertas', 'Horas descubiertas', 'Acumulado a esa fecha', '% anualizado a esa fecha', 'Proyección anual'],
           ...historyRows,
         ],
       },
@@ -4948,14 +4990,14 @@ function buildAbsencesExportData() {
         name: 'cierre servicios mes',
         rows: [
           ['Mes', 'Servicio', 'Ausencia registrada', 'Fecha falta', 'Resultado'],
-          ...monthlyServiceRows,
+          ...serviceClosureRows,
         ],
       },
       {
         name: 'cierre operarios mes',
         rows: [
           ['Mes', 'Operario', 'Ausencia registrada total', 'injustificada', 'justificada', 'suspensión', 'horas totales mensuales'],
-          ...monthlyWorkerRows,
+          ...workerClosureRows,
         ],
       },
     ],
@@ -5062,113 +5104,10 @@ function buildCurrentExportData() {
   }
 }
 
-function getCurrentExportFilenameSuffix() {
-  if (state.currentView === 'absences') {
-    const period = getAbsenceActivePeriod();
-    if (period.mode === 'all') return 'historico-total';
-    if (period.mode === 'month') return period.monthKey || 'mes';
-    if (period.mode === 'range') return `${period.startKey || 'desde'}_a_${period.endKey || 'hasta'}`;
-    return period.startKey || new Date().toISOString().slice(0, 10);
-  }
-
-  return new Date().toISOString().slice(0, 10);
-}
-
-function buildExportReportHtml(exportData, reportTitle, reportSubtitle = '') {
-  const sections = exportData.sheets
-    .map((sheet) => {
-      const header = sheet.rows[0] || [];
-      const body = sheet.rows.slice(1);
-
-      return `
-        <section style="margin-top: 28px; page-break-inside: avoid;">
-          <h2 style="margin: 0 0 12px; font-size: 20px; color: #111827;">${escapeHtml(sheet.name)}</h2>
-          <div style="overflow: hidden; border: 1px solid #d1d5db; border-radius: 12px;">
-            <table style="width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 11px; color: #111827;">
-              <thead>
-                <tr>
-                  ${header.map((cell) => `<th style="background: #f3f4f6; border: 1px solid #d1d5db; padding: 8px; text-align: left; vertical-align: top;">${escapeHtml(cell)}</th>`).join('')}
-                </tr>
-              </thead>
-              <tbody>
-                ${
-                  body.length
-                    ? body.map((row) => `
-                      <tr>
-                        ${row.map((cell) => `<td style="border: 1px solid #e5e7eb; padding: 7px; text-align: left; vertical-align: top; word-break: break-word;">${escapeHtml(cell)}</td>`).join('')}
-                      </tr>
-                    `).join('')
-                    : `<tr><td colspan="${header.length || 1}" style="border: 1px solid #e5e7eb; padding: 10px; color: #6b7280;">Sin datos para este período.</td></tr>`
-                }
-              </tbody>
-            </table>
-          </div>
-        </section>
-      `;
-    })
-    .join('');
-
-  return `
-    <div style="width: 1200px; background: #ffffff; color: #111827; padding: 32px; font-family: Inter, Arial, sans-serif;">
-      <header style="border-bottom: 2px solid #e5e7eb; padding-bottom: 16px; margin-bottom: 8px;">
-        <div style="font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: #2563eb; font-weight: 700;">Clean It · Ausencias</div>
-        <h1 style="margin: 8px 0 6px; font-size: 30px; color: #111827;">${escapeHtml(reportTitle)}</h1>
-        ${reportSubtitle ? `<p style="margin: 0; font-size: 14px; color: #4b5563;">${escapeHtml(reportSubtitle)}</p>` : ''}
-      </header>
-      ${sections}
-    </div>
-  `;
-}
-
-async function exportAbsencesToPdfReport() {
-  const exportData = buildAbsencesExportData();
-  const reportTitle = 'Reporte de ausencias';
-  const reportSubtitle = `Período: ${exportData.periodLabel || getAbsencePeriodExportLabel(exportData.period)}`;
-
-  const wrapper = document.createElement('div');
-  wrapper.style.position = 'fixed';
-  wrapper.style.left = '-20000px';
-  wrapper.style.top = '0';
-  wrapper.style.zIndex = '-1';
-  wrapper.innerHTML = buildExportReportHtml(exportData, reportTitle, reportSubtitle);
-  document.body.appendChild(wrapper);
-
-  try {
-    const content = wrapper.firstElementChild;
-    const canvas = await window.html2canvas(content, {
-      scale: 2,
-      useCORS: true,
-      backgroundColor: '#ffffff',
-      windowWidth: content.scrollWidth,
-      windowHeight: content.scrollHeight,
-    });
-
-    const imgData = canvas.toDataURL('image/png');
-    const { jsPDF } = window.jspdf;
-    const pdf = new jsPDF('p', 'mm', 'a4');
-    const pageWidth = pdf.internal.pageSize.getWidth();
-    const pageHeight = pdf.internal.pageSize.getHeight();
-    const margin = 8;
-    const usableWidth = pageWidth - margin * 2;
-    const imgHeight = (canvas.height * usableWidth) / canvas.width;
-
-    let heightLeft = imgHeight;
-    let position = margin;
-
-    pdf.addImage(imgData, 'PNG', margin, position, usableWidth, imgHeight);
-    heightLeft -= pageHeight - margin * 2;
-
-    while (heightLeft > 0) {
-      position = heightLeft - imgHeight + margin;
-      pdf.addPage();
-      pdf.addImage(imgData, 'PNG', margin, position, usableWidth, imgHeight);
-      heightLeft -= pageHeight - margin * 2;
-    }
-
-    pdf.save(`cleanit-absences-${getCurrentExportFilenameSuffix()}.pdf`);
-  } finally {
-    wrapper.remove();
-  }
+function buildExportFilename(extension, exportData = null) {
+  const dateStamp = new Date().toISOString().slice(0, 10);
+  const suffix = exportData?.meta?.fileSuffix ? `-${exportData.meta.fileSuffix}` : '';
+  return `cleanit-${state.currentView}${suffix}-${dateStamp}.${extension}`;
 }
 
 function exportCurrentViewToExcel() {
@@ -5186,30 +5125,61 @@ function exportCurrentViewToExcel() {
     window.XLSX.utils.book_append_sheet(wb, ws, sheet.name.slice(0, 31));
   });
 
-  const filename = `cleanit-${state.currentView}-${getCurrentExportFilenameSuffix()}.xlsx`;
-  window.XLSX.writeFile(wb, filename);
+  window.XLSX.writeFile(wb, buildExportFilename('xlsx', exportData));
+}
+
+function exportAbsencesToPdf(exportData) {
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF('p', 'mm', 'a4');
+  const margin = 12;
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
+  const usableWidth = pageWidth - margin * 2;
+  const lineHeight = 4.6;
+  let y = margin;
+
+  const ensurePage = (requiredHeight = lineHeight) => {
+    if (y + requiredHeight > pageHeight - margin) {
+      pdf.addPage();
+      y = margin;
+    }
+  };
+
+  const writeWrapped = (textValue, fontStyle = 'normal', fontSize = 8.5, extraGap = 1.2) => {
+    const safeText = String(textValue ?? '');
+    pdf.setFont('helvetica', fontStyle);
+    pdf.setFontSize(fontSize);
+    const lines = pdf.splitTextToSize(safeText, usableWidth);
+    const requiredHeight = Math.max(lineHeight, lines.length * lineHeight) + extraGap;
+    ensurePage(requiredHeight);
+    pdf.text(lines, margin, y);
+    y += requiredHeight;
+  };
+
+  writeWrapped('Clean It · Ausencias', 'bold', 14, 2);
+  writeWrapped(`Filtro aplicado: ${exportData?.meta?.description || 'Sin filtro'}`, 'normal', 9.5, 4);
+
+  exportData.sheets.forEach((sheet, sheetIndex) => {
+    if (sheetIndex > 0) {
+      ensurePage(8);
+      y += 1;
+    }
+
+    writeWrapped(sheet.name, 'bold', 11, 1.6);
+    const rows = sheet.rows || [];
+    rows.forEach((row, rowIndex) => {
+      const line = row.map((cell) => String(cell ?? '')).join(' | ');
+      writeWrapped(line, rowIndex === 0 ? 'bold' : 'normal', rowIndex === 0 ? 8.8 : 8.1, 0.8);
+    });
+  });
+
+  pdf.save(buildExportFilename('pdf', exportData));
 }
 
 async function exportCurrentViewToPdf() {
   if (!ensureDataReady('exportar a PDF')) return;
-  if (!window.html2canvas || !window.jspdf?.jsPDF) {
+  if (!window.jspdf?.jsPDF) {
     alert('No se cargaron las librerías de PDF.');
-    return;
-  }
-
-  if (state.currentView === 'absences') {
-    try {
-      await exportAbsencesToPdfReport();
-    } catch (error) {
-      console.error(error);
-      alert('No se pudo generar el PDF del período seleccionado.');
-    }
-    return;
-  }
-
-  const target = getCurrentViewElement();
-  if (!target) {
-    alert('No se encontró la vista activa para exportar.');
     return;
   }
 
@@ -5220,6 +5190,23 @@ async function exportCurrentViewToPdf() {
     if (button) {
       button.disabled = true;
       button.textContent = 'Generando PDF...';
+    }
+
+    if (state.currentView === 'absences') {
+      const exportData = buildAbsencesExportData();
+      exportAbsencesToPdf(exportData);
+      return;
+    }
+
+    if (!window.html2canvas) {
+      alert('No se cargó la librería de captura para PDF.');
+      return;
+    }
+
+    const target = getCurrentViewElement();
+    if (!target) {
+      alert('No se encontró la vista activa para exportar.');
+      return;
     }
 
     const canvas = await window.html2canvas(target, {
@@ -5250,7 +5237,7 @@ async function exportCurrentViewToPdf() {
       heightLeft -= pageHeight - margin * 2;
     }
 
-    pdf.save(`cleanit-${state.currentView}-${getCurrentExportFilenameSuffix()}.pdf`);
+    pdf.save(buildExportFilename('pdf'));
   } catch (error) {
     console.error(error);
     alert('No se pudo generar el PDF de la vista actual.');
