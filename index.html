@@ -204,6 +204,10 @@
                     <input id="absenceDateFilter" type="date" />
                   </div>
                   <div class="field absence-date-field">
+                    <label for="absenceMonthFilter">Mes</label>
+                    <input id="absenceMonthFilter" type="month" />
+                  </div>
+                  <div class="field absence-date-field">
                     <label for="absenceWorkerHistoryFilter">Operario</label>
                     <select id="absenceWorkerHistoryFilter">
                       <option value="all">Todos</option>
@@ -238,6 +242,18 @@
                   <div id="absenceHistoryPagination" class="pagination-shell"></div>
                 </article>
               </div>
+
+              <article class="card-lite">
+                <div class="section-head">
+                  <div>
+                    <h3>Resumen mensual de ausencias</h3>
+                    <span class="muted">Cuántas hubo en el mes, quiénes faltaron y qué servicios se vieron afectados</span>
+                  </div>
+                </div>
+                <div class="cards-grid" id="absenceMonthKpiCards"></div>
+                <div id="absenceMonthlyBoard" class="stack-list"></div>
+                <div id="absenceMonthlyPagination" class="pagination-shell"></div>
+              </article>
 
               <div class="split-grid">
                 <article class="card-lite">
