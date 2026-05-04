@@ -671,7 +671,8 @@ function getSelectedAbsenceHistoryWorkerId() {
 }
 
 function getAbsenceTrackingReferenceDateKey() {
-  return getSelectedAbsenceDate() || new Date().toISOString().slice(0, 10);
+  const period = getAbsenceActivePeriod();
+  return period.endKey || getSelectedAbsenceDate() || new Date().toISOString().slice(0, 10);
 }
 
 function getWorkerAbsenceUniqueDateKeys(workerId, startKey = '', endKey = '') {
@@ -1801,6 +1802,156 @@ function getSelectedAbsenceMonthKey() {
   return el.absenceMonthFilter.value;
 }
 
+function getSelectedAbsenceFilterMode() {
+  if (!el.absenceFilterMode) return 'day';
+  if (!el.absenceFilterMode.value) el.absenceFilterMode.value = 'day';
+  return el.absenceFilterMode.value;
+}
+
+function getSelectedAbsenceRangeStart() {
+  if (!el.absenceRangeStart) return getSelectedAbsenceDate();
+  if (!el.absenceRangeStart.value) {
+    const today = getSelectedAbsenceDate();
+    const monthKey = getMonthKey(today) || getCurrentMonthKey();
+    el.absenceRangeStart.value = `${monthKey}-01`;
+  }
+  return el.absenceRangeStart.value;
+}
+
+function getSelectedAbsenceRangeEnd() {
+  if (!el.absenceRangeEnd) return getSelectedAbsenceDate();
+  if (!el.absenceRangeEnd.value) {
+    el.absenceRangeEnd.value = getSelectedAbsenceDate();
+  }
+  return el.absenceRangeEnd.value;
+}
+
+function formatDateRangeLabel(startKey, endKey) {
+  if (!startKey && !endKey) return 'sin fechas';
+  if (!startKey) return `hasta ${formatDateLabel(endKey)}`;
+  if (!endKey) return `desde ${formatDateLabel(startKey)}`;
+  if (startKey === endKey) return formatDateLabel(startKey);
+  return `${formatDateLabel(startKey)} al ${formatDateLabel(endKey)}`;
+}
+
+function getAbsenceActivePeriod() {
+  const mode = getSelectedAbsenceFilterMode();
+
+  if (mode === 'month') {
+    const monthKey = getSelectedAbsenceMonthKey();
+    const monthStart = getMonthStartDate(monthKey);
+    const monthEnd = getMonthEndDate(monthKey);
+    const startKey = monthStart ? toDateKey(monthStart) : getSelectedAbsenceDate();
+    const endKey = monthEnd ? toDateKey(monthEnd) : startKey;
+    return {
+      mode,
+      startKey,
+      endKey,
+      monthKey,
+      label: formatMonthLabel(monthKey),
+    };
+  }
+
+  if (mode === 'range') {
+    let startKey = getSelectedAbsenceRangeStart() || getSelectedAbsenceDate();
+    let endKey = getSelectedAbsenceRangeEnd() || startKey;
+
+    if (endKey < startKey) {
+      [startKey, endKey] = [endKey, startKey];
+      if (el.absenceRangeStart) el.absenceRangeStart.value = startKey;
+      if (el.absenceRangeEnd) el.absenceRangeEnd.value = endKey;
+    }
+
+    return {
+      mode,
+      startKey,
+      endKey,
+      monthKey: getMonthKey(startKey),
+      label: formatDateRangeLabel(startKey, endKey),
+    };
+  }
+
+  const dateKey = getSelectedAbsenceDate();
+  return {
+    mode: 'day',
+    startKey: dateKey,
+    endKey: dateKey,
+    monthKey: getMonthKey(dateKey),
+    label: formatDateLabel(dateKey),
+  };
+}
+
+function syncAbsencePeriodControls() {
+  const mode = getSelectedAbsenceFilterMode();
+  const selectedDate = getSelectedAbsenceDate();
+
+  if (el.absenceMonthFilter && !el.absenceMonthFilter.value) {
+    el.absenceMonthFilter.value = getMonthKey(selectedDate) || getCurrentMonthKey();
+  }
+
+  if (el.absenceRangeStart && !el.absenceRangeStart.value) {
+    el.absenceRangeStart.value = `${getMonthKey(selectedDate) || getCurrentMonthKey()}-01`;
+  }
+
+  if (el.absenceRangeEnd && !el.absenceRangeEnd.value) {
+    el.absenceRangeEnd.value = selectedDate;
+  }
+
+  $('absenceDateFilterField')?.classList.toggle('hidden', mode !== 'day');
+  $('absenceMonthFilterField')?.classList.toggle('hidden', mode !== 'month');
+  $('absenceRangeStartField')?.classList.toggle('hidden', mode !== 'range');
+  $('absenceRangeEndField')?.classList.toggle('hidden', mode !== 'range');
+}
+
+function updateAbsenceViewHeadings(period) {
+  const activePeriod = period || getAbsenceActivePeriod();
+  const label = activePeriod.label || formatDateRangeLabel(activePeriod.startKey, activePeriod.endKey);
+
+  if (el.absenceScheduleTitle) {
+    el.absenceScheduleTitle.textContent = activePeriod.mode === 'day'
+      ? 'Programación del día'
+      : activePeriod.mode === 'month'
+        ? 'Programación del mes'
+        : 'Programación del rango';
+  }
+
+  if (el.absenceScheduleSubtitle) {
+    el.absenceScheduleSubtitle.textContent = activePeriod.mode === 'day'
+      ? 'Marcá ausencias desde la agenda prevista'
+      : `Turnos comprendidos en ${label}`;
+  }
+
+  if (el.absenceHistoryTitle) {
+    el.absenceHistoryTitle.textContent = activePeriod.mode === 'day'
+      ? 'Ausencias registradas'
+      : activePeriod.mode === 'month'
+        ? 'Ausencias del mes'
+        : 'Ausencias del rango';
+  }
+
+  if (el.absenceHistorySubtitle) {
+    el.absenceHistorySubtitle.textContent = activePeriod.mode === 'day'
+      ? 'Con cobertura, parcial o sin cubrir'
+      : `Resultados registrados para ${label}`;
+  }
+
+  if (el.absenceSummaryTitle) {
+    el.absenceSummaryTitle.textContent = activePeriod.mode === 'day'
+      ? 'Resumen del día'
+      : activePeriod.mode === 'month'
+        ? 'Resumen mensual de ausencias'
+        : 'Resumen del rango';
+  }
+
+  if (el.absenceSummarySubtitle) {
+    el.absenceSummarySubtitle.textContent = activePeriod.mode === 'day'
+      ? 'Cuántas hubo en la fecha, quiénes faltaron y qué servicios se vieron afectados'
+      : activePeriod.mode === 'month'
+        ? 'Cuántas hubo en el mes, quiénes faltaron y qué servicios se vieron afectados'
+        : `Cuántas hubo entre ${label}, quiénes faltaron y qué servicios se vieron afectados`;
+  }
+}
+
 function getFilteredAbsencesForDate(dateKey) {
   const searchTerm = state.filters.search;
   const workerTypeFilter = state.filters.workerType;
@@ -1826,11 +1977,15 @@ function getFilteredAbsencesForDate(dateKey) {
     });
 }
 
-function getFilteredAbsencesForMonth(monthKey) {
-  if (!monthKey) return [];
+function getFilteredAbsencesForPeriod(period = getAbsenceActivePeriod()) {
+  if (!period?.startKey || !period?.endKey) return [];
 
   return state.absences
-    .filter((absence) => getMonthKey(absence.absence_date) === monthKey)
+    .filter((absence) => {
+      const dateKey = absence.absence_date || '';
+      if (!dateKey) return false;
+      return dateKey >= period.startKey && dateKey <= period.endKey;
+    })
     .filter((absence) => {
       const searchTerm = state.filters.search;
       const workerTypeFilter = state.filters.workerType;
@@ -1854,6 +2009,66 @@ function getFilteredAbsencesForMonth(monthKey) {
       if (byService !== 0) return byService;
       return String(a.scheduled_start_time || '').localeCompare(String(b.scheduled_start_time || ''));
     });
+}
+
+function getFilteredAbsencesForMonth(monthKey) {
+  if (!monthKey) return [];
+  const monthStart = getMonthStartDate(monthKey);
+  const monthEnd = getMonthEndDate(monthKey);
+  return getFilteredAbsencesForPeriod({
+    mode: 'month',
+    startKey: monthStart ? toDateKey(monthStart) : '',
+    endKey: monthEnd ? toDateKey(monthEnd) : '',
+    monthKey,
+    label: formatMonthLabel(monthKey),
+  });
+}
+
+function getAssignmentOccurrencesForPeriod(period = getAbsenceActivePeriod()) {
+  if (!period?.startKey || !period?.endKey) return [];
+
+  const startDate = parseDateKey(period.startKey);
+  const endDate = parseDateKey(period.endKey);
+  if (!startDate || !endDate) return [];
+
+  const searchTerm = state.filters.search;
+  const workerTypeFilter = state.filters.workerType;
+  const occurrences = [];
+  const cursor = new Date(startDate);
+
+  while (cursor <= endDate) {
+    const dateKey = toDateKey(cursor);
+    const dayOfWeek = cursor.getDay();
+    const dayAssignments = getAssignmentsByDay(dayOfWeek);
+
+    dayAssignments.forEach((assignment) => {
+      const worker = getWorkerById(assignment.worker_id);
+
+      if (workerTypeFilter !== 'all' && worker?.worker_type !== workerTypeFilter) {
+        return;
+      }
+
+      if (searchTerm) {
+        const hay = state.derived.assignmentSearchById.get(assignment.id) || '';
+        if (!hay.includes(searchTerm)) return;
+      }
+
+      occurrences.push({
+        ...assignment,
+        occurrence_date: dateKey,
+      });
+    });
+
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return occurrences.sort((a, b) => {
+    const byDate = String(a.occurrence_date || '').localeCompare(String(b.occurrence_date || ''));
+    if (byDate !== 0) return byDate;
+    const byService = String(getServiceById(a.service_id)?.name || '').localeCompare(String(getServiceById(b.service_id)?.name || ''));
+    if (byService !== 0) return byService;
+    return String(a.start_time || '').localeCompare(String(b.start_time || ''));
+  });
 }
 
 function summarizeAbsenceType(absences) {
@@ -1890,34 +2105,18 @@ function buildMonthlyWorkerClosureRows(monthKey) {
   });
 }
 
-function renderAbsenceScheduleBoard(dateKey) {
+function renderAbsenceScheduleBoard(period = getAbsenceActivePeriod()) {
   if (!el.absenceScheduleBoard) return;
 
-  const dayOfWeek = getDateKeyDayOfWeek(dateKey);
-  const searchTerm = state.filters.search;
-  const workerTypeFilter = state.filters.workerType;
+  const occurrences = getAssignmentOccurrencesForPeriod(period);
+  const paginationMeta = getPaginationMeta(occurrences, 'absenceSchedule');
 
-  const assignments = getAssignmentsByDay(dayOfWeek).filter((assignment) => {
-    const worker = getWorkerById(assignment.worker_id);
-
-    if (workerTypeFilter !== 'all' && worker?.worker_type !== workerTypeFilter) {
-      return false;
-    }
-
-    if (!searchTerm) return true;
-
-    const hay = state.derived.assignmentSearchById.get(assignment.id) || '';
-    return hay.includes(searchTerm);
-  });
-
-  const paginationMeta = getPaginationMeta(assignments, 'absenceSchedule');
-
-  el.absenceScheduleBoard.innerHTML = assignments.length
+  el.absenceScheduleBoard.innerHTML = occurrences.length
     ? paginationMeta.items
-        .map((assignment) => {
-          const worker = getWorkerById(assignment.worker_id);
-          const service = getServiceById(assignment.service_id);
-          const absence = findAbsenceForAssignmentOnDate(assignment, dateKey);
+        .map((occurrence) => {
+          const worker = getWorkerById(occurrence.worker_id);
+          const service = getServiceById(occurrence.service_id);
+          const absence = findAbsenceForAssignmentOnDate(occurrence, occurrence.occurrence_date);
 
           return `
             <article class="absence-card">
@@ -1927,14 +2126,15 @@ function renderAbsenceScheduleBoard(dateKey) {
                   <p>${escapeHtml(worker?.name || 'Operario')}</p>
                 </div>
                 <div class="absence-card-meta">
-                  <span class="chip">${DAYS.find((day) => day.value === assignment.day_of_week)?.fullLabel || ''}</span>
-                  <span class="chip">${assignment.start_time.slice(0, 5)}-${assignment.end_time.slice(0, 5)}</span>
+                  <span class="chip">${formatDateLabel(occurrence.occurrence_date)}</span>
+                  <span class="chip">${DAYS.find((day) => day.value === occurrence.day_of_week)?.fullLabel || ''}</span>
+                  <span class="chip">${occurrence.start_time.slice(0, 5)}-${occurrence.end_time.slice(0, 5)}</span>
                   ${service?.supervisor_name ? `<span class="chip">Sup. ${escapeHtml(service.supervisor_name)}</span>` : ''}
                   ${absence ? renderAbsenceStatusPill(absence.coverage_status) : ''}
                 </div>
               </div>
               <div class="absence-card-actions">
-                <button class="btn btn-primary btn-sm" type="button" data-mark-absence="${assignment.id}">
+                <button class="btn btn-primary btn-sm" type="button" data-mark-absence="${occurrence.id}" data-absence-date="${occurrence.occurrence_date}">
                   ${absence ? 'Editar ausencia' : 'Marcar ausencia'}
                 </button>
               </div>
@@ -1944,17 +2144,17 @@ function renderAbsenceScheduleBoard(dateKey) {
         .join('')
     : `
       <div class="empty-state">
-        No hay servicios programados para ${formatDateLabel(dateKey)} con los filtros actuales.
+        No hay turnos programados para ${period.label} con los filtros actuales.
       </div>
     `;
 
   renderPaginationControls('absenceSchedule', paginationMeta);
 }
 
-function renderAbsenceHistoryBoard(dateKey) {
+function renderAbsenceHistoryBoard(period = getAbsenceActivePeriod()) {
   if (!el.absenceHistoryBoard) return;
 
-  const absences = getFilteredAbsencesForDate(dateKey);
+  const absences = getFilteredAbsencesForPeriod(period);
   const paginationMeta = getPaginationMeta(absences, 'absenceHistory');
 
   el.absenceHistoryBoard.innerHTML = absences.length
@@ -2013,17 +2213,17 @@ function renderAbsenceHistoryBoard(dateKey) {
         .join('')
     : `
       <div class="empty-state">
-        No hay ausencias registradas para ${formatDateLabel(dateKey)}.
+        No hay ausencias registradas para ${period.label}.
       </div>
     `;
 
   renderPaginationControls('absenceHistory', paginationMeta);
 }
 
-function renderAbsenceMonthlyKpis(monthKey) {
+function renderAbsenceMonthlyKpis(period = getAbsenceActivePeriod()) {
   if (!el.absenceMonthKpiCards) return;
 
-  const absences = getFilteredAbsencesForMonth(monthKey);
+  const absences = getFilteredAbsencesForPeriod(period);
   const uniqueWorkers = new Set(absences.map((absence) => absence.worker_id).filter(Boolean));
   const uniqueServices = new Set(absences.map((absence) => absence.service_id).filter(Boolean));
   const uniqueDates = new Set(absences.map((absence) => absence.absence_date).filter(Boolean));
@@ -2033,7 +2233,7 @@ function renderAbsenceMonthlyKpis(monthKey) {
     {
       label: 'Ausencias del mes',
       value: absences.length,
-      foot: `Registros de ${formatMonthLabel(monthKey)}`,
+      foot: `Registros de ${period.label}`,
     },
     {
       label: 'Operarios que faltaron',
@@ -2065,10 +2265,10 @@ function renderAbsenceMonthlyKpis(monthKey) {
     .join('');
 }
 
-function renderAbsenceMonthlyBoard(monthKey) {
+function renderAbsenceMonthlyBoard(period = getAbsenceActivePeriod()) {
   if (!el.absenceMonthlyBoard) return;
 
-  const absences = getFilteredAbsencesForMonth(monthKey);
+  const absences = getFilteredAbsencesForPeriod(period);
   const paginationMeta = getPaginationMeta(absences, 'absenceMonthly');
 
   el.absenceMonthlyBoard.innerHTML = absences.length
@@ -2135,7 +2335,7 @@ function renderAbsenceMonthlyBoard(monthKey) {
         .join('')
     : `
       <div class="empty-state">
-        No hay ausencias registradas para ${formatMonthLabel(monthKey)} con los filtros actuales.
+        No hay ausencias registradas para ${period.label} con los filtros actuales.
       </div>
     `;
 
@@ -2272,11 +2472,15 @@ function renderAbsenceWorkerTrackerBoard(referenceDateKey) {
   renderPaginationControls('absenceTracker', paginationMeta);
 }
 
-function renderAbsenceEmployeeHistoryBoard() {
+function renderAbsenceEmployeeHistoryBoard(period = getAbsenceActivePeriod()) {
   if (!el.absenceEmployeeHistoryBoard) return;
 
   const workerId = getSelectedAbsenceHistoryWorkerId();
-  const entries = buildAbsenceTimelineEntries(workerId);
+  const entries = buildAbsenceTimelineEntries(workerId)
+    .filter((entry) => {
+      if (!period?.startKey || !period?.endKey) return true;
+      return entry.dateKey >= period.startKey && entry.dateKey <= period.endKey;
+    });
   const paginationMeta = getPaginationMeta(entries, 'absenceEmployeeHistory');
 
   el.absenceEmployeeHistoryBoard.innerHTML = paginationMeta.total
@@ -2628,15 +2832,16 @@ function renderMaterials() {
 }
 
 function renderAbsences() {
-  const dateKey = getSelectedAbsenceDate();
-  const monthKey = getSelectedAbsenceMonthKey();
-  renderAbsenceKpis(dateKey);
-  renderAbsenceScheduleBoard(dateKey);
-  renderAbsenceHistoryBoard(dateKey);
-  renderAbsenceMonthlyKpis(monthKey);
-  renderAbsenceMonthlyBoard(monthKey);
-  renderAbsenceWorkerTrackerBoard(dateKey);
-  renderAbsenceEmployeeHistoryBoard();
+  syncAbsencePeriodControls();
+  const period = getAbsenceActivePeriod();
+  updateAbsenceViewHeadings(period);
+  renderAbsenceKpis(period.endKey);
+  renderAbsenceScheduleBoard(period);
+  renderAbsenceHistoryBoard(period);
+  renderAbsenceMonthlyKpis(period);
+  renderAbsenceMonthlyBoard(period);
+  renderAbsenceWorkerTrackerBoard(period.endKey);
+  renderAbsenceEmployeeHistoryBoard(period);
 }
 
 let renderFrameId = 0;
@@ -3125,7 +3330,7 @@ function toggleAbsenceCoverageFields() {
 function openAbsenceDialog(options = {}) {
   if (!ensureDataReady('abrir ausencias')) return;
 
-  const { absenceId = null, assignmentId = null } = typeof options === 'string'
+  const { absenceId = null, assignmentId = null, absenceDate: forcedAbsenceDate = '' } = typeof options === 'string'
     ? { absenceId: options }
     : options;
 
@@ -3137,7 +3342,7 @@ function openAbsenceDialog(options = {}) {
   $('absenceDialogTitle').textContent = absenceId ? 'Editar ausencia' : 'Registrar ausencia';
   $('deleteAbsenceBtn').classList.toggle('hidden', !absenceId);
 
-  const defaultDate = getSelectedAbsenceDate();
+  const defaultDate = forcedAbsenceDate || getAbsenceActivePeriod().startKey || getSelectedAbsenceDate();
   if ($('absenceDate')) $('absenceDate').value = defaultDate;
   if ($('absenceCoverageStatus')) $('absenceCoverageStatus').value = 'uncovered';
   if ($('absenceType')) $('absenceType').value = '';
@@ -4238,7 +4443,10 @@ function handleDynamicClicks(event) {
 
   const markAbsenceBtn = event.target.closest('[data-mark-absence]');
   if (markAbsenceBtn) {
-    openAbsenceDialog({ assignmentId: markAbsenceBtn.dataset.markAbsence });
+    openAbsenceDialog({
+      assignmentId: markAbsenceBtn.dataset.markAbsence,
+      absenceDate: markAbsenceBtn.dataset.absenceDate || '',
+    });
     return;
   }
 
@@ -4869,16 +5077,31 @@ function bindEvents() {
   $('deleteServiceMaterialBtn')?.addEventListener('click', deleteServiceMaterial);
   $('deleteMaterialConsumptionBtn')?.addEventListener('click', deleteMaterialConsumption);
 
-  el.absenceDateFilter?.addEventListener('change', () => {
+  const handleAbsencePeriodChange = () => {
     resetPagination('absenceSchedule');
     resetPagination('absenceHistory');
+    resetPagination('absenceMonthly');
+    resetPagination('absenceEmployeeHistory');
     resetPagination('absenceTracker');
+    syncAbsencePeriodControls();
     scheduleRenderCurrentView();
+  };
+
+  el.absenceFilterMode?.addEventListener('change', handleAbsencePeriodChange);
+  el.absenceDateFilter?.addEventListener('change', () => {
+    if (el.absenceMonthFilter) el.absenceMonthFilter.value = getMonthKey(getSelectedAbsenceDate()) || getCurrentMonthKey();
+    handleAbsencePeriodChange();
   });
   el.absenceMonthFilter?.addEventListener('change', () => {
-    resetPagination('absenceMonthly');
-    scheduleRenderCurrentView();
+    const monthStart = getMonthStartDate(getSelectedAbsenceMonthKey());
+    const monthEnd = getMonthEndDate(getSelectedAbsenceMonthKey());
+    if (el.absenceRangeStart && monthStart) el.absenceRangeStart.value = toDateKey(monthStart);
+    if (el.absenceRangeEnd && monthEnd) el.absenceRangeEnd.value = toDateKey(monthEnd);
+    handleAbsencePeriodChange();
   });
+  el.absenceRangeStart?.addEventListener('change', handleAbsencePeriodChange);
+  el.absenceRangeEnd?.addEventListener('change', handleAbsencePeriodChange);
+  el.absenceApplyFilterBtn?.addEventListener('click', handleAbsencePeriodChange);
   el.absenceWorkerHistoryFilter?.addEventListener('change', () => {
     resetPagination('absenceEmployeeHistory');
     scheduleRenderCurrentView();
@@ -4953,9 +5176,23 @@ function boot() {
       servicesGrid: $('servicesGrid'),
       servicesPagination: $('servicesPagination'),
       plannerBoard: $('plannerBoard'),
+      absenceFilterMode: $('absenceFilterMode'),
+      absenceApplyFilterBtn: $('absenceApplyFilterBtn'),
       absenceDateFilter: $('absenceDateFilter'),
+      absenceMonthFilter: $('absenceMonthFilter'),
+      absenceRangeStart: $('absenceRangeStart'),
+      absenceRangeEnd: $('absenceRangeEnd'),
       absenceWorkerHistoryFilter: $('absenceWorkerHistoryFilter'),
       absenceKpiCards: $('absenceKpiCards'),
+      absenceScheduleTitle: $('absenceScheduleTitle'),
+      absenceScheduleSubtitle: $('absenceScheduleSubtitle'),
+      absenceHistoryTitle: $('absenceHistoryTitle'),
+      absenceHistorySubtitle: $('absenceHistorySubtitle'),
+      absenceSummaryTitle: $('absenceSummaryTitle'),
+      absenceSummarySubtitle: $('absenceSummarySubtitle'),
+      absenceMonthKpiCards: $('absenceMonthKpiCards'),
+      absenceMonthlyBoard: $('absenceMonthlyBoard'),
+      absenceMonthlyPagination: $('absenceMonthlyPagination'),
       absenceScheduleBoard: $('absenceScheduleBoard'),
       absenceSchedulePagination: $('absenceSchedulePagination'),
       absenceHistoryBoard: $('absenceHistoryBoard'),
@@ -5005,6 +5242,7 @@ function boot() {
     setAuthMode('login');
     setDataReady(false);
     bindEvents();
+    syncAbsencePeriodControls();
     initAuth();
   } catch (error) {
     console.error('Error en boot():', error);

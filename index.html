@@ -200,13 +200,30 @@
                 </div>
                 <div class="inline-actions section-actions-mobile">
                   <div class="field absence-date-field">
+                    <label for="absenceFilterMode">Filtro</label>
+                    <select id="absenceFilterMode">
+                      <option value="day">Por día</option>
+                      <option value="month">Por mes</option>
+                      <option value="range">Por rango</option>
+                    </select>
+                  </div>
+                  <div class="field absence-date-field" id="absenceDateFilterField">
                     <label for="absenceDateFilter">Fecha</label>
                     <input id="absenceDateFilter" type="date" />
                   </div>
-                  <div class="field absence-date-field">
+                  <div class="field absence-date-field hidden" id="absenceMonthFilterField">
                     <label for="absenceMonthFilter">Mes</label>
                     <input id="absenceMonthFilter" type="month" />
                   </div>
+                  <div class="field absence-date-field hidden" id="absenceRangeStartField">
+                    <label for="absenceRangeStart">Desde</label>
+                    <input id="absenceRangeStart" type="date" />
+                  </div>
+                  <div class="field absence-date-field hidden" id="absenceRangeEndField">
+                    <label for="absenceRangeEnd">Hasta</label>
+                    <input id="absenceRangeEnd" type="date" />
+                  </div>
+                  <button id="absenceApplyFilterBtn" class="btn btn-secondary" type="button">Buscar</button>
                   <div class="field absence-date-field">
                     <label for="absenceWorkerHistoryFilter">Operario</label>
                     <select id="absenceWorkerHistoryFilter">
@@ -223,8 +240,8 @@
                 <article class="card-lite">
                   <div class="section-head">
                     <div>
-                      <h3>Programación del día</h3>
-                      <span class="muted">Marcá ausencias desde la agenda prevista</span>
+                      <h3 id="absenceScheduleTitle">Programación del día</h3>
+                      <span id="absenceScheduleSubtitle" class="muted">Marcá ausencias desde la agenda prevista</span>
                     </div>
                   </div>
                   <div id="absenceScheduleBoard" class="stack-list"></div>
@@ -234,8 +251,8 @@
                 <article class="card-lite">
                   <div class="section-head">
                     <div>
-                      <h3>Ausencias registradas</h3>
-                      <span class="muted">Con cobertura, parcial o sin cubrir</span>
+                      <h3 id="absenceHistoryTitle">Ausencias registradas</h3>
+                      <span id="absenceHistorySubtitle" class="muted">Con cobertura, parcial o sin cubrir</span>
                     </div>
                   </div>
                   <div id="absenceHistoryBoard" class="stack-list"></div>
@@ -246,8 +263,8 @@
               <article class="card-lite">
                 <div class="section-head">
                   <div>
-                    <h3>Resumen mensual de ausencias</h3>
-                    <span class="muted">Cuántas hubo en el mes, quiénes faltaron y qué servicios se vieron afectados</span>
+                    <h3 id="absenceSummaryTitle">Resumen mensual de ausencias</h3>
+                    <span id="absenceSummarySubtitle" class="muted">Cuántas hubo en el mes, quiénes faltaron y qué servicios se vieron afectados</span>
                   </div>
                 </div>
                 <div class="cards-grid" id="absenceMonthKpiCards"></div>
