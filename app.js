@@ -34,6 +34,10 @@ const VIEW_IDS = {
 const PAGINATION_DEFAULTS = {
   workers: 8,
   services: 9,
+  absenceSchedule: 8,
+  absenceHistory: 8,
+  absenceTracker: 6,
+  absenceEmployeeHistory: 8,
 };
 
 function createEmptyDerivedState() {
@@ -82,6 +86,10 @@ const state = {
   pagination: {
     workers: { page: 1, pageSize: PAGINATION_DEFAULTS.workers },
     services: { page: 1, pageSize: PAGINATION_DEFAULTS.services },
+    absenceSchedule: { page: 1, pageSize: PAGINATION_DEFAULTS.absenceSchedule },
+    absenceHistory: { page: 1, pageSize: PAGINATION_DEFAULTS.absenceHistory },
+    absenceTracker: { page: 1, pageSize: PAGINATION_DEFAULTS.absenceTracker },
+    absenceEmployeeHistory: { page: 1, pageSize: PAGINATION_DEFAULTS.absenceEmployeeHistory },
   },
   realtimeChannel: null,
   dataReady: false,
@@ -993,6 +1001,7 @@ function goToAbsenceWorkerHistory(workerId) {
   }
 
   state.filters.search = String(worker.name || '').toLowerCase();
+  resetPagination('absenceEmployeeHistory');
   goToView('absences');
 
   window.requestAnimationFrame(() => {
@@ -1065,8 +1074,34 @@ function buildPaginationPages(currentPage, totalPages) {
   return pages;
 }
 
+function getPaginationContainer(viewKey) {
+  const containers = {
+    workers: el.workersPagination,
+    services: el.servicesPagination,
+    absenceSchedule: el.absenceSchedulePagination,
+    absenceHistory: el.absenceHistoryPagination,
+    absenceTracker: el.absenceWorkerTrackerPagination,
+    absenceEmployeeHistory: el.absenceEmployeeHistoryPagination,
+  };
+
+  return containers[viewKey] || null;
+}
+
+function getPaginationLabel(viewKey) {
+  const labels = {
+    workers: 'operarios',
+    services: 'servicios',
+    absenceSchedule: 'servicios programados',
+    absenceHistory: 'ausencias',
+    absenceTracker: 'operarios analizados',
+    absenceEmployeeHistory: 'registros históricos',
+  };
+
+  return labels[viewKey] || 'registros';
+}
+
 function renderPaginationControls(viewKey, meta) {
-  const container = viewKey === 'workers' ? el.workersPagination : el.servicesPagination;
+  const container = getPaginationContainer(viewKey);
   if (!container) return;
 
   if (!meta.total) {
@@ -1074,7 +1109,7 @@ function renderPaginationControls(viewKey, meta) {
     return;
   }
 
-  const label = viewKey === 'workers' ? 'operarios' : 'servicios';
+  const label = getPaginationLabel(viewKey);
   const pages = buildPaginationPages(meta.currentPage, meta.totalPages);
 
   container.innerHTML = `
@@ -1461,6 +1496,8 @@ function renderCriticalWorkers(summaries) {
         Sin desvíos relevantes.
       </div>
     `;
+
+  renderPaginationControls('absenceSchedule', paginationMeta);
 }
 
 function renderServiceGaps() {
@@ -1845,8 +1882,10 @@ function renderAbsenceScheduleBoard(dateKey) {
     return hay.includes(searchTerm);
   });
 
+  const paginationMeta = getPaginationMeta(assignments, 'absenceSchedule');
+
   el.absenceScheduleBoard.innerHTML = assignments.length
-    ? assignments
+    ? paginationMeta.items
         .map((assignment) => {
           const worker = getWorkerById(assignment.worker_id);
           const service = getServiceById(assignment.service_id);
@@ -1880,15 +1919,18 @@ function renderAbsenceScheduleBoard(dateKey) {
         No hay servicios programados para ${formatDateLabel(dateKey)} con los filtros actuales.
       </div>
     `;
+
+  renderPaginationControls('absenceSchedule', paginationMeta);
 }
 
 function renderAbsenceHistoryBoard(dateKey) {
   if (!el.absenceHistoryBoard) return;
 
   const absences = getFilteredAbsencesForDate(dateKey);
+  const paginationMeta = getPaginationMeta(absences, 'absenceHistory');
 
   el.absenceHistoryBoard.innerHTML = absences.length
-    ? absences
+    ? paginationMeta.items
         .map((absence) => {
           const worker = getWorkerById(absence.worker_id);
           const service = getServiceById(absence.service_id);
@@ -1945,6 +1987,8 @@ function renderAbsenceHistoryBoard(dateKey) {
         No hay ausencias registradas para ${formatDateLabel(dateKey)}.
       </div>
     `;
+
+  renderPaginationControls('absenceHistory', paginationMeta);
 }
 
 function renderAbsenceKpis(referenceDateKey) {
@@ -1999,9 +2043,10 @@ function renderAbsenceWorkerTrackerBoard(referenceDateKey) {
   if (!el.absenceWorkerTrackerBoard) return;
 
   const stats = getFilteredWorkerAbsenceStats(referenceDateKey);
+  const paginationMeta = getPaginationMeta(stats, 'absenceTracker');
 
   el.absenceWorkerTrackerBoard.innerHTML = stats.length
-    ? stats
+    ? paginationMeta.items
         .map((item) => {
           const worker = item.worker;
           return `
@@ -2067,6 +2112,8 @@ function renderAbsenceWorkerTrackerBoard(referenceDateKey) {
         No hay operarios visibles con los filtros actuales.
       </div>
     `;
+
+  renderPaginationControls('absenceTracker', paginationMeta);
 }
 
 function renderAbsenceEmployeeHistoryBoard() {
@@ -2074,12 +2121,12 @@ function renderAbsenceEmployeeHistoryBoard() {
 
   const workerId = getSelectedAbsenceHistoryWorkerId();
   const entries = buildAbsenceTimelineEntries(workerId);
-  const limitedEntries = workerId === 'all' ? entries.slice(0, 20) : entries;
+  const paginationMeta = getPaginationMeta(entries, 'absenceEmployeeHistory');
 
-  el.absenceEmployeeHistoryBoard.innerHTML = limitedEntries.length
+  el.absenceEmployeeHistoryBoard.innerHTML = paginationMeta.total
     ? `
       <div class="absence-history-timeline">
-        ${limitedEntries
+        ${paginationMeta.items
           .map((entry) => `
             <article class="absence-card">
               <div class="absence-card-head">
@@ -2124,6 +2171,8 @@ function renderAbsenceEmployeeHistoryBoard() {
         }
       </div>
     `;
+
+  renderPaginationControls('absenceEmployeeHistory', paginationMeta);
 }
 
 function renderMaterialsKpis() {
@@ -2470,6 +2519,10 @@ function handleFilterChange() {
   state.filters.status = el.statusFilter.value;
   resetPagination('workers');
   resetPagination('services');
+  resetPagination('absenceSchedule');
+  resetPagination('absenceHistory');
+  resetPagination('absenceTracker');
+  resetPagination('absenceEmployeeHistory');
   scheduleRenderCurrentView();
 }
 
@@ -4616,8 +4669,16 @@ function bindEvents() {
   $('deleteServiceMaterialBtn')?.addEventListener('click', deleteServiceMaterial);
   $('deleteMaterialConsumptionBtn')?.addEventListener('click', deleteMaterialConsumption);
 
-  el.absenceDateFilter?.addEventListener('change', () => scheduleRenderCurrentView());
-  el.absenceWorkerHistoryFilter?.addEventListener('change', () => scheduleRenderCurrentView());
+  el.absenceDateFilter?.addEventListener('change', () => {
+    resetPagination('absenceSchedule');
+    resetPagination('absenceHistory');
+    resetPagination('absenceTracker');
+    scheduleRenderCurrentView();
+  });
+  el.absenceWorkerHistoryFilter?.addEventListener('change', () => {
+    resetPagination('absenceEmployeeHistory');
+    scheduleRenderCurrentView();
+  });
   el.materialsMonthFilter?.addEventListener('change', () => scheduleRenderCurrentView());
   el.materialsServiceFilter?.addEventListener('change', () => scheduleRenderCurrentView());
   $('absenceCoverageStatus')?.addEventListener('change', toggleAbsenceCoverageFields);
@@ -4632,6 +4693,10 @@ function bindEvents() {
   el.plannerBoard?.addEventListener('click', handleDynamicClicks);
   el.workersPagination?.addEventListener('click', handlePaginationClick);
   el.servicesPagination?.addEventListener('click', handlePaginationClick);
+  el.absenceSchedulePagination?.addEventListener('click', handlePaginationClick);
+  el.absenceHistoryPagination?.addEventListener('click', handlePaginationClick);
+  el.absenceWorkerTrackerPagination?.addEventListener('click', handlePaginationClick);
+  el.absenceEmployeeHistoryPagination?.addEventListener('click', handlePaginationClick);
   el.absenceScheduleBoard?.addEventListener('click', handleDynamicClicks);
   el.absenceHistoryBoard?.addEventListener('click', handleDynamicClicks);
   el.absenceWorkerTrackerBoard?.addEventListener('click', handleDynamicClicks);
@@ -4687,9 +4752,13 @@ function boot() {
       absenceWorkerHistoryFilter: $('absenceWorkerHistoryFilter'),
       absenceKpiCards: $('absenceKpiCards'),
       absenceScheduleBoard: $('absenceScheduleBoard'),
+      absenceSchedulePagination: $('absenceSchedulePagination'),
       absenceHistoryBoard: $('absenceHistoryBoard'),
+      absenceHistoryPagination: $('absenceHistoryPagination'),
       absenceWorkerTrackerBoard: $('absenceWorkerTrackerBoard'),
+      absenceWorkerTrackerPagination: $('absenceWorkerTrackerPagination'),
       absenceEmployeeHistoryBoard: $('absenceEmployeeHistoryBoard'),
+      absenceEmployeeHistoryPagination: $('absenceEmployeeHistoryPagination'),
       materialsMonthFilter: $('materialsMonthFilter'),
       materialsServiceFilter: $('materialsServiceFilter'),
       materialKpiCards: $('materialKpiCards'),
