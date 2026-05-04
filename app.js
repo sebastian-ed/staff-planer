@@ -31,6 +31,11 @@ const VIEW_IDS = {
   materials: 'materialsView',
 };
 
+const PAGINATION_DEFAULTS = {
+  workers: 8,
+  services: 9,
+};
+
 function createEmptyDerivedState() {
   return {
     workerById: new Map(),
@@ -73,6 +78,10 @@ const state = {
     search: '',
     workerType: 'all',
     status: 'all',
+  },
+  pagination: {
+    workers: { page: 1, pageSize: PAGINATION_DEFAULTS.workers },
+    services: { page: 1, pageSize: PAGINATION_DEFAULTS.services },
   },
   realtimeChannel: null,
   dataReady: false,
@@ -1006,6 +1015,82 @@ function getServiceAssignments(serviceId) {
   return state.derived.assignmentsByServiceId.get(serviceId) || [];
 }
 
+function resetPagination(viewKey) {
+  const pagination = state.pagination[viewKey];
+  if (pagination) pagination.page = 1;
+}
+
+function setPaginationPage(viewKey, page) {
+  const pagination = state.pagination[viewKey];
+  if (!pagination) return;
+  pagination.page = Math.max(1, Number(page) || 1);
+}
+
+function getPaginationMeta(items, viewKey) {
+  const pagination = state.pagination[viewKey];
+  const pageSize = pagination?.pageSize || items.length || 1;
+  const total = items.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const currentPage = Math.min(Math.max(1, pagination?.page || 1), totalPages);
+
+  if (pagination) pagination.page = currentPage;
+
+  const startIndex = total ? (currentPage - 1) * pageSize : 0;
+  const endIndex = Math.min(startIndex + pageSize, total);
+
+  return {
+    items: items.slice(startIndex, endIndex),
+    total,
+    totalPages,
+    currentPage,
+    pageSize,
+    startIndex: total ? startIndex + 1 : 0,
+    endIndex,
+  };
+}
+
+function buildPaginationPages(currentPage, totalPages) {
+  if (totalPages <= 1) return [1];
+  if (totalPages <= 7) return Array.from({ length: totalPages }, (_, index) => index + 1);
+
+  const pages = [1];
+  const start = Math.max(2, currentPage - 1);
+  const end = Math.min(totalPages - 1, currentPage + 1);
+
+  if (start > 2) pages.push('ellipsis-left');
+  for (let page = start; page <= end; page += 1) pages.push(page);
+  if (end < totalPages - 1) pages.push('ellipsis-right');
+
+  pages.push(totalPages);
+  return pages;
+}
+
+function renderPaginationControls(viewKey, meta) {
+  const container = viewKey === 'workers' ? el.workersPagination : el.servicesPagination;
+  if (!container) return;
+
+  if (!meta.total) {
+    container.innerHTML = '';
+    return;
+  }
+
+  const label = viewKey === 'workers' ? 'operarios' : 'servicios';
+  const pages = buildPaginationPages(meta.currentPage, meta.totalPages);
+
+  container.innerHTML = `
+    <div class="pagination-bar">
+      <div class="pagination-summary muted">Mostrando ${meta.startIndex}-${meta.endIndex} de ${meta.total} ${label}</div>
+      <div class="pagination-controls">
+        <button class="btn btn-secondary btn-sm" type="button" data-pagination-view="${viewKey}" data-pagination-page="${Math.max(1, meta.currentPage - 1)}" ${meta.currentPage <= 1 ? 'disabled' : ''}>Anterior</button>
+        ${pages.map((page) => page === 'ellipsis-left' || page === 'ellipsis-right'
+          ? '<span class="pagination-ellipsis muted">…</span>'
+          : `<button class="btn btn-secondary btn-sm pagination-page-btn ${page === meta.currentPage ? 'active' : ''}" type="button" data-pagination-view="${viewKey}" data-pagination-page="${page}">${page}</button>`).join('')}
+        <button class="btn btn-secondary btn-sm" type="button" data-pagination-view="${viewKey}" data-pagination-page="${Math.min(meta.totalPages, meta.currentPage + 1)}" ${meta.currentPage >= meta.totalPages ? 'disabled' : ''}>Siguiente</button>
+      </div>
+    </div>
+  `;
+}
+
 function setDataReady(isReady) {
   state.dataReady = isReady;
 
@@ -1524,8 +1609,9 @@ function renderWorkerAvailability(summaries) {
 
 function renderServices() {
   const services = getFilteredServices();
+  const paginationMeta = getPaginationMeta(services, 'services');
 
-  el.servicesGrid.innerHTML = services
+  el.servicesGrid.innerHTML = paginationMeta.items
     .map((service) => {
       const assignments = getServiceAssignments(service.id);
       const assignmentsByDay = groupAssignmentsByDay(assignments);
@@ -1583,6 +1669,8 @@ function renderServices() {
       `;
     })
     .join('');
+
+  renderPaginationControls('services', paginationMeta);
 }
 
 function renderPlanner() {
@@ -2327,13 +2415,16 @@ function renderCurrentView() {
   switch (state.currentView) {
     case 'workers': {
       const summaries = getWorkerSummaries();
-      renderWorkersTable(summaries);
-      renderWorkerAvailability(summaries);
+      const paginationMeta = getPaginationMeta(summaries, 'workers');
+      renderWorkersTable(paginationMeta.items);
+      renderWorkerAvailability(paginationMeta.items);
+      renderPaginationControls('workers', paginationMeta);
       break;
     }
-    case 'services':
+    case 'services': {
       renderServices();
       break;
+    }
     case 'planner':
       renderPlanner();
       break;
@@ -2377,6 +2468,8 @@ function handleFilterChange() {
   state.filters.search = el.globalSearch.value.trim().toLowerCase();
   state.filters.workerType = el.workerTypeFilter.value;
   state.filters.status = el.statusFilter.value;
+  resetPagination('workers');
+  resetPagination('services');
   scheduleRenderCurrentView();
 }
 
@@ -4465,6 +4558,18 @@ function printCurrentView() {
   window.print();
 }
 
+function handlePaginationClick(event) {
+  const button = event.target.closest('[data-pagination-view][data-pagination-page]');
+  if (!button) return;
+
+  const viewKey = button.dataset.paginationView;
+  const page = Number(button.dataset.paginationPage);
+  if (!viewKey || !page) return;
+
+  setPaginationPage(viewKey, page);
+  scheduleRenderCurrentView();
+}
+
 const debouncedHandleFilterInput = debounce(handleFilterChange, 180);
 
 function bindEvents() {
@@ -4525,6 +4630,8 @@ function bindEvents() {
   el.workersTableBody?.addEventListener('click', handleDynamicClicks);
   el.servicesGrid?.addEventListener('click', handleDynamicClicks);
   el.plannerBoard?.addEventListener('click', handleDynamicClicks);
+  el.workersPagination?.addEventListener('click', handlePaginationClick);
+  el.servicesPagination?.addEventListener('click', handlePaginationClick);
   el.absenceScheduleBoard?.addEventListener('click', handleDynamicClicks);
   el.absenceHistoryBoard?.addEventListener('click', handleDynamicClicks);
   el.absenceWorkerTrackerBoard?.addEventListener('click', handleDynamicClicks);
@@ -4572,7 +4679,9 @@ function boot() {
       serviceGaps: $('serviceGaps'),
       workersTableBody: $('workersTableBody'),
       workerAvailabilityBoard: $('workerAvailabilityBoard'),
+      workersPagination: $('workersPagination'),
       servicesGrid: $('servicesGrid'),
+      servicesPagination: $('servicesPagination'),
       plannerBoard: $('plannerBoard'),
       absenceDateFilter: $('absenceDateFilter'),
       absenceWorkerHistoryFilter: $('absenceWorkerHistoryFilter'),
