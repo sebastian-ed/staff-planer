@@ -4962,7 +4962,7 @@ function buildAbsencesExportData() {
   };
 }
 
-function buildMaterialsExportData() { {
+function buildMaterialsExportData() {
   const monthKey = getSelectedMaterialsMonth();
   const serviceMaterials = getFilteredServiceMaterials();
   const consumptions = getFilteredMaterialConsumptions(monthKey);
