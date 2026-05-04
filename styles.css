@@ -726,3 +726,45 @@ tr:hover td { background: rgba(255,255,255,0.02); }
     grid-template-columns: 1fr;
   }
 }
+
+
+.worker-secondary-meta {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.worker-tenure-cell {
+  display: grid;
+  gap: 6px;
+  min-width: 180px;
+}
+.worker-tenure-cell strong {
+  font-size: 14px;
+}
+.worker-probation-detail {
+  display: block;
+  line-height: 1.35;
+  font-size: 12px;
+}
+.worker-availability-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+.status-trial {
+  background: rgba(255,203,102,0.12);
+  color: var(--warning);
+  border-color: rgba(255,203,102,0.3);
+}
+.status-passed {
+  background: rgba(88,214,141,0.12);
+  color: var(--success);
+  border-color: rgba(88,214,141,0.3);
+}
+.status-due {
+  background: rgba(91,140,255,0.12);
+  color: #b8caff;
+  border-color: rgba(91,140,255,0.3);
+}

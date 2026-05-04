@@ -433,6 +433,184 @@ function formatPercent(value) {
   return `${Number(value).toFixed(2).replace(/\.00$/, '')}%`;
 }
 
+
+function toNoonDate(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12, 0, 0, 0);
+}
+
+function addMonthsClamped(date, monthsToAdd) {
+  const safeDate = toNoonDate(date);
+  if (!safeDate) return null;
+
+  const year = safeDate.getFullYear();
+  const month = safeDate.getMonth();
+  const day = safeDate.getDate();
+  const targetMonthIndex = month + monthsToAdd;
+  const targetYear = year + Math.floor(targetMonthIndex / 12);
+  const normalizedMonth = ((targetMonthIndex % 12) + 12) % 12;
+  const lastDayOfTargetMonth = new Date(targetYear, normalizedMonth + 1, 0, 12, 0, 0, 0).getDate();
+
+  return new Date(targetYear, normalizedMonth, Math.min(day, lastDayOfTargetMonth), 12, 0, 0, 0);
+}
+
+function getDurationParts(startDate, endDate) {
+  const start = toNoonDate(startDate);
+  const end = toNoonDate(endDate);
+  if (!start || !end || end < start) {
+    return { years: 0, months: 0, days: 0 };
+  }
+
+  let years = end.getFullYear() - start.getFullYear();
+  let months = end.getMonth() - start.getMonth();
+  let days = end.getDate() - start.getDate();
+
+  if (days < 0) {
+    const lastDayOfPreviousMonth = new Date(end.getFullYear(), end.getMonth(), 0, 12, 0, 0, 0).getDate();
+    days += lastDayOfPreviousMonth;
+    months -= 1;
+  }
+
+  if (months < 0) {
+    months += 12;
+    years -= 1;
+  }
+
+  return {
+    years: Math.max(0, years),
+    months: Math.max(0, months),
+    days: Math.max(0, days),
+  };
+}
+
+function formatDurationParts(parts, emptyLabel = 'Hoy') {
+  if (!parts) return '—';
+
+  const segments = [];
+  if (parts.years) segments.push(`${parts.years} ${parts.years === 1 ? 'año' : 'años'}`);
+  if (parts.months) segments.push(`${parts.months} ${parts.months === 1 ? 'mes' : 'meses'}`);
+  if (parts.days) segments.push(`${parts.days} ${parts.days === 1 ? 'día' : 'días'}`);
+
+  if (!segments.length) return emptyLabel;
+  if (segments.length === 1) return segments[0];
+  if (segments.length === 2) return `${segments[0]} y ${segments[1]}`;
+  return `${segments[0]}, ${segments[1]} y ${segments[2]}`;
+}
+
+function getTodayReferenceDate() {
+  return toNoonDate(new Date());
+}
+
+function getWorkerLifecycleInfo(worker, referenceDate = getTodayReferenceDate()) {
+  if (!worker) return null;
+
+  const hireDate = parseDateKey(worker.hire_date);
+  if (!hireDate) {
+    return {
+      hireDateMissing: true,
+      startedYet: false,
+      tenureText: 'Fecha de ingreso pendiente',
+      tenureLongText: 'Fecha de ingreso pendiente',
+      tenureParts: null,
+      probationStatus: 'missing',
+      probationBadgeText: 'Sin fecha de ingreso',
+      probationDetailText: 'No se puede calcular período de prueba',
+      probationDateLabel: '',
+      probationEndDate: null,
+      probationRemainingText: '',
+      probationElapsedText: '',
+      isInProbation: false,
+      probationEndsToday: false,
+      probationExceeded: false,
+    };
+  }
+
+  const safeReference = toNoonDate(referenceDate) || getTodayReferenceDate();
+  const startedYet = hireDate <= safeReference;
+  const probationEndDate = addMonthsClamped(hireDate, 6);
+
+  if (!startedYet) {
+    const missingStartParts = getDurationParts(safeReference, hireDate);
+    const startsInText = formatDurationParts(missingStartParts, 'Hoy');
+    return {
+      hireDateMissing: false,
+      startedYet: false,
+      tenureText: 'Aún no ingresó',
+      tenureLongText: `Ingresa en ${startsInText}`,
+      tenureParts: null,
+      probationStatus: 'future',
+      probationBadgeText: 'Ingreso pendiente',
+      probationDetailText: `Ingresa en ${startsInText}`,
+      probationDateLabel: probationEndDate ? formatDateLabel(toDateKey(probationEndDate)) : '',
+      probationEndDate,
+      probationRemainingText: '',
+      probationElapsedText: '',
+      isInProbation: false,
+      probationEndsToday: false,
+      probationExceeded: false,
+    };
+  }
+
+  const tenureParts = getDurationParts(hireDate, safeReference);
+  const tenureText = formatDurationParts(tenureParts, 'Hoy');
+  const probationEndsToday = probationEndDate && toDateKey(safeReference) === toDateKey(probationEndDate);
+  const isInProbation = probationEndDate && safeReference < probationEndDate;
+  const probationExceeded = probationEndDate && safeReference > probationEndDate;
+
+  let probationStatus = 'due';
+  let probationBadgeText = 'Vence hoy';
+  let probationDetailText = `Vence hoy (${formatDateLabel(toDateKey(probationEndDate))})`;
+  let probationRemainingText = '';
+  let probationElapsedText = '';
+
+  if (isInProbation) {
+    const remainingParts = getDurationParts(safeReference, probationEndDate);
+    probationRemainingText = formatDurationParts(remainingParts, 'Hoy');
+    probationStatus = 'trial';
+    probationBadgeText = 'En período de prueba';
+    probationDetailText = `Le faltan ${probationRemainingText} para vencer`;
+  } else if (probationExceeded) {
+    const elapsedParts = getDurationParts(probationEndDate, safeReference);
+    probationElapsedText = formatDurationParts(elapsedParts, 'Hoy');
+    probationStatus = 'passed';
+    probationBadgeText = 'Período de prueba superado';
+    probationDetailText = probationElapsedText === 'Hoy'
+      ? 'Período de prueba vencido hoy'
+      : `Superó el período de prueba hace ${probationElapsedText}`;
+  }
+
+  return {
+    hireDateMissing: false,
+    startedYet: true,
+    tenureText,
+    tenureLongText: `Está hace ${tenureText}`,
+    tenureParts,
+    probationStatus,
+    probationBadgeText,
+    probationDetailText,
+    probationDateLabel: probationEndDate ? formatDateLabel(toDateKey(probationEndDate)) : '',
+    probationEndDate,
+    probationRemainingText,
+    probationElapsedText,
+    isInProbation,
+    probationEndsToday,
+    probationExceeded,
+  };
+}
+
+function renderProbationBadge(lifecycleInfo) {
+  if (!lifecycleInfo) return '';
+  const statusClassMap = {
+    missing: 'status-insurance',
+    future: 'status-balanced',
+    trial: 'status-trial',
+    due: 'status-due',
+    passed: 'status-passed',
+  };
+  const cssClass = statusClassMap[lifecycleInfo.probationStatus] || 'status-balanced';
+  return `<span class="status-pill ${cssClass}">${escapeHtml(lifecycleInfo.probationBadgeText)}</span>`;
+}
+
 function diffDaysInclusive(startDate, endDate) {
   if (!(startDate instanceof Date) || Number.isNaN(startDate)) return 0;
   if (!(endDate instanceof Date) || Number.isNaN(endDate)) return 0;
@@ -981,6 +1159,8 @@ function getWorkerSummaries() {
         .map((serviceId) => getServiceById(serviceId))
         .filter(Boolean);
 
+      const lifecycleInfo = getWorkerLifecycleInfo(worker);
+
       return {
         ...worker,
         assignments,
@@ -989,6 +1169,7 @@ function getWorkerSummaries() {
         difference,
         services,
         status,
+        lifecycleInfo,
       };
     })
     .filter(matchesFilters)
@@ -1228,7 +1409,10 @@ function renderServiceGaps() {
 function renderWorkersTable(summaries) {
   el.workersTableBody.innerHTML = summaries
     .map(
-      (worker) => `
+      (worker) => {
+        const lifecycleInfo = worker.lifecycleInfo || getWorkerLifecycleInfo(worker);
+
+        return `
         <tr>
           <td>
             <button
@@ -1240,8 +1424,21 @@ function renderWorkersTable(summaries) {
               <strong>${escapeHtml(worker.name)}</strong>
             </button>
             <div class="muted">${escapeHtml(worker.notes || '')}</div>
+            <div class="worker-secondary-meta">Ingreso: ${worker.hire_date ? formatDateLabel(worker.hire_date) : 'Pendiente'}</div>
           </td>
           <td>${TYPE_META[worker.worker_type].label}</td>
+          <td>
+            <div class="worker-tenure-cell">
+              <strong>${escapeHtml(lifecycleInfo.tenureText)}</strong>
+              <span class="muted">${escapeHtml(lifecycleInfo.tenureLongText)}</span>
+            </div>
+          </td>
+          <td>
+            <div class="worker-tenure-cell">
+              ${renderProbationBadge(lifecycleInfo)}
+              <span class="muted worker-probation-detail">${escapeHtml(lifecycleInfo.probationDetailText)}</span>
+            </div>
+          </td>
           <td>${worker.targetHours == null ? 'SEGURO' : formatHours(worker.targetHours)}</td>
           <td>${formatHours(worker.totalHours)}</td>
           <td>${worker.difference == null ? 'SEGURO' : formatHours(worker.difference)}</td>
@@ -1262,7 +1459,8 @@ function renderWorkersTable(summaries) {
             </div>
           </td>
         </tr>
-      `
+      `;
+      }
     )
     .join('');
 }
@@ -1271,13 +1469,18 @@ function renderWorkerAvailability(summaries) {
   el.workerAvailabilityBoard.innerHTML = summaries
     .map((worker) => {
       const assignmentsByDay = groupAssignmentsByDay(worker.assignments);
+      const lifecycleInfo = worker.lifecycleInfo || getWorkerLifecycleInfo(worker);
 
       return `
         <article class="availability-card">
           <header class="availability-header">
             <div>
               <h3>${escapeHtml(worker.name)}</h3>
-              <p>${TYPE_META[worker.worker_type].label}</p>
+              <p>${TYPE_META[worker.worker_type].label} · ${escapeHtml(lifecycleInfo.tenureText)}</p>
+              <div class="worker-availability-meta">
+                ${renderProbationBadge(lifecycleInfo)}
+                <span class="muted worker-probation-detail">${escapeHtml(lifecycleInfo.probationDetailText)}</span>
+              </div>
             </div>
             <div>${renderDifferencePill(worker)}</div>
           </header>
@@ -1317,6 +1520,7 @@ function renderWorkerAvailability(summaries) {
     })
     .join('');
 }
+
 
 function renderServices() {
   const services = getFilteredServices();
