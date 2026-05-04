@@ -445,6 +445,14 @@ function parseDateKey(dateKey) {
   return new Date(year, month - 1, day, 12, 0, 0, 0);
 }
 
+function getDaysInYear(year) {
+  const numericYear = Number(year);
+  if (!numericYear) return 365;
+  return new Date(numericYear, 11, 31).getDate() === 31
+    ? Math.round((Date.UTC(numericYear + 1, 0, 1) - Date.UTC(numericYear, 0, 1)) / 86400000)
+    : 365;
+}
+
 function formatPercent(value) {
   if (value == null || Number.isNaN(value)) return '—';
   return `${Number(value).toFixed(2).replace(/\.00$/, '')}%`;
@@ -694,11 +702,13 @@ function getWorkerAbsenceStats(worker, referenceDateKey = getAbsenceTrackingRefe
       year: referenceDate.getFullYear(),
       thresholdPercent: 3,
       thresholdAnnualAbsences: 365 * 0.03,
+      daysInReferenceYear: getDaysInYear(referenceDate.getFullYear()),
       uniqueAbsenceDates: [],
       absenceCount: 0,
       elapsedDays: 0,
       actualPercent: null,
       annualizedPercent: null,
+      calendarYearPercent: null,
       projectedAnnualAbsences: null,
       allowedAbsencesToDate: null,
       remainingAbsencesToThreshold: null,
@@ -719,11 +729,13 @@ function getWorkerAbsenceStats(worker, referenceDateKey = getAbsenceTrackingRefe
       year: referenceDate.getFullYear(),
       thresholdPercent: 3,
       thresholdAnnualAbsences: 365 * 0.03,
+      daysInReferenceYear: getDaysInYear(referenceDate.getFullYear()),
       uniqueAbsenceDates: [],
       absenceCount: 0,
       elapsedDays: 0,
       actualPercent: 0,
       annualizedPercent: 0,
+      calendarYearPercent: 0,
       projectedAnnualAbsences: 0,
       allowedAbsencesToDate: 0,
       remainingAbsencesToThreshold: 365 * 0.03,
@@ -734,11 +746,13 @@ function getWorkerAbsenceStats(worker, referenceDateKey = getAbsenceTrackingRefe
 
   const periodStartKey = periodStart.toISOString().slice(0, 10);
   const referenceKey = referenceDate.toISOString().slice(0, 10);
+  const daysInReferenceYear = getDaysInYear(referenceDate.getFullYear());
   const uniqueAbsenceDates = getWorkerAbsenceUniqueDateKeys(worker.id, periodStartKey, referenceKey);
   const absenceCount = uniqueAbsenceDates.length;
   const elapsedDays = diffDaysInclusive(periodStart, referenceDate);
   const actualPercent = elapsedDays ? Number(((absenceCount / elapsedDays) * 100).toFixed(2)) : 0;
   const annualizedPercent = actualPercent;
+  const calendarYearPercent = daysInReferenceYear ? Number(((absenceCount / daysInReferenceYear) * 100).toFixed(2)) : 0;
   const projectedAnnualAbsences = elapsedDays ? Number(((absenceCount / elapsedDays) * 365).toFixed(2)) : 0;
   const allowedAbsencesToDate = Number(((elapsedDays * 0.03)).toFixed(2));
   const remainingAbsencesToThreshold = Number(Math.max(0, (365 * 0.03) - projectedAnnualAbsences).toFixed(2));
@@ -755,11 +769,13 @@ function getWorkerAbsenceStats(worker, referenceDateKey = getAbsenceTrackingRefe
     year: referenceDate.getFullYear(),
     thresholdPercent: 3,
     thresholdAnnualAbsences: 365 * 0.03,
+    daysInReferenceYear,
     uniqueAbsenceDates,
     absenceCount,
     elapsedDays,
     actualPercent,
     annualizedPercent,
+    calendarYearPercent,
     projectedAnnualAbsences,
     allowedAbsencesToDate,
     remainingAbsencesToThreshold,
@@ -1977,6 +1993,7 @@ function renderAbsenceHistoryBoard(dateKey) {
 
               <div class="absence-card-actions">
                 <button class="btn btn-secondary btn-sm" type="button" data-edit-absence="${absence.id}">Editar</button>
+                <button class="btn btn-ghost btn-sm" type="button" data-delete-absence="${absence.id}">Eliminar</button>
               </div>
             </article>
           `;
@@ -2091,6 +2108,11 @@ function renderAbsenceWorkerTrackerBoard(referenceDateKey) {
                           <p>Límite interno: 3%</p>
                         </div>
                         <div class="absence-metric-box">
+                          <span class="muted">% sobre año calendario</span>
+                          <strong>${formatPercent(item.calendarYearPercent)}</strong>
+                          <p>${item.absenceCount} faltas sobre ${item.daysInReferenceYear || 365} días del año ${item.year}</p>
+                        </div>
+                        <div class="absence-metric-box">
                           <span class="muted">Proyección anual</span>
                           <strong>${formatNumber(item.projectedAnnualAbsences)}</strong>
                           <p>Sobre un año de 365 días</p>
@@ -2156,6 +2178,29 @@ function renderAbsenceEmployeeHistoryBoard() {
                   <strong>${entry.coveredWorkerNames.length ? escapeHtml(entry.coveredWorkerNames.join(', ')) : 'Sin cobertura'}</strong>
                   <p>${entry.projectedAnnualAbsences != null ? `Proyección anual: ${formatNumber(entry.projectedAnnualAbsences)} faltas` : 'Sin proyección disponible'}</p>
                 </div>
+              </div>
+
+              <div class="stack-list">
+                ${entry.absences.map((absence) => {
+                  const service = getServiceById(absence.service_id);
+                  return `
+                    <article class="card-lite">
+                      <div class="section-head with-action">
+                        <div>
+                          <strong>${escapeHtml(service?.name || 'Servicio')}</strong>
+                          <div class="muted small">
+                            ${absence.scheduled_start_time && absence.scheduled_end_time ? `${absence.scheduled_start_time.slice(0, 5)}-${absence.scheduled_end_time.slice(0, 5)}` : 'Horario sin informar'}
+                            ${absence.absence_type ? ` · ${escapeHtml(formatAbsenceTypeLabel(absence.absence_type))}` : ''}
+                          </div>
+                        </div>
+                        <div class="inline-actions">
+                          <button class="btn btn-secondary btn-sm" type="button" data-edit-absence="${absence.id}">Editar</button>
+                          <button class="btn btn-ghost btn-sm" type="button" data-delete-absence="${absence.id}">Eliminar</button>
+                        </div>
+                      </div>
+                    </article>
+                  `;
+                }).join('')}
               </div>
             </article>
           `)
@@ -3910,17 +3955,18 @@ async function saveAbsence(event) {
   }
 }
 
-async function deleteAbsence() {
+async function deleteAbsenceById(absenceId, options = {}) {
   if (!ensureDataReady('eliminar la ausencia')) return;
 
-  const absenceId = $('absenceId').value.trim();
-  if (!absenceId) return;
+  const normalizedAbsenceId = String(absenceId || '').trim();
+  if (!normalizedAbsenceId) return;
 
-  if (!confirm('¿Eliminar esta ausencia?')) return;
+  const shouldConfirm = options.confirm !== false;
+  if (shouldConfirm && !confirm('¿Eliminar esta ausencia?')) return;
 
   markLocalMutation();
 
-  const { error } = await supabase.from('absences').delete().eq('id', absenceId);
+  const { error } = await supabase.from('absences').delete().eq('id', normalizedAbsenceId);
 
   if (error) {
     console.error(error);
@@ -3928,8 +3974,17 @@ async function deleteAbsence() {
     return;
   }
 
-  el.absenceDialog.close();
+  if (options.closeDialog !== false) {
+    el.absenceDialog?.close();
+  }
+
   await loadAllDataWithRetry(2, 250, { hardLock: false, silent: false });
+}
+
+async function deleteAbsence() {
+  const absenceId = $('absenceId').value.trim();
+  if (!absenceId) return;
+  await deleteAbsenceById(absenceId, { closeDialog: true });
 }
 
 
@@ -4051,6 +4106,12 @@ function handleDynamicClicks(event) {
   const editAbsenceBtn = event.target.closest('[data-edit-absence]');
   if (editAbsenceBtn) {
     openAbsenceDialog({ absenceId: editAbsenceBtn.dataset.editAbsence });
+    return;
+  }
+
+  const deleteAbsenceBtn = event.target.closest('[data-delete-absence]');
+  if (deleteAbsenceBtn) {
+    deleteAbsenceById(deleteAbsenceBtn.dataset.deleteAbsence);
     return;
   }
 
