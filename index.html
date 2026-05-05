@@ -205,7 +205,6 @@
                       <option value="day">Por día</option>
                       <option value="month">Por mes</option>
                       <option value="range">Por rango</option>
-                      <option value="all">Histórico total</option>
                     </select>
                   </div>
                   <div class="field absence-date-field" id="absenceDateFilterField">
@@ -232,6 +231,7 @@
                     </select>
                   </div>
                   <button id="addAbsenceBtn" class="btn btn-primary" type="button">Registrar ausencia</button>
+                  <button id="addTardinessBtn" class="btn btn-secondary" type="button">Registrar tardanza</button>
                 </div>
               </div>
 
@@ -296,6 +296,56 @@
                   <div id="absenceEmployeeHistoryPagination" class="pagination-shell"></div>
                 </article>
               </div>
+
+              <article class="card-lite">
+                <div class="section-head">
+                  <div>
+                    <h3>Tardanzas</h3>
+                    <span class="muted">Llegadas tarde registradas, seguimiento anual e histórico desde el ingreso</span>
+                  </div>
+                  <div class="field absence-date-field">
+                    <label for="tardinessWorkerHistoryFilter">Operario</label>
+                    <select id="tardinessWorkerHistoryFilter">
+                      <option value="all">Todos</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="cards-grid" id="tardinessKpiCards"></div>
+                <div class="split-grid">
+                  <article class="card-lite">
+                    <div class="section-head">
+                      <div>
+                        <h3>Tardanzas registradas</h3>
+                        <span class="muted">Detalle de cada llegada tarde del período filtrado</span>
+                      </div>
+                    </div>
+                    <div id="tardinessHistoryBoard" class="stack-list"></div>
+                    <div id="tardinessHistoryPagination" class="pagination-shell"></div>
+                  </article>
+
+                  <article class="card-lite">
+                    <div class="section-head">
+                      <div>
+                        <h3>Seguimiento anual por operario · tardanzas</h3>
+                        <span class="muted">% anualizado sobre días trabajados y % sobre el año calendario</span>
+                      </div>
+                    </div>
+                    <div id="tardinessWorkerTrackerBoard" class="stack-list"></div>
+                    <div id="tardinessWorkerTrackerPagination" class="pagination-shell"></div>
+                  </article>
+                </div>
+
+                <article class="card-lite">
+                  <div class="section-head">
+                    <div>
+                      <h3>Historial de tardanzas</h3>
+                      <span class="muted">Evolución de tardanzas desde el ingreso del operario</span>
+                    </div>
+                  </div>
+                  <div id="tardinessEmployeeHistoryBoard" class="stack-list"></div>
+                  <div id="tardinessEmployeeHistoryPagination" class="pagination-shell"></div>
+                </article>
+              </article>
             </article>
           </section>
 
@@ -651,6 +701,64 @@
   </dialog>
 
 
+
+
+  
+
+  <dialog id="tardinessDialog" class="modal">
+    <form id="tardinessForm" class="modal-card stack-md">
+      <div class="section-head with-action">
+        <h3 id="tardinessDialogTitle">Registrar tardanza</h3>
+        <button class="icon-btn" type="button" data-close="tardinessDialog">✕</button>
+      </div>
+
+      <input type="hidden" id="tardinessId" />
+      <input type="hidden" id="tardinessAssignmentId" />
+
+      <div class="grid-2">
+        <div class="field">
+          <label for="tardinessDate">Fecha</label>
+          <input id="tardinessDate" type="date" required />
+        </div>
+        <div class="field">
+          <label for="tardinessMinutesInfo">Tiempo de tardanza</label>
+          <input id="tardinessMinutesInfo" type="text" placeholder="Se calcula automáticamente" readonly />
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="tardinessWorker">Operario</label>
+        <select id="tardinessWorker" required></select>
+      </div>
+
+      <div class="field">
+        <label for="tardinessService">Servicio</label>
+        <select id="tardinessService" required></select>
+      </div>
+
+      <div class="grid-2">
+        <div class="field">
+          <label for="tardinessScheduledStart">Hora prevista</label>
+          <input id="tardinessScheduledStart" type="time" required />
+        </div>
+        <div class="field">
+          <label for="tardinessActualArrival">Hora de llegada</label>
+          <input id="tardinessActualArrival" type="time" required />
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="tardinessNotes">Observaciones</label>
+        <textarea id="tardinessNotes" rows="3" placeholder="Opcional"></textarea>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-secondary" type="button" data-close="tardinessDialog">Cancelar</button>
+        <button id="deleteTardinessBtn" class="btn btn-ghost hidden" type="button">Eliminar</button>
+        <button class="btn btn-primary" type="submit">Guardar tardanza</button>
+      </div>
+    </form>
+  </dialog>
 
 
   <dialog id="materialCatalogDialog" class="modal">

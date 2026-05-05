@@ -802,3 +802,45 @@ tr:hover td { background: rgba(255,255,255,0.02); }
   color: #b8caff;
   border-color: rgba(91,140,255,0.3);
 }
+
+
+.worker-secondary-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.worker-tenure-cell {
+  display: grid;
+  gap: 6px;
+}
+
+.worker-availability-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.worker-probation-detail {
+  display: inline-block;
+  max-width: 320px;
+}
+
+.status-trial {
+  background: rgba(255,203,102,0.12);
+  color: var(--warning);
+  border-color: rgba(255,203,102,0.3);
+}
+
+.status-due {
+  background: rgba(91,140,255,0.12);
+  color: #b8caff;
+  border-color: rgba(91,140,255,0.3);
+}
+
+.status-passed {
+  background: rgba(88,214,141,0.12);
+  color: var(--success);
+  border-color: rgba(88,214,141,0.3);
+}
