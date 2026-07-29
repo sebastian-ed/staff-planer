@@ -1,29 +1,33 @@
-# Actualización segura de Staff Planner
+# Actualización del Staff Planner
 
-## Orden recomendado
+## 1. Respaldo
 
-1. Ingresar al proyecto actual de Supabase.
-2. Abrir **SQL Editor**.
-3. Ejecutar únicamente el contenido de `sql/migration_add_billed_hours.sql`.
-4. Confirmar que el script finalice sin errores.
-5. Reemplazar los archivos del frontend en GitHub con los de esta carpeta.
-6. Esperar la publicación de GitHub Pages y actualizar la web con `Ctrl + F5`.
+La migración no borra datos, pero antes de cualquier cambio productivo conviene exportar un respaldo de Supabase.
 
-## Qué hace la migración
+## 2. Migraciones
 
-- Agrega `billed_weekly_hours` a la tabla `services`.
-- Permite valores vacíos para que los servicios existentes sigan funcionando sin completar el dato inmediatamente.
-- Impide guardar horas negativas.
+Si todavía no cargaste las horas mensuales facturadas, ejecutá:
 
-## Qué no hace
+`sql/migration_add_billed_monthly_hours.sql`
 
-- No elimina filas.
-- No modifica nombres de servicios.
-- No modifica frecuencias.
-- No modifica operarios.
-- No modifica horarios ni asignaciones.
-- No reemplaza datos existentes.
+Para activar el Optimizador, ejecutá:
 
-## Carga posterior
+`sql/migration_add_optimizer_locations.sql`
 
-En **Servicios > Editar**, completar **Horas facturadas por semana**. El Dashboard mostrará el total facturado, el total operativo y la diferencia. Los servicios sin ese dato aparecerán como pendientes y no se incluirán en la diferencia comercial hasta que sean completados.
+Esta segunda migración solo agrega campos opcionales de ubicación. No modifica operarios, servicios, horarios, frecuencias ni asignaciones existentes.
+
+## 3. Publicación
+
+Reemplazá los archivos del repositorio por los incluidos en este ZIP y publicá normalmente en GitHub Pages. Conservá tu `supabase-config.js` actual.
+
+## 4. Puesta en marcha del Optimizador
+
+1. Entrá en Operarios y cargá zona de residencia. Las coordenadas son recomendables, no obligatorias.
+2. Entrá en Servicios y cargá zona y coordenadas.
+3. Abrí Optimizador.
+4. Seleccioná un servicio existente o simulá uno nuevo.
+5. Indicá días, horario y margen de traslado.
+6. Ejecutá el análisis.
+7. Revisá el ranking, los motivos y los descartes antes de confirmar una asignación.
+
+La herramienta no reemplaza la decisión operativa. No conoce tránsito en vivo, restricciones personales no registradas ni acuerdos laborales particulares.

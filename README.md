@@ -11,29 +11,62 @@ Web app mobile-first para visualizar y editar asignaciones de operarios por serv
 - Ver cambios en vivo entre varios usuarios.
 - Crear usuarios nuevos desde el login para que ingresen con las mismas funcionalidades.
 - Imprimir la vista filtrada actual y descargar cada panel en Excel o PDF.
-- Cargar horas semanales facturadas por servicio y compararlas con las horas operativas asignadas.
+- Cargar horas mensuales facturadas por servicio y compararlas con la proyección mensual del cronograma operativo activo.
 - Buscar operarios, servicios, asignaciones, materiales, ausencias y tardanzas desde un único buscador global.
 
-## Actualización: horas facturadas por servicio
+## Actualización: balance mensual de horas por servicio
 
 Antes de publicar esta versión, ejecutá una sola vez en el SQL Editor de Supabase:
 
-`sql/migration_add_billed_hours.sql`
+`sql/migration_add_billed_monthly_hours.sql`
 
-La migración es aditiva: crea la columna `billed_weekly_hours` en `services` y una validación para impedir valores negativos. **No borra, reemplaza ni modifica los servicios, operarios, frecuencias o asignaciones existentes.** Los servicios actuales quedan con el campo vacío hasta que cargues sus horas facturadas.
+La migración es aditiva: crea la columna `billed_monthly_hours` en `services` y una validación para impedir valores negativos. **No borra, reemplaza ni modifica los servicios, operarios, frecuencias, horarios o asignaciones existentes.** La columna semanal anterior, si ya existe, queda conservada y sin cambios.
 
 Después de ejecutar la migración:
 
 1. Entrá en **Servicios**.
 2. Editá cada servicio.
-3. Completá **Horas facturadas por semana**.
-4. Revisá el balance total en el Dashboard y el detalle en cada tarjeta de servicio.
+3. Completá **Horas totales facturadas por mes**.
+4. Seleccioná el mes en el Dashboard.
+5. Revisá el total facturado, el total operativo mensual y los desvíos por servicio.
 
-En los estados de operarios, el criterio visual queda así:
+La carga operativa mensual se calcula con el calendario real: cada turno semanal se multiplica por la cantidad de veces que ese día aparece en el mes seleccionado. No se aplica un factor fijo de cuatro semanas.
 
-- Rojo: al operario le faltan horas para alcanzar su objetivo.
-- Verde: el operario supera su objetivo de horas.
+En los estados semanales de operarios, el criterio visual queda así:
+
+- Rojo: al operario le faltan horas y se muestra la cantidad exacta.
+- Verde: al operario le sobran horas respecto de su objetivo y se muestra la cantidad exacta.
 - Azul: está exactamente en objetivo.
+
+Además, la vista de operarios muestra las horas mensuales proyectadas para el mes seleccionado.
+
+**Alcance:** el cálculo usa el cronograma activo actual. No reconstruye automáticamente cambios históricos realizados dentro de un mes.
+
+## Actualización: Optimizador de asignaciones
+
+Antes de publicar esta versión, ejecutá una sola vez:
+
+`sql/migration_add_optimizer_locations.sql`
+
+La migración es aditiva. Solo agrega campos opcionales de domicilio, zona y coordenadas en `workers` y coordenadas en `services`. No borra ni modifica operarios, servicios, horarios, frecuencias, materiales o asignaciones existentes.
+
+La nueva sección **Optimizador** permite:
+
+- simular un servicio nuevo o analizar uno ya cargado;
+- excluir superposiciones horarias;
+- validar si el traslado desde el servicio anterior y hacia el siguiente entra en la ventana disponible;
+- comparar la nueva carga con las horas objetivo del operario;
+- ponderar cercanía desde el domicilio y continuidad de zona;
+- mostrar un ranking explicado con motivos, riesgos y descartes;
+- preparar la carga rápida en el Planner cuando el servicio ya existe.
+
+Las distancias se calculan localmente con coordenadas y una estimación urbana. No representan tiempos de tránsito en vivo. Cuando faltan coordenadas, la app usa la zona como aproximación y lo informa.
+
+### Datos geográficos
+
+En cada operario podés cargar domicilio de referencia, zona y coordenadas. En cada servicio podés cargar coordenadas. El campo acepta `latitud, longitud` o enlaces de Google Maps que contengan las coordenadas. Para proteger privacidad, puede usarse una ubicación aproximada o el centro del barrio.
+
+Google My Maps no se consulta directamente en esta versión. La estructura quedó preparada para una integración posterior mediante exportación KML o una API de mapas.
 
 ## Stack
 
@@ -108,7 +141,6 @@ No sigas empujando toda la lógica en una sola grilla. Escala mal, se vuelve ile
 La siguiente fase lógica es agregar:
 
 - importador CSV desde tu Google Sheet actual,
-- vista mensual,
 - bloqueo por permisos,
 - alertas de superposición horaria,
 - panel de reemplazos.

@@ -66,6 +66,7 @@
             <button class="nav-tab" data-view="workers">Operarios</button>
             <button class="nav-tab" data-view="services">Servicios</button>
             <button class="nav-tab" data-view="planner">Planner semanal</button>
+            <button class="nav-tab" data-view="optimizer">Optimizador</button>
             <button class="nav-tab" data-view="absences">Ausencias</button>
             <button class="nav-tab" data-view="materials">Materiales</button>
           </nav>
@@ -101,6 +102,16 @@
 
         <section class="content stack-lg">
           <section id="dashboardView" class="view stack-lg">
+            <article class="card dashboard-period-bar">
+              <div>
+                <h3>Control mensual de horas</h3>
+                <p class="muted">Compara las horas mensuales facturadas con las horas operativas mensuales proyectadas desde el cronograma semanal activo.</p>
+              </div>
+              <div class="field dashboard-month-field">
+                <label for="dashboardMonthFilter">Mes de análisis</label>
+                <input id="dashboardMonthFilter" type="month" />
+              </div>
+            </article>
             <div class="cards-grid" id="kpiCards"></div>
             <article id="serviceHoursBalance" class="card"></article>
             <div class="split-grid">
@@ -139,7 +150,8 @@
                       <th>Antigüedad</th>
                       <th>Período de prueba</th>
                       <th>Horas objetivo</th>
-                      <th>Horas asignadas</th>
+                      <th>Horas asignadas semanales</th>
+                      <th>Horas del mes</th>
                       <th>Diferencia</th>
                       <th>Estado</th>
                       <th>Servicios</th>
@@ -190,6 +202,160 @@
               <div class="planner-board-wrap">
                 <div class="planner-board" id="plannerBoard"></div>
               </div>
+            </article>
+          </section>
+
+
+          <section id="optimizerView" class="view hidden stack-lg">
+            <article class="card optimizer-intro">
+              <div>
+                <span class="eyebrow">Planificación asistida</span>
+                <h3>Optimizador de asignaciones</h3>
+                <p class="muted">Analiza disponibilidad horaria, carga semanal, continuidad de recorridos y cercanía al domicilio para recomendar el operario más conveniente.</p>
+              </div>
+              <div class="optimizer-method-note">
+                <strong>Criterio operativo</strong>
+                <span>Los conflictos de horario son excluyentes. Las distancias son aproximadas y mejoran cuando operarios y servicios tienen coordenadas cargadas.</span>
+              </div>
+            </article>
+
+            <article class="card">
+              <div class="section-head with-action section-head-stack-mobile">
+                <div>
+                  <h3>Necesidad de cobertura</h3>
+                  <span class="muted">Podés analizar un servicio existente o simular uno nuevo sin guardarlo.</span>
+                </div>
+                <button id="optimizerCreateServiceBtn" class="btn btn-secondary" type="button">Preparar nuevo servicio</button>
+              </div>
+
+              <form id="optimizerForm" class="stack-md">
+                <div class="grid-2">
+                  <div class="field">
+                    <label for="optimizerExistingService">Servicio</label>
+                    <select id="optimizerExistingService">
+                      <option value="">Simular servicio nuevo</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="optimizerMonth">Mes de análisis</label>
+                    <input id="optimizerMonth" type="month" />
+                  </div>
+                </div>
+
+                <div class="grid-2">
+                  <div class="field">
+                    <label for="optimizerServiceName">Nombre de referencia</label>
+                    <input id="optimizerServiceName" placeholder="Ej. Nuevo servicio Villa Crespo" />
+                  </div>
+                  <div class="field">
+                    <label for="optimizerBilledMonthlyHours">Horas facturadas mensuales</label>
+                    <input id="optimizerBilledMonthlyHours" type="number" min="0" step="0.25" placeholder="Opcional para la simulación" />
+                  </div>
+                </div>
+
+                <div class="grid-2">
+                  <div class="field">
+                    <label for="optimizerAddress">Dirección</label>
+                    <input id="optimizerAddress" placeholder="Dirección del servicio" />
+                  </div>
+                  <div class="field">
+                    <label for="optimizerZone">Zona o barrio</label>
+                    <input id="optimizerZone" placeholder="Ej. Villa Crespo" />
+                  </div>
+                </div>
+
+                <div class="field">
+                  <label for="optimizerCoordinates">Coordenadas o enlace de Google Maps</label>
+                  <input id="optimizerCoordinates" placeholder="Ej. -34.5982, -58.4371 o un enlace con coordenadas" />
+                  <small class="field-help">No es obligatorio. Sin coordenadas se usa la zona como aproximación y la recomendación queda con menor precisión.</small>
+                </div>
+
+                <div class="field">
+                  <label>Días requeridos</label>
+                  <div class="optimizer-days-grid">
+                    <label class="day-check"><input class="optimizer-day" type="checkbox" value="1" /> Lunes</label>
+                    <label class="day-check"><input class="optimizer-day" type="checkbox" value="2" /> Martes</label>
+                    <label class="day-check"><input class="optimizer-day" type="checkbox" value="3" /> Miércoles</label>
+                    <label class="day-check"><input class="optimizer-day" type="checkbox" value="4" /> Jueves</label>
+                    <label class="day-check"><input class="optimizer-day" type="checkbox" value="5" /> Viernes</label>
+                    <label class="day-check"><input class="optimizer-day" type="checkbox" value="6" /> Sábado</label>
+                    <label class="day-check"><input class="optimizer-day" type="checkbox" value="0" /> Domingo</label>
+                  </div>
+                </div>
+
+                <div class="grid-2">
+                  <div class="field">
+                    <label for="optimizerStart">Hora de inicio</label>
+                    <input id="optimizerStart" type="time" required />
+                  </div>
+                  <div class="field">
+                    <label for="optimizerEnd">Hora de finalización</label>
+                    <input id="optimizerEnd" type="time" required />
+                  </div>
+                </div>
+
+                <div class="optimizer-settings-grid">
+                  <div class="field">
+                    <label for="optimizerTravelBuffer">Margen adicional de traslado</label>
+                    <select id="optimizerTravelBuffer">
+                      <option value="10">10 minutos</option>
+                      <option value="15" selected>15 minutos</option>
+                      <option value="20">20 minutos</option>
+                      <option value="30">30 minutos</option>
+                    </select>
+                  </div>
+                  <label class="optimizer-toggle">
+                    <input id="optimizerAllowOverTarget" type="checkbox" />
+                    <span>
+                      <strong>Incluir operarios que quedarían excedidos</strong>
+                      <small>Se mostrarán como alternativa condicionada, con penalización en el ranking.</small>
+                    </span>
+                  </label>
+                </div>
+
+                <div id="optimizerWorkloadPreview" class="optimizer-workload-preview">Seleccioná días y horarios para calcular la carga.</div>
+
+                <div class="modal-actions optimizer-form-actions">
+                  <button id="optimizerClearBtn" class="btn btn-ghost" type="button">Limpiar</button>
+                  <button class="btn btn-primary" type="submit">Analizar candidatos</button>
+                </div>
+              </form>
+            </article>
+
+            <div id="optimizerKpiCards" class="cards-grid"></div>
+
+            <article id="optimizerRecommendation" class="card optimizer-recommendation"></article>
+
+            <div class="split-grid optimizer-results-grid">
+              <article class="card">
+                <div class="section-head">
+                  <div>
+                    <h3>Candidatos recomendados</h3>
+                    <span class="muted">Ranking explicado, no una caja negra.</span>
+                  </div>
+                </div>
+                <div id="optimizerCandidates" class="optimizer-candidate-list"></div>
+              </article>
+
+              <article class="card">
+                <div class="section-head">
+                  <div>
+                    <h3>Descartados y riesgos</h3>
+                    <span class="muted">Conflictos horarios, traslados inviables o exceso de carga.</span>
+                  </div>
+                </div>
+                <div id="optimizerRejected" class="optimizer-rejected-list"></div>
+              </article>
+            </div>
+
+            <article class="card">
+              <div class="section-head">
+                <div>
+                  <h3>Calidad de datos geográficos</h3>
+                  <span class="muted">La precisión del optimizador depende de esta cobertura.</span>
+                </div>
+              </div>
+              <div id="optimizerDataQuality"></div>
             </article>
           </section>
 
@@ -447,6 +613,21 @@
         </div>
       </div>
       <div class="field">
+        <label for="workerHomeAddress">Domicilio de referencia</label>
+        <input id="workerHomeAddress" placeholder="Dirección aproximada para planificación de recorridos" />
+      </div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="workerHomeZone">Zona o barrio de residencia</label>
+          <input id="workerHomeZone" placeholder="Ej. Villa Crespo" />
+        </div>
+        <div class="field">
+          <label for="workerCoordinates">Coordenadas o enlace de Google Maps</label>
+          <input id="workerCoordinates" placeholder="-34.6037, -58.3816" />
+        </div>
+      </div>
+      <small class="field-help">El optimizador usa estos datos solo para calcular cercanía. Podés cargar una ubicación aproximada, sin guardar una dirección exacta.</small>
+      <div class="field">
         <label for="workerNotes">Observaciones</label>
         <textarea id="workerNotes" rows="3"></textarea>
       </div>
@@ -473,18 +654,25 @@
         <label for="serviceAddress">Cliente / dirección</label>
         <input id="serviceAddress" />
       </div>
-      <div class="field">
-        <label for="serviceZone">Zona</label>
-        <input id="serviceZone" />
+      <div class="grid-2">
+        <div class="field">
+          <label for="serviceZone">Zona</label>
+          <input id="serviceZone" />
+        </div>
+        <div class="field">
+          <label for="serviceCoordinates">Coordenadas o enlace de Google Maps</label>
+          <input id="serviceCoordinates" placeholder="-34.6037, -58.3816" />
+        </div>
       </div>
+      <small class="field-help">Las coordenadas permiten validar traslados entre servicios. Si quedan vacías, se utiliza la zona como aproximación.</small>
       <div class="field">
         <label for="serviceSupervisor">Supervisor a cargo</label>
         <input id="serviceSupervisor" placeholder="Ej. Andrés" />
       </div>
       <div class="field">
-        <label for="serviceBilledHours">Horas facturadas por semana</label>
-        <input id="serviceBilledHours" type="number" min="0" step="0.25" inputmode="decimal" placeholder="Ej. 40" />
-        <small class="field-help">Es el total semanal vendido al cliente. No modifica las asignaciones actuales.</small>
+        <label for="serviceBilledHours">Horas totales facturadas por mes</label>
+        <input id="serviceBilledHours" type="number" min="0" step="0.25" inputmode="decimal" placeholder="Ej. 176" />
+        <small class="field-help">Es el total mensual vendido al cliente. No modifica horarios, frecuencias ni asignaciones existentes.</small>
       </div>
       <div class="field">
         <label for="serviceFrequency">Frecuencia</label>
