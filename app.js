@@ -39,6 +39,9 @@ const PAGINATION_DEFAULTS = {
   absenceTracker: 6,
   absenceEmployeeHistory: 8,
   absenceMonthly: 8,
+  tardinessHistory: 8,
+  tardinessTracker: 6,
+  tardinessEmployeeHistory: 8,
 };
 
 function createEmptyDerivedState() {
@@ -47,6 +50,7 @@ function createEmptyDerivedState() {
     serviceById: new Map(),
     assignmentById: new Map(),
     absenceById: new Map(),
+    tardinessById: new Map(),
     materialById: new Map(),
     materialByNormalizedName: new Map(),
     serviceMaterialById: new Map(),
@@ -56,6 +60,8 @@ function createEmptyDerivedState() {
     assignmentsByDay: new Map(),
     absencesByDateKey: new Map(),
     absencesByWorkerId: new Map(),
+    tardinessesByDateKey: new Map(),
+    tardinessesByWorkerId: new Map(),
     serviceMaterialsByServiceId: new Map(),
     serviceMaterialsByMaterialId: new Map(),
     materialConsumptionsByServiceMaterialId: new Map(),
@@ -63,6 +69,7 @@ function createEmptyDerivedState() {
     serviceSearchById: new Map(),
     assignmentSearchById: new Map(),
     absenceSearchById: new Map(),
+    tardinessSearchById: new Map(),
     materialSearchById: new Map(),
     serviceMaterialSearchById: new Map(),
   };
@@ -74,6 +81,7 @@ const state = {
   services: [],
   assignments: [],
   absences: [],
+  tardinesses: [],
   materials: [],
   serviceMaterials: [],
   materialConsumptions: [],
@@ -92,6 +100,9 @@ const state = {
     absenceTracker: { page: 1, pageSize: PAGINATION_DEFAULTS.absenceTracker },
     absenceEmployeeHistory: { page: 1, pageSize: PAGINATION_DEFAULTS.absenceEmployeeHistory },
     absenceMonthly: { page: 1, pageSize: PAGINATION_DEFAULTS.absenceMonthly },
+    tardinessHistory: { page: 1, pageSize: PAGINATION_DEFAULTS.tardinessHistory },
+    tardinessTracker: { page: 1, pageSize: PAGINATION_DEFAULTS.tardinessTracker },
+    tardinessEmployeeHistory: { page: 1, pageSize: PAGINATION_DEFAULTS.tardinessEmployeeHistory },
   },
   realtimeChannel: null,
   dataReady: false,
@@ -123,6 +134,38 @@ function normalizeText(value) {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, ' ');
+}
+
+function normalizeSearchText(value) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function matchesSearchText(haystack, query) {
+  const normalizedQuery = normalizeSearchText(query);
+  if (!normalizedQuery) return true;
+
+  const normalizedHaystack = normalizeSearchText(haystack);
+  const tokens = normalizedQuery.split(' ').filter(Boolean);
+  return tokens.every((token) => normalizedHaystack.includes(token));
+}
+
+function getSearchScore(primaryText, searchText, query) {
+  const normalizedQuery = normalizeSearchText(query);
+  const normalizedPrimary = normalizeSearchText(primaryText);
+  const normalizedSearch = normalizeSearchText(searchText);
+
+  if (!normalizedQuery || !matchesSearchText(normalizedSearch, normalizedQuery)) return -1;
+  if (normalizedPrimary === normalizedQuery) return 100;
+  if (normalizedPrimary.startsWith(normalizedQuery)) return 80;
+  if (normalizedPrimary.includes(normalizedQuery)) return 65;
+  if (normalizedSearch.includes(normalizedQuery)) return 50;
+  return 35;
 }
 
 function formatNumber(value) {
@@ -234,6 +277,26 @@ function calculateHours(startTime, endTime) {
   return ((eh * 60 + em) - (sh * 60 + sm)) / 60;
 }
 
+function calculateMinutesLate(scheduledStart, actualArrival) {
+  if (!scheduledStart || !actualArrival) return null;
+  const [sh, sm] = scheduledStart.split(':').map(Number);
+  const [ah, am] = actualArrival.split(':').map(Number);
+  const diff = (ah * 60 + am) - (sh * 60 + sm);
+  return diff > 0 ? diff : 0;
+}
+
+function formatMinutes(value) {
+  if (value == null || Number.isNaN(value)) return '—';
+  const total = Number(value);
+  if (total <= 0) return '0 min';
+  const hours = Math.floor(total / 60);
+  const minutes = total % 60;
+  const parts = [];
+  if (hours) parts.push(`${hours} ${hours === 1 ? 'hora' : 'horas'}`);
+  if (minutes) parts.push(`${minutes} ${minutes === 1 ? 'minuto' : 'minutos'}`);
+  return parts.join(' y ') || '0 min';
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -273,9 +336,14 @@ function rebuildDerivedState() {
     derived.serviceById.set(service.id, service);
     derived.serviceSearchById.set(
       service.id,
-      [service.name, service.zone || '', service.client_address || '', service.supervisor_name || '', service.notes || '']
-        .join(' ')
-        .toLowerCase()
+      normalizeSearchText([
+        service.name,
+        service.zone || '',
+        service.client_address || '',
+        service.supervisor_name || '',
+        service.notes || '',
+        service.billed_weekly_hours ?? '',
+      ].join(' '))
     );
   });
 
@@ -292,15 +360,13 @@ function rebuildDerivedState() {
 
     derived.assignmentSearchById.set(
       assignment.id,
-      [
+      normalizeSearchText([
         worker?.name || '',
         service?.name || '',
         service?.zone || '',
         service?.client_address || '',
         service?.supervisor_name || '',
-      ]
-        .join(' ')
-        .toLowerCase()
+      ].join(' '))
     );
   });
 
@@ -309,9 +375,7 @@ function rebuildDerivedState() {
     derived.materialByNormalizedName.set(normalizeText(material.name), material);
     derived.materialSearchById.set(
       material.id,
-      [material.name || '', material.unit || '', material.presentation || '', material.notes || '']
-        .join(' ')
-        .toLowerCase()
+      normalizeSearchText([material.name || '', material.unit || '', material.presentation || '', material.notes || ''].join(' '))
     );
   });
 
@@ -325,7 +389,7 @@ function rebuildDerivedState() {
 
     derived.serviceMaterialSearchById.set(
       serviceMaterial.id,
-      [
+      normalizeSearchText([
         service?.name || '',
         service?.zone || '',
         service?.client_address || '',
@@ -334,9 +398,7 @@ function rebuildDerivedState() {
         material?.unit || '',
         material?.presentation || '',
         serviceMaterial.notes || '',
-      ]
-        .join(' ')
-        .toLowerCase()
+      ].join(' '))
     );
   });
 
@@ -359,7 +421,7 @@ function rebuildDerivedState() {
 
     derived.absenceSearchById.set(
       absence.id,
-      [
+      normalizeSearchText([
         absence.absence_date || '',
         worker?.name || '',
         service?.name || '',
@@ -371,9 +433,34 @@ function rebuildDerivedState() {
         absence.coverage_status || '',
         absence.absence_type || '',
         formatAbsenceTypeLabel(absence.absence_type),
-      ]
-        .join(' ')
-        .toLowerCase()
+      ].join(' '))
+    );
+  });
+
+
+  state.tardinesses.forEach((tardiness) => {
+    derived.tardinessById.set(tardiness.id, tardiness);
+    pushToMapArray(derived.tardinessesByDateKey, tardiness.tardiness_date, tardiness);
+    pushToMapArray(derived.tardinessesByWorkerId, tardiness.worker_id, tardiness);
+
+    const worker = derived.workerById.get(tardiness.worker_id);
+    const service = derived.serviceById.get(tardiness.service_id);
+    const minutesLate = tardiness.minutes_late ?? calculateMinutesLate(tardiness.scheduled_start_time, tardiness.actual_arrival_time);
+
+    derived.tardinessSearchById.set(
+      tardiness.id,
+      normalizeSearchText([
+        tardiness.tardiness_date || '',
+        worker?.name || '',
+        service?.name || '',
+        service?.zone || '',
+        service?.client_address || '',
+        service?.supervisor_name || '',
+        tardiness.notes || '',
+        tardiness.scheduled_start_time || '',
+        tardiness.actual_arrival_time || '',
+        minutesLate == null ? '' : String(minutesLate),
+      ].join(' '))
     );
   });
 
@@ -394,6 +481,10 @@ function getAssignmentById(assignmentId) {
 
 function getAbsenceById(absenceId) {
   return state.derived.absenceById.get(absenceId) || null;
+}
+
+function getTardinessById(tardinessId) {
+  return state.derived.tardinessById.get(tardinessId) || null;
 }
 
 function getMaterialById(materialId) {
@@ -438,6 +529,14 @@ function getAbsencesByDate(dateKey) {
 
 function getAbsencesByWorkerId(workerId) {
   return state.derived.absencesByWorkerId.get(workerId) || [];
+}
+
+function getTardinessesByDate(dateKey) {
+  return state.derived.tardinessesByDateKey.get(dateKey) || [];
+}
+
+function getTardinessesByWorkerId(workerId) {
+  return state.derived.tardinessesByWorkerId.get(workerId) || [];
 }
 
 function parseDateKey(dateKey) {
@@ -799,7 +898,7 @@ function getFilteredWorkersForAbsenceTracking() {
 
       if (!term) return true;
 
-      const hay = [
+      const hay = normalizeSearchText([
         worker.name || '',
         worker.notes || '',
         worker.hire_date || '',
@@ -807,11 +906,9 @@ function getFilteredWorkersForAbsenceTracking() {
           const service = getServiceById(assignment.service_id);
           return `${service?.name || ''} ${service?.zone || ''} ${service?.client_address || ''}`;
         }),
-      ]
-        .join(' ')
-        .toLowerCase();
+      ].join(' '));
 
-      return hay.includes(term);
+      return matchesSearchText(hay, term);
     })
     .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es', { sensitivity: 'base' }));
 }
@@ -912,6 +1009,18 @@ function findAbsenceForAssignmentOnDate(assignment, dateKey) {
   }) || null;
 }
 
+function findTardinessForAssignmentOnDate(assignment, dateKey) {
+  if (!assignment || !dateKey) return null;
+
+  return getTardinessesByDate(dateKey).find((tardiness) => {
+    if (tardiness.assignment_id && assignment.id) {
+      return tardiness.assignment_id === assignment.id;
+    }
+
+    return tardiness.worker_id === assignment.worker_id && tardiness.service_id === assignment.service_id;
+  }) || null;
+}
+
 function calculateCoverageHours(absence) {
   if (!absence?.coverage_start_time || !absence?.coverage_end_time) return null;
   return calculateHours(absence.coverage_start_time, absence.coverage_end_time);
@@ -992,7 +1101,7 @@ function goToWorkerPlanner(workerId) {
   if (!workerName) return;
 
   if (el.globalSearch) el.globalSearch.value = workerName;
-  state.filters.search = workerName.toLowerCase();
+  state.filters.search = normalizeSearchText(workerName);
 
   goToView('planner');
 
@@ -1019,7 +1128,7 @@ function goToAbsenceWorkerHistory(workerId) {
     el.globalSearch.value = worker.name || '';
   }
 
-  state.filters.search = String(worker.name || '').toLowerCase();
+  state.filters.search = normalizeSearchText(worker.name || '');
   resetPagination('absenceEmployeeHistory');
   goToView('absences');
 
@@ -1041,6 +1150,65 @@ function getWorkerAssignments(workerId) {
 
 function getServiceAssignments(serviceId) {
   return state.derived.assignmentsByServiceId.get(serviceId) || [];
+}
+
+function getServiceBilledHours(service) {
+  if (!service || service.billed_weekly_hours == null || service.billed_weekly_hours === '') return null;
+  const value = Number(service.billed_weekly_hours);
+  return Number.isFinite(value) ? value : null;
+}
+
+function getServiceHoursSummary(service) {
+  const assignments = getServiceAssignments(service.id);
+  const assignedHours = Number(assignments
+    .reduce((sum, assignment) => sum + calculateHours(assignment.start_time, assignment.end_time), 0)
+    .toFixed(2));
+  const billedHours = getServiceBilledHours(service);
+  const difference = billedHours == null
+    ? null
+    : Number((assignedHours - billedHours).toFixed(2));
+
+  let status = 'pending';
+  if (difference != null) {
+    if (Math.abs(difference) < 0.01) status = 'balanced';
+    else if (difference < 0) status = 'missing';
+    else status = 'over';
+  }
+
+  return {
+    ...service,
+    assignments,
+    billedHours,
+    assignedHours,
+    difference,
+    status,
+  };
+}
+
+function getAllServiceHoursSummaries() {
+  return state.services
+    .map(getServiceHoursSummary)
+    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es', { sensitivity: 'base' }));
+}
+
+function getOverallServiceHoursBalance() {
+  const summaries = getAllServiceHoursSummaries();
+  const configured = summaries.filter((service) => service.billedHours != null);
+  const pending = summaries.filter((service) => service.billedHours == null);
+  const totalBilledHours = Number(configured.reduce((sum, service) => sum + service.billedHours, 0).toFixed(2));
+  const totalAssignedHours = Number(summaries.reduce((sum, service) => sum + service.assignedHours, 0).toFixed(2));
+  const assignedHoursOnConfiguredServices = Number(configured.reduce((sum, service) => sum + service.assignedHours, 0).toFixed(2));
+  const difference = Number((assignedHoursOnConfiguredServices - totalBilledHours).toFixed(2));
+
+  return {
+    summaries,
+    configured,
+    pending,
+    totalBilledHours,
+    totalAssignedHours,
+    assignedHoursOnConfiguredServices,
+    difference,
+  };
 }
 
 function resetPagination(viewKey) {
@@ -1102,6 +1270,9 @@ function getPaginationContainer(viewKey) {
     absenceTracker: el.absenceWorkerTrackerPagination,
     absenceEmployeeHistory: el.absenceEmployeeHistoryPagination,
     absenceMonthly: el.absenceMonthlyPagination,
+    tardinessHistory: el.tardinessHistoryPagination,
+    tardinessTracker: el.tardinessWorkerTrackerPagination,
+    tardinessEmployeeHistory: el.tardinessEmployeeHistoryPagination,
   };
 
   return containers[viewKey] || null;
@@ -1116,6 +1287,9 @@ function getPaginationLabel(viewKey) {
     absenceTracker: 'operarios analizados',
     absenceEmployeeHistory: 'registros históricos',
     absenceMonthly: 'ausencias del mes',
+    tardinessHistory: 'tardanzas',
+    tardinessTracker: 'operarios analizados por tardanza',
+    tardinessEmployeeHistory: 'registros históricos de tardanza',
   };
 
   return labels[viewKey] || 'registros';
@@ -1161,6 +1335,7 @@ function setDataReady(isReady) {
     'addAssignmentBtn',
     'bulkAssignmentBtn',
     'addAbsenceBtn',
+    'addTardinessBtn',
     'absenceDateFilter',
     'absenceWorkerHistoryFilter',
     'addMaterialCatalogBtn',
@@ -1192,7 +1367,7 @@ function getFilteredServices() {
 
   return state.services.filter((service) => {
     const hay = state.derived.serviceSearchById.get(service.id) || '';
-    return !term || hay.includes(term);
+    return !term || matchesSearchText(hay, term);
   });
 }
 
@@ -1216,7 +1391,7 @@ function getFilteredServiceMaterials() {
     .filter((serviceMaterial) => {
       if (serviceId !== 'all' && serviceMaterial.service_id !== serviceId) return false;
       const hay = state.derived.serviceMaterialSearchById.get(serviceMaterial.id) || '';
-      return !term || hay.includes(term);
+      return !term || matchesSearchText(hay, term);
     })
     .sort((a, b) => {
       const serviceA = getServiceById(a.service_id);
@@ -1247,9 +1422,9 @@ function getFilteredMaterialConsumptions(monthKey = getSelectedMaterialsMonth())
             getServiceById(consumption.service_id)?.name || '',
             getMaterialById(consumption.material_id)?.name || '',
             consumption.notes || '',
-          ].join(' ').toLowerCase();
+          ].join(' ');
 
-      return hay.includes(term);
+      return matchesSearchText(hay, term);
     })
     .sort((a, b) => {
       const byDate = String(b.consumption_date || '').localeCompare(String(a.consumption_date || ''));
@@ -1320,17 +1495,15 @@ function getWorkerSummaries() {
 function matchesFilters(summary) {
   const term = state.filters.search;
 
-  const searchSource = [
+  const searchSource = normalizeSearchText([
     summary.name,
     summary.notes || '',
     ...summary.services.map(
       (service) => `${service.name} ${service.zone || ''} ${service.client_address || ''}`
     ),
-  ]
-    .join(' ')
-    .toLowerCase();
+  ].join(' '));
 
-  const searchOk = !term || searchSource.includes(term);
+  const searchOk = !term || matchesSearchText(searchSource, term);
   const typeOk =
     state.filters.workerType === 'all' || summary.worker_type === state.filters.workerType;
   const statusOk =
@@ -1342,12 +1515,19 @@ function matchesFilters(summary) {
 function renderStatusPill(status) {
   const labels = {
     balanced: 'Equilibrado',
-    available: 'Con horas libres',
-    over: 'Excedido',
+    available: 'Le faltan horas',
+    over: 'Supera el objetivo',
     insurance: 'Seguro',
   };
 
-  return `<span class="status-pill status-${status}">${labels[status] || status}</span>`;
+  const classes = {
+    balanced: 'status-balanced',
+    available: 'status-hours-missing',
+    over: 'status-hours-over',
+    insurance: 'status-insurance',
+  };
+
+  return `<span class="status-pill ${classes[status] || 'status-balanced'}">${labels[status] || status}</span>`;
 }
 
 function renderDifferencePill(worker) {
@@ -1356,14 +1536,30 @@ function renderDifferencePill(worker) {
   }
 
   if (worker.difference > 0) {
-    return `<span class="status-pill status-available">Faltan ${formatHours(worker.difference)} hs</span>`;
+    return `<span class="status-pill status-hours-missing">Faltan ${formatHours(worker.difference)} hs</span>`;
   }
 
   if (worker.difference < 0) {
-    return `<span class="status-pill status-over">Se pasó ${formatHours(Math.abs(worker.difference))} hs</span>`;
+    return `<span class="status-pill status-hours-over">Se pasó ${formatHours(Math.abs(worker.difference))} hs</span>`;
   }
 
   return `<span class="status-pill status-balanced">Exacto</span>`;
+}
+
+function renderServiceHoursPill(serviceSummary) {
+  if (serviceSummary.billedHours == null) {
+    return '<span class="status-pill status-hours-pending">Falta cargar facturación</span>';
+  }
+
+  if (serviceSummary.difference < 0) {
+    return `<span class="status-pill status-hours-missing">Faltan ${formatHours(Math.abs(serviceSummary.difference))} hs</span>`;
+  }
+
+  if (serviceSummary.difference > 0) {
+    return `<span class="status-pill status-hours-over">Sobran ${formatHours(serviceSummary.difference)} hs</span>`;
+  }
+
+  return '<span class="status-pill status-balanced">Horas alineadas</span>';
 }
 
 function getUncoveredServices() {
@@ -1392,6 +1588,9 @@ function populateSelects() {
   const absenceService = $('absenceService');
   const absenceCoverageWorker = $('absenceCoverageWorker');
   const absenceWorkerHistoryFilter = $('absenceWorkerHistoryFilter');
+  const tardinessWorker = $('tardinessWorker');
+  const tardinessService = $('tardinessService');
+  const tardinessWorkerHistoryFilter = $('tardinessWorkerHistoryFilter');
   const materialsServiceFilter = $('materialsServiceFilter');
   const serviceMaterialService = $('serviceMaterialService');
   const materialConsumptionService = $('materialConsumptionService');
@@ -1420,6 +1619,20 @@ function populateSelects() {
     absenceWorkerHistoryFilter.value = state.workers.some((worker) => worker.id === currentValue) ? currentValue : 'all';
   }
 
+  if (tardinessWorker) {
+    tardinessWorker.innerHTML = `<option value="">Seleccionar operario</option>${workerOptions}`;
+  }
+
+  if (tardinessService) {
+    tardinessService.innerHTML = `<option value="">Seleccionar servicio</option>${serviceOptions}`;
+  }
+
+  if (tardinessWorkerHistoryFilter) {
+    const currentValue = tardinessWorkerHistoryFilter.value || 'all';
+    tardinessWorkerHistoryFilter.innerHTML = `<option value="all">Todos</option>${workerOptions}`;
+    tardinessWorkerHistoryFilter.value = state.workers.some((worker) => worker.id === currentValue) ? currentValue : 'all';
+  }
+
   if (materialsServiceFilter) {
     const currentValue = materialsServiceFilter.value || 'all';
     materialsServiceFilter.innerHTML = `<option value="all">Todos</option>${serviceOptions}`;
@@ -1444,11 +1657,18 @@ function populateSelects() {
 }
 
 function renderKpis(summaries) {
-  const totalAssignedHours = summaries.reduce((sum, worker) => sum + worker.totalHours, 0);
-  const availableWorkers = summaries.filter((worker) => worker.status === 'available').length;
-  const overloadedWorkers = summaries.filter((worker) => worker.status === 'over').length;
+  const balance = getOverallServiceHoursBalance();
   const unassignedWorkers = summaries.filter((worker) => worker.services.length === 0).length;
   const uncoveredServices = getUncoveredServices().length;
+
+  let balanceFoot = 'Horas alineadas';
+  if (balance.pending.length) {
+    balanceFoot = `Balance parcial · ${balance.pending.length} servicio${balance.pending.length === 1 ? '' : 's'} sin horas facturadas`;
+  } else if (balance.difference < 0) {
+    balanceFoot = `Faltan asignar ${formatHours(Math.abs(balance.difference))} hs`;
+  } else if (balance.difference > 0) {
+    balanceFoot = `${formatHours(balance.difference)} hs por encima de lo facturado`;
+  }
 
   const cards = [
     {
@@ -1457,16 +1677,16 @@ function renderKpis(summaries) {
       foot: `${unassignedWorkers} sin servicio asignado`,
     },
     {
-      label: 'Horas asignadas',
-      value: formatHours(totalAssignedHours),
-      foot: 'Suma semanal visible',
+      label: 'Horas facturadas',
+      value: formatHours(balance.totalBilledHours),
+      foot: balance.pending.length
+        ? `${balance.configured.length} servicios cargados · ${balance.pending.length} pendientes`
+        : `${balance.configured.length} servicios cargados`,
     },
     {
-      label: 'Operarios con horas libres',
-      value: availableWorkers,
-      foot: overloadedWorkers
-        ? `${overloadedWorkers} excedidos`
-        : 'Sin excesos detectados',
+      label: 'Horas operativas',
+      value: formatHours(balance.totalAssignedHours),
+      foot: balanceFoot,
     },
     {
       label: 'Servicios sin cobertura',
@@ -1486,6 +1706,79 @@ function renderKpis(summaries) {
       `
     )
     .join('');
+}
+
+function renderServiceHoursBalance() {
+  if (!el.serviceHoursBalance) return;
+
+  const balance = getOverallServiceHoursBalance();
+  const configuredDeviations = balance.configured
+    .filter((service) => Math.abs(service.difference || 0) >= 0.01)
+    .sort((a, b) => Math.abs(b.difference || 0) - Math.abs(a.difference || 0));
+  const rows = [...configuredDeviations, ...balance.pending].slice(0, 10);
+
+  let differenceLabel = '0 hs';
+  let differenceClass = 'status-balanced';
+  if (balance.difference < 0) {
+    differenceLabel = `-${formatHours(Math.abs(balance.difference))} hs`;
+    differenceClass = 'status-hours-missing';
+  } else if (balance.difference > 0) {
+    differenceLabel = `+${formatHours(balance.difference)} hs`;
+    differenceClass = 'status-hours-over';
+  }
+
+  el.serviceHoursBalance.innerHTML = `
+    <div class="hours-balance-card">
+      <div class="section-head">
+        <div>
+          <h3>Balance semanal: horas facturadas vs. operativas</h3>
+          <span class="muted">Contraste comercial y operativo sobre las asignaciones activas</span>
+        </div>
+        <span class="status-pill ${differenceClass}">${differenceLabel}</span>
+      </div>
+
+      <div class="hours-balance-summary">
+        <div class="hours-balance-metric">
+          <span>Horas facturadas cargadas</span>
+          <strong>${formatHours(balance.totalBilledHours)} hs</strong>
+        </div>
+        <div class="hours-balance-metric">
+          <span>Horas asignadas en servicios cargados</span>
+          <strong>${formatHours(balance.assignedHoursOnConfiguredServices)} hs</strong>
+        </div>
+        <div class="hours-balance-metric">
+          <span>Total operativo general</span>
+          <strong>${formatHours(balance.totalAssignedHours)} hs</strong>
+        </div>
+      </div>
+
+      ${balance.pending.length
+        ? `<div class="hours-balance-note">El balance todavía es parcial: faltan cargar las horas facturadas de ${balance.pending.length} servicio${balance.pending.length === 1 ? '' : 's'}. Esos servicios sí están incluidos en el total operativo general, pero no en la diferencia comercial.</div>`
+        : ''}
+
+      <div>
+        <div class="section-head">
+          <div>
+            <h4>Principales diferencias por servicio</h4>
+            <span class="muted">Rojo: faltan horas operativas. Verde: hay horas por encima de lo facturado.</span>
+          </div>
+        </div>
+        <div class="hours-balance-list">
+          ${rows.length
+            ? rows.map((service) => `
+                <div class="hours-balance-row">
+                  <div>
+                    <strong>${escapeHtml(service.name)}</strong>
+                    <p>Facturadas: ${service.billedHours == null ? 'Pendiente' : `${formatHours(service.billedHours)} hs`} · Asignadas: ${formatHours(service.assignedHours)} hs</p>
+                  </div>
+                  ${renderServiceHoursPill(service)}
+                </div>
+              `).join('')
+            : '<div class="empty-state">No hay diferencias entre las horas facturadas y las asignadas.</div>'}
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function renderCriticalWorkers(summaries) {
@@ -1518,7 +1811,6 @@ function renderCriticalWorkers(summaries) {
       </div>
     `;
 
-  renderPaginationControls('absenceSchedule', paginationMeta);
 }
 
 function renderServiceGaps() {
@@ -1556,7 +1848,7 @@ function renderWorkersTable(summaries) {
         const lifecycleInfo = worker.lifecycleInfo || getWorkerLifecycleInfo(worker);
 
         return `
-        <tr>
+        <tr data-worker-row-id="${worker.id}">
           <td>
             <button
               type="button"
@@ -1671,11 +1963,11 @@ function renderServices() {
 
   el.servicesGrid.innerHTML = paginationMeta.items
     .map((service) => {
-      const assignments = getServiceAssignments(service.id);
-      const assignmentsByDay = groupAssignmentsByDay(assignments);
+      const hoursSummary = getServiceHoursSummary(service);
+      const assignmentsByDay = groupAssignmentsByDay(hoursSummary.assignments);
 
       return `
-        <article class="service-card">
+        <article class="service-card" data-service-id="${service.id}">
           <header class="service-card-header">
             <div>
               <h3>${escapeHtml(service.name)}</h3>
@@ -1687,6 +1979,23 @@ function renderServices() {
               ${service.supervisor_name ? `<span class="chip">Sup. ${escapeHtml(service.supervisor_name)}</span>` : ''}
             </div>
           </header>
+
+          <div class="service-hours-strip">
+            <div class="service-hours-metric">
+              <span>Facturadas</span>
+              <strong>${hoursSummary.billedHours == null ? 'Pendiente' : `${formatHours(hoursSummary.billedHours)} hs`}</strong>
+            </div>
+            <div class="service-hours-metric">
+              <span>Asignadas</span>
+              <strong>${formatHours(hoursSummary.assignedHours)} hs</strong>
+            </div>
+            <div class="service-hours-metric">
+              <span>Balance</span>
+              <strong>${hoursSummary.difference == null ? '—' : `${hoursSummary.difference > 0 ? '+' : ''}${formatHours(hoursSummary.difference)} hs`}</strong>
+            </div>
+          </div>
+
+          <div>${renderServiceHoursPill(hoursSummary)}</div>
 
           <div class="inline-actions service-actions">
             <button class="btn btn-secondary btn-sm" type="button" data-edit-service="${service.id}">Editar</button>
@@ -1738,7 +2047,7 @@ function renderPlanner() {
     const items = getAssignmentsByDay(day.value).filter((assignment) => {
       if (!searchTerm) return true;
       const hay = state.derived.assignmentSearchById.get(assignment.id) || '';
-      return hay.includes(searchTerm);
+      return matchesSearchText(hay, searchTerm);
     });
 
     return `
@@ -1752,7 +2061,7 @@ function renderPlanner() {
                   const service = getServiceById(item.service_id);
 
                   return `
-                    <article class="planner-card" data-planner-worker-id="${item.worker_id}">
+                    <article class="planner-card" data-planner-worker-id="${item.worker_id}" data-assignment-id="${item.id}">
                       <h4>${escapeHtml(service?.name || 'Servicio')}</h4>
                       <p>${escapeHtml(worker?.name || 'Operario')}</p>
                       <small>${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}</small>
@@ -1834,63 +2143,6 @@ function formatDateRangeLabel(startKey, endKey) {
   return `${formatDateLabel(startKey)} al ${formatDateLabel(endKey)}`;
 }
 
-function getFilteredAbsenceDateKeys() {
-  return state.absences
-    .filter((absence) => {
-      const dateKey = absence.absence_date || '';
-      if (!dateKey) return false;
-
-      const searchTerm = state.filters.search;
-      const workerTypeFilter = state.filters.workerType;
-
-      if (searchTerm) {
-        const hay = state.derived.absenceSearchById.get(absence.id) || '';
-        if (!hay.includes(searchTerm)) return false;
-      }
-
-      if (workerTypeFilter !== 'all') {
-        const worker = getWorkerById(absence.worker_id);
-        if (worker?.worker_type !== workerTypeFilter) return false;
-      }
-
-      return true;
-    })
-    .map((absence) => absence.absence_date)
-    .filter(Boolean)
-    .sort();
-}
-
-function getAbsencePeriodMonthKeys(period, absences = []) {
-  const monthKeys = new Set();
-
-  absences.forEach((absence) => {
-    const monthKey = getMonthKey(absence.absence_date);
-    if (monthKey) monthKeys.add(monthKey);
-  });
-
-  if (monthKeys.size) {
-    return [...monthKeys].sort();
-  }
-
-  if (!period?.startKey || !period?.endKey) {
-    return [];
-  }
-
-  const startDate = parseDateKey(period.startKey);
-  const endDate = parseDateKey(period.endKey);
-  if (!startDate || !endDate) return [];
-
-  const cursor = new Date(startDate.getFullYear(), startDate.getMonth(), 1, 12, 0, 0, 0);
-  const endCursor = new Date(endDate.getFullYear(), endDate.getMonth(), 1, 12, 0, 0, 0);
-
-  while (cursor <= endCursor) {
-    monthKeys.add(`${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`);
-    cursor.setMonth(cursor.getMonth() + 1);
-  }
-
-  return [...monthKeys].sort();
-}
-
 function getAbsenceActivePeriod() {
   const mode = getSelectedAbsenceFilterMode();
 
@@ -1925,21 +2177,6 @@ function getAbsenceActivePeriod() {
       endKey,
       monthKey: getMonthKey(startKey),
       label: formatDateRangeLabel(startKey, endKey),
-    };
-  }
-
-  if (mode == 'all') {
-    const dateKeys = getFilteredAbsenceDateKeys();
-    const fallbackKey = getSelectedAbsenceDate();
-    const startKey = dateKeys[0] || fallbackKey;
-    const endKey = dateKeys[dateKeys.length - 1] || fallbackKey;
-
-    return {
-      mode,
-      startKey,
-      endKey,
-      monthKey: getMonthKey(startKey),
-      label: 'Histórico total',
     };
   }
 
@@ -1984,17 +2221,13 @@ function updateAbsenceViewHeadings(period) {
       ? 'Programación del día'
       : activePeriod.mode === 'month'
         ? 'Programación del mes'
-        : activePeriod.mode === 'all'
-          ? 'Programación del histórico'
-          : 'Programación del rango';
+        : 'Programación del rango';
   }
 
   if (el.absenceScheduleSubtitle) {
     el.absenceScheduleSubtitle.textContent = activePeriod.mode === 'day'
       ? 'Marcá ausencias desde la agenda prevista'
-      : activePeriod.mode === 'all'
-        ? 'Turnos comprendidos en todo el histórico filtrado'
-        : `Turnos comprendidos en ${label}`;
+      : `Turnos comprendidos en ${label}`;
   }
 
   if (el.absenceHistoryTitle) {
@@ -2002,17 +2235,13 @@ function updateAbsenceViewHeadings(period) {
       ? 'Ausencias registradas'
       : activePeriod.mode === 'month'
         ? 'Ausencias del mes'
-        : activePeriod.mode === 'all'
-          ? 'Ausencias del histórico'
-          : 'Ausencias del rango';
+        : 'Ausencias del rango';
   }
 
   if (el.absenceHistorySubtitle) {
     el.absenceHistorySubtitle.textContent = activePeriod.mode === 'day'
       ? 'Con cobertura, parcial o sin cubrir'
-      : activePeriod.mode === 'all'
-        ? 'Resultados registrados para todo el histórico filtrado'
-        : `Resultados registrados para ${label}`;
+      : `Resultados registrados para ${label}`;
   }
 
   if (el.absenceSummaryTitle) {
@@ -2020,9 +2249,7 @@ function updateAbsenceViewHeadings(period) {
       ? 'Resumen del día'
       : activePeriod.mode === 'month'
         ? 'Resumen mensual de ausencias'
-        : activePeriod.mode === 'all'
-          ? 'Resumen histórico de ausencias'
-          : 'Resumen del rango';
+        : 'Resumen del rango';
   }
 
   if (el.absenceSummarySubtitle) {
@@ -2030,9 +2257,7 @@ function updateAbsenceViewHeadings(period) {
       ? 'Cuántas hubo en la fecha, quiénes faltaron y qué servicios se vieron afectados'
       : activePeriod.mode === 'month'
         ? 'Cuántas hubo en el mes, quiénes faltaron y qué servicios se vieron afectados'
-        : activePeriod.mode === 'all'
-          ? 'Cuántas hubo en todo el histórico, quiénes faltaron y qué servicios se vieron afectados'
-          : `Cuántas hubo entre ${label}, quiénes faltaron y qué servicios se vieron afectados`;
+        : `Cuántas hubo entre ${label}, quiénes faltaron y qué servicios se vieron afectados`;
   }
 }
 
@@ -2044,7 +2269,7 @@ function getFilteredAbsencesForDate(dateKey) {
     .filter((absence) => {
       if (searchTerm) {
         const hay = state.derived.absenceSearchById.get(absence.id) || '';
-        if (!hay.includes(searchTerm)) return false;
+        if (!matchesSearchText(hay, searchTerm)) return false;
       }
 
       if (workerTypeFilter !== 'all') {
@@ -2076,7 +2301,7 @@ function getFilteredAbsencesForPeriod(period = getAbsenceActivePeriod()) {
 
       if (searchTerm) {
         const hay = state.derived.absenceSearchById.get(absence.id) || '';
-        if (!hay.includes(searchTerm)) return false;
+        if (!matchesSearchText(hay, searchTerm)) return false;
       }
 
       if (workerTypeFilter !== 'all') {
@@ -2108,6 +2333,169 @@ function getFilteredAbsencesForMonth(monthKey) {
   });
 }
 
+
+function getFilteredTardinessesForPeriod(period = getAbsenceActivePeriod()) {
+  if (!period?.startKey || !period?.endKey) return [];
+
+  return state.tardinesses
+    .filter((tardiness) => {
+      const dateKey = tardiness.tardiness_date || '';
+      if (!dateKey) return false;
+      return dateKey >= period.startKey && dateKey <= period.endKey;
+    })
+    .filter((tardiness) => {
+      const searchTerm = state.filters.search;
+      const workerTypeFilter = state.filters.workerType;
+
+      if (searchTerm) {
+        const hay = state.derived.tardinessSearchById.get(tardiness.id) || '';
+        if (!matchesSearchText(hay, searchTerm)) return false;
+      }
+
+      if (workerTypeFilter !== 'all') {
+        const worker = getWorkerById(tardiness.worker_id);
+        if (worker?.worker_type !== workerTypeFilter) return false;
+      }
+
+      return true;
+    })
+    .sort((a, b) => {
+      const byDate = String(a.tardiness_date || '').localeCompare(String(b.tardiness_date || ''));
+      if (byDate !== 0) return byDate;
+      const byService = String(getServiceById(a.service_id)?.name || '').localeCompare(String(getServiceById(b.service_id)?.name || ''));
+      if (byService !== 0) return byService;
+      return String(a.scheduled_start_time || '').localeCompare(String(b.scheduled_start_time || ''));
+    });
+}
+
+function getWorkerTardinessStats(worker, referenceDateKey = getAbsenceTrackingReferenceDateKey()) {
+  if (!worker) return null;
+
+  const referenceDate = parseDateKey(referenceDateKey);
+  if (!referenceDate) return null;
+
+  const hireDate = parseDateKey(worker.hire_date);
+  if (!hireDate) {
+    return {
+      worker,
+      referenceDateKey,
+      hireDateMissing: true,
+      startedYet: true,
+      year: referenceDate.getFullYear(),
+      daysInReferenceYear: getDaysInYear(referenceDate.getFullYear()),
+      tardinessRecords: [],
+      tardinessCount: 0,
+      elapsedDays: 0,
+      annualizedPercent: null,
+      calendarYearPercent: null,
+      projectedAnnualTardinesses: null,
+      status: 'missing',
+    };
+  }
+
+  const yearStart = new Date(referenceDate.getFullYear(), 0, 1, 12, 0, 0, 0);
+  const periodStart = hireDate > yearStart ? hireDate : yearStart;
+  const startedYet = periodStart.getTime() <= referenceDate.getTime();
+
+  if (!startedYet) {
+    return {
+      worker,
+      referenceDateKey,
+      hireDateMissing: false,
+      startedYet: false,
+      year: referenceDate.getFullYear(),
+      daysInReferenceYear: getDaysInYear(referenceDate.getFullYear()),
+      tardinessRecords: [],
+      tardinessCount: 0,
+      elapsedDays: 0,
+      annualizedPercent: 0,
+      calendarYearPercent: 0,
+      projectedAnnualTardinesses: 0,
+      status: 'low',
+      periodStartKey: toDateKey(periodStart),
+    };
+  }
+
+  const periodStartKey = toDateKey(periodStart);
+  const referenceKey = toDateKey(referenceDate);
+  const daysInReferenceYear = getDaysInYear(referenceDate.getFullYear());
+  const tardinessRecords = getTardinessesByWorkerId(worker.id)
+    .filter((item) => {
+      const dateKey = item.tardiness_date || '';
+      return dateKey && dateKey >= periodStartKey && dateKey <= referenceKey;
+    });
+  const tardinessCount = tardinessRecords.length;
+  const elapsedDays = diffDaysInclusive(periodStart, referenceDate);
+  const annualizedPercent = elapsedDays ? Number(((tardinessCount / elapsedDays) * 100).toFixed(2)) : 0;
+  const calendarYearPercent = daysInReferenceYear ? Number(((tardinessCount / daysInReferenceYear) * 100).toFixed(2)) : 0;
+  const projectedAnnualTardinesses = elapsedDays ? Number(((tardinessCount / elapsedDays) * 365).toFixed(2)) : 0;
+
+  let status = 'low';
+  if (annualizedPercent >= 3) status = 'high';
+  else if (annualizedPercent >= 1) status = 'medium';
+
+  return {
+    worker,
+    referenceDateKey,
+    hireDateMissing: false,
+    startedYet: true,
+    year: referenceDate.getFullYear(),
+    daysInReferenceYear,
+    tardinessRecords,
+    tardinessCount,
+    elapsedDays,
+    annualizedPercent,
+    calendarYearPercent,
+    projectedAnnualTardinesses,
+    status,
+    periodStartKey,
+  };
+}
+
+function getFilteredWorkerTardinessStats(referenceDateKey = getAbsenceTrackingReferenceDateKey()) {
+  return getFilteredWorkersForAbsenceTracking().map((worker) => getWorkerTardinessStats(worker, referenceDateKey));
+}
+
+function renderTardinessPill(stats) {
+  if (!stats) return '';
+  if (stats.hireDateMissing) return '<span class="status-pill status-insurance">Falta fecha de ingreso</span>';
+  if (!stats.startedYet) return '<span class="status-pill status-balanced">Ingreso posterior</span>';
+  if (stats.status === 'high') return '<span class="status-pill status-over">Tardanza alta</span>';
+  if (stats.status === 'medium') return '<span class="status-pill status-balanced">En seguimiento</span>';
+  return '<span class="status-pill status-available">Tardanza baja</span>';
+}
+
+function buildTardinessTimelineEntries(workerId = 'all', period = getAbsenceActivePeriod()) {
+  const workerIds = workerId === 'all'
+    ? new Set(getFilteredWorkersForAbsenceTracking().map((worker) => worker.id))
+    : new Set([workerId]);
+
+  return getFilteredTardinessesForPeriod(period)
+    .filter((item) => workerIds.has(item.worker_id))
+    .map((tardiness) => {
+      const worker = getWorkerById(tardiness.worker_id);
+      const service = getServiceById(tardiness.service_id);
+      const statsAtThatDate = getWorkerTardinessStats(worker, tardiness.tardiness_date);
+      const minutesLate = tardiness.minutes_late ?? calculateMinutesLate(tardiness.scheduled_start_time, tardiness.actual_arrival_time);
+
+      return {
+        tardiness,
+        worker,
+        service,
+        minutesLate,
+        cumulativeTardinesses: statsAtThatDate?.tardinessCount || 0,
+        cumulativeAnnualizedPercent: statsAtThatDate?.annualizedPercent,
+        cumulativeCalendarYearPercent: statsAtThatDate?.calendarYearPercent,
+        projectedAnnualTardinesses: statsAtThatDate?.projectedAnnualTardinesses,
+      };
+    })
+    .sort((a, b) => {
+      const byDate = String(b.tardiness.tardiness_date || '').localeCompare(String(a.tardiness.tardiness_date || ''));
+      if (byDate !== 0) return byDate;
+      return String(b.tardiness.created_at || '').localeCompare(String(a.tardiness.created_at || ''));
+    });
+}
+
 function getAssignmentOccurrencesForPeriod(period = getAbsenceActivePeriod()) {
   if (!period?.startKey || !period?.endKey) return [];
 
@@ -2134,7 +2522,7 @@ function getAssignmentOccurrencesForPeriod(period = getAbsenceActivePeriod()) {
 
       if (searchTerm) {
         const hay = state.derived.assignmentSearchById.get(assignment.id) || '';
-        if (!hay.includes(searchTerm)) return;
+        if (!matchesSearchText(hay, searchTerm)) return;
       }
 
       occurrences.push({
@@ -2201,6 +2589,8 @@ function renderAbsenceScheduleBoard(period = getAbsenceActivePeriod()) {
           const worker = getWorkerById(occurrence.worker_id);
           const service = getServiceById(occurrence.service_id);
           const absence = findAbsenceForAssignmentOnDate(occurrence, occurrence.occurrence_date);
+          const tardiness = findTardinessForAssignmentOnDate(occurrence, occurrence.occurrence_date);
+          const tardinessMinutes = tardiness ? (tardiness.minutes_late ?? calculateMinutesLate(tardiness.scheduled_start_time, tardiness.actual_arrival_time)) : null;
 
           return `
             <article class="absence-card">
@@ -2215,11 +2605,15 @@ function renderAbsenceScheduleBoard(period = getAbsenceActivePeriod()) {
                   <span class="chip">${occurrence.start_time.slice(0, 5)}-${occurrence.end_time.slice(0, 5)}</span>
                   ${service?.supervisor_name ? `<span class="chip">Sup. ${escapeHtml(service.supervisor_name)}</span>` : ''}
                   ${absence ? renderAbsenceStatusPill(absence.coverage_status) : ''}
+                  ${tardiness ? `<span class="status-pill status-balanced">Tardanza ${escapeHtml(formatMinutes(tardinessMinutes))}</span>` : ''}
                 </div>
               </div>
               <div class="absence-card-actions">
                 <button class="btn btn-primary btn-sm" type="button" data-mark-absence="${occurrence.id}" data-absence-date="${occurrence.occurrence_date}">
                   ${absence ? 'Editar ausencia' : 'Marcar ausencia'}
+                </button>
+                <button class="btn btn-secondary btn-sm" type="button" data-mark-tardiness="${occurrence.id}" data-tardiness-date="${occurrence.occurrence_date}">
+                  ${tardiness ? 'Editar tardanza' : 'Registrar tardanza'}
                 </button>
               </div>
             </article>
@@ -2642,6 +3036,251 @@ function renderAbsenceEmployeeHistoryBoard(period = getAbsenceActivePeriod()) {
   renderPaginationControls('absenceEmployeeHistory', paginationMeta);
 }
 
+
+function renderTardinessKpis(referenceDateKey = getAbsenceTrackingReferenceDateKey()) {
+  if (!el.tardinessKpiCards) return;
+
+  const stats = getFilteredWorkerTardinessStats(referenceDateKey);
+  const tracked = stats.filter((item) => !item.hireDateMissing && item.startedYet);
+  const totalTardinesses = tracked.reduce((sum, item) => sum + item.tardinessCount, 0);
+  const workersWithTardiness = tracked.filter((item) => item.tardinessCount > 0).length;
+  const averagePercent = tracked.length
+    ? Number((tracked.reduce((sum, item) => sum + Number(item.annualizedPercent || 0), 0) / tracked.length).toFixed(2))
+    : 0;
+  const worst = tracked.reduce((max, item) => Math.max(max, Number(item.annualizedPercent || 0)), 0);
+
+  const cards = [
+    {
+      label: 'Tardanzas acumuladas del año',
+      value: totalTardinesses,
+      foot: `Al ${formatDateLabel(referenceDateKey)}`,
+    },
+    {
+      label: 'Operarios con tardanzas',
+      value: workersWithTardiness,
+      foot: 'Con al menos una llegada tarde en el período anual',
+    },
+    {
+      label: 'Tardanza promedio anualizada',
+      value: formatPercent(averagePercent),
+      foot: 'Sobre días computados desde ingreso o 1 de enero',
+    },
+    {
+      label: 'Mayor % anualizado',
+      value: formatPercent(worst),
+      foot: 'Para detectar casos críticos rápido',
+    },
+  ];
+
+  el.tardinessKpiCards.innerHTML = cards
+    .map((card) => `
+      <article class="kpi-card card-lite">
+        <span class="kpi-label">${card.label}</span>
+        <strong class="kpi-value">${card.value}</strong>
+        <small class="kpi-foot">${card.foot}</small>
+      </article>
+    `)
+    .join('');
+}
+
+function renderTardinessHistoryBoard(period = getAbsenceActivePeriod()) {
+  if (!el.tardinessHistoryBoard) return;
+
+  const tardinesses = getFilteredTardinessesForPeriod(period);
+  const paginationMeta = getPaginationMeta(tardinesses, 'tardinessHistory');
+
+  el.tardinessHistoryBoard.innerHTML = tardinesses.length
+    ? paginationMeta.items
+        .map((tardiness) => {
+          const worker = getWorkerById(tardiness.worker_id);
+          const service = getServiceById(tardiness.service_id);
+          const minutesLate = tardiness.minutes_late ?? calculateMinutesLate(tardiness.scheduled_start_time, tardiness.actual_arrival_time);
+
+          return `
+            <article class="absence-card">
+              <div class="absence-card-head">
+                <div>
+                  <h3>${escapeHtml(worker?.name || 'Operario')}</h3>
+                  <p>${escapeHtml(service?.name || 'Servicio')}</p>
+                </div>
+                <div class="absence-card-meta">
+                  <span class="chip">${formatDateLabel(tardiness.tardiness_date)}</span>
+                  <span class="status-pill status-balanced">${escapeHtml(formatMinutes(minutesLate))}</span>
+                </div>
+              </div>
+
+              <div class="absence-tracker-metrics">
+                <div class="absence-metric-box">
+                  <span class="muted">Horario previsto</span>
+                  <strong>${tardiness.scheduled_start_time ? tardiness.scheduled_start_time.slice(0, 5) : '—'}</strong>
+                  <p>${escapeHtml(service?.supervisor_name || service?.zone || 'Sin detalle')}</p>
+                </div>
+                <div class="absence-metric-box">
+                  <span class="muted">Llegó</span>
+                  <strong>${tardiness.actual_arrival_time ? tardiness.actual_arrival_time.slice(0, 5) : '—'}</strong>
+                  <p>${escapeHtml(formatMinutes(minutesLate))} de demora</p>
+                </div>
+              </div>
+
+              ${tardiness.notes ? `<small>${escapeHtml(tardiness.notes)}</small>` : ''}
+
+              <div class="absence-card-actions">
+                <button class="btn btn-secondary btn-sm" type="button" data-edit-tardiness="${tardiness.id}">Editar</button>
+                <button class="btn btn-ghost btn-sm" type="button" data-delete-tardiness="${tardiness.id}">Eliminar</button>
+              </div>
+            </article>
+          `;
+        })
+        .join('')
+    : `
+      <div class="empty-state">
+        No hay tardanzas registradas para ${period.label}.
+      </div>
+    `;
+
+  renderPaginationControls('tardinessHistory', paginationMeta);
+}
+
+function renderTardinessWorkerTrackerBoard(referenceDateKey = getAbsenceTrackingReferenceDateKey()) {
+  if (!el.tardinessWorkerTrackerBoard) return;
+
+  const stats = getFilteredWorkerTardinessStats(referenceDateKey);
+  const paginationMeta = getPaginationMeta(stats, 'tardinessTracker');
+
+  el.tardinessWorkerTrackerBoard.innerHTML = stats.length
+    ? paginationMeta.items
+        .map((item) => {
+          const worker = item.worker;
+          return `
+            <article class="absence-tracker-card">
+              <div class="absence-tracker-head">
+                <div>
+                  <h3>${escapeHtml(worker?.name || 'Operario')}</h3>
+                  <p>
+                    ${TYPE_META[worker?.worker_type]?.label || 'Operario'}
+                    ${worker?.hire_date ? ` · Ingreso: ${formatDateLabel(worker.hire_date)}` : ' · Fecha de ingreso pendiente'}
+                  </p>
+                </div>
+                <div class="absence-card-meta">
+                  ${renderTardinessPill(item)}
+                  <button class="btn btn-secondary btn-sm" type="button" data-focus-tardiness-worker="${worker.id}">Ver historial</button>
+                </div>
+              </div>
+
+              ${item.hireDateMissing
+                ? `
+                  <div class="empty-state">
+                    Cargá la fecha de ingreso para medir las tardanzas con un criterio real.
+                  </div>
+                `
+                : !item.startedYet
+                  ? `
+                    <div class="empty-state">
+                      Su fecha de ingreso es posterior a la fecha analizada.
+                    </div>
+                  `
+                  : `
+                    <div class="absence-tracker-metrics">
+                      <div class="absence-metric-box">
+                        <span class="muted">Tardanzas acumuladas</span>
+                        <strong>${item.tardinessCount}</strong>
+                        <p>Registros del año en curso</p>
+                      </div>
+                      <div class="absence-metric-box">
+                        <span class="muted">% anualizado</span>
+                        <strong>${formatPercent(item.annualizedPercent)}</strong>
+                        <p>Sobre ${item.elapsedDays} días computados</p>
+                      </div>
+                      <div class="absence-metric-box">
+                        <span class="muted">% sobre año calendario</span>
+                        <strong>${formatPercent(item.calendarYearPercent)}</strong>
+                        <p>${item.tardinessCount} tardanzas sobre ${item.daysInReferenceYear || 365} días del año ${item.year}</p>
+                      </div>
+                      <div class="absence-metric-box">
+                        <span class="muted">Proyección anual</span>
+                        <strong>${formatNumber(item.projectedAnnualTardinesses)}</strong>
+                        <p>Si mantiene este ritmo</p>
+                      </div>
+                    </div>
+                  `}
+            </article>
+          `;
+        })
+        .join('')
+    : `
+      <div class="empty-state">
+        No hay operarios visibles con los filtros actuales.
+      </div>
+    `;
+
+  renderPaginationControls('tardinessTracker', paginationMeta);
+}
+
+function getSelectedTardinessHistoryWorkerId() {
+  return el.tardinessWorkerHistoryFilter?.value || 'all';
+}
+
+function renderTardinessEmployeeHistoryBoard(period = getAbsenceActivePeriod()) {
+  if (!el.tardinessEmployeeHistoryBoard) return;
+
+  const workerId = getSelectedTardinessHistoryWorkerId();
+  const entries = buildTardinessTimelineEntries(workerId, period);
+  const paginationMeta = getPaginationMeta(entries, 'tardinessEmployeeHistory');
+
+  el.tardinessEmployeeHistoryBoard.innerHTML = entries.length
+    ? paginationMeta.items
+        .map((entry) => {
+          const { tardiness, worker, service, minutesLate } = entry;
+          return `
+            <article class="absence-card">
+              <div class="absence-card-head">
+                <div>
+                  <h3>${escapeHtml(worker?.name || 'Operario')}</h3>
+                  <p>${escapeHtml(service?.name || 'Servicio')}</p>
+                </div>
+                <div class="absence-card-meta">
+                  <span class="chip">${formatDateLabel(tardiness.tardiness_date)}</span>
+                  <span class="status-pill status-balanced">${escapeHtml(formatMinutes(minutesLate))}</span>
+                </div>
+              </div>
+
+              <div class="absence-tracker-metrics">
+                <div class="absence-metric-box">
+                  <span class="muted">Previsto / llegada</span>
+                  <strong>${tardiness.scheduled_start_time ? tardiness.scheduled_start_time.slice(0, 5) : '—'} → ${tardiness.actual_arrival_time ? tardiness.actual_arrival_time.slice(0, 5) : '—'}</strong>
+                  <p>${escapeHtml(service?.supervisor_name || service?.zone || 'Sin detalle')}</p>
+                </div>
+                <div class="absence-metric-box">
+                  <span class="muted">Acumulado a esa fecha</span>
+                  <strong>${entry.cumulativeTardinesses}</strong>
+                  <p>${formatPercent(entry.cumulativeAnnualizedPercent)} anualizado · ${formatPercent(entry.cumulativeCalendarYearPercent)} año calendario</p>
+                </div>
+                <div class="absence-metric-box">
+                  <span class="muted">Proyección anual</span>
+                  <strong>${formatNumber(entry.projectedAnnualTardinesses)}</strong>
+                  <p>Tardanzas estimadas a este ritmo</p>
+                </div>
+              </div>
+
+              ${tardiness.notes ? `<small>${escapeHtml(tardiness.notes)}</small>` : ''}
+
+              <div class="absence-card-actions">
+                <button class="btn btn-secondary btn-sm" type="button" data-edit-tardiness="${tardiness.id}">Editar</button>
+                <button class="btn btn-ghost btn-sm" type="button" data-delete-tardiness="${tardiness.id}">Eliminar</button>
+              </div>
+            </article>
+          `;
+        })
+        .join('')
+    : `
+      <div class="empty-state">
+        ${workerId === 'all' ? 'No hay historial de tardanzas para los filtros actuales.' : 'Ese operario todavía no tiene tardanzas históricas registradas.'}
+      </div>
+    `;
+
+  renderPaginationControls('tardinessEmployeeHistory', paginationMeta);
+}
+
 function renderMaterialsKpis() {
   if (!el.materialKpiCards) return;
 
@@ -2926,6 +3565,10 @@ function renderAbsences() {
   renderAbsenceMonthlyBoard(period);
   renderAbsenceWorkerTrackerBoard(period.endKey);
   renderAbsenceEmployeeHistoryBoard(period);
+  renderTardinessKpis(period.endKey);
+  renderTardinessHistoryBoard(period);
+  renderTardinessWorkerTrackerBoard(period.endKey);
+  renderTardinessEmployeeHistoryBoard(period);
 }
 
 let renderFrameId = 0;
@@ -2958,6 +3601,7 @@ function renderCurrentView() {
     default: {
       const summaries = getWorkerSummaries();
       renderKpis(summaries);
+      renderServiceHoursBalance();
       renderCriticalWorkers(summaries);
       renderServiceGaps();
       break;
@@ -2985,7 +3629,7 @@ function handleViewChange(event) {
 function handleFilterChange() {
   if (!ensureDataReady('filtrar')) return;
 
-  state.filters.search = el.globalSearch.value.trim().toLowerCase();
+  state.filters.search = normalizeSearchText(el.globalSearch.value);
   state.filters.workerType = el.workerTypeFilter.value;
   state.filters.status = el.statusFilter.value;
   resetPagination('workers');
@@ -2995,7 +3639,248 @@ function handleFilterChange() {
   resetPagination('absenceTracker');
   resetPagination('absenceEmployeeHistory');
   resetPagination('absenceMonthly');
+  resetPagination('tardinessHistory');
+  resetPagination('tardinessTracker');
+  resetPagination('tardinessEmployeeHistory');
   scheduleRenderCurrentView();
+}
+
+function buildGlobalSearchGroups(query) {
+  const term = normalizeSearchText(query);
+  if (term.length < 2) return [];
+
+  const rankAndLimit = (items, limit = 5) => items
+    .filter((item) => item.score >= 0)
+    .sort((a, b) => b.score - a.score || String(a.title || '').localeCompare(String(b.title || ''), 'es', { sensitivity: 'base' }))
+    .slice(0, limit);
+
+  const workers = rankAndLimit(state.workers.map((worker) => {
+    const assignments = getWorkerAssignments(worker.id);
+    const serviceNames = assignments
+      .map((assignment) => getServiceById(assignment.service_id)?.name || '')
+      .filter(Boolean);
+    const searchText = [
+      worker.name,
+      TYPE_META[worker.worker_type]?.label || '',
+      worker.notes || '',
+      ...serviceNames,
+    ].join(' ');
+
+    return {
+      kind: 'worker',
+      id: worker.id,
+      query: worker.name,
+      title: worker.name,
+      subtitle: `${TYPE_META[worker.worker_type]?.label || 'Operario'}${serviceNames.length ? ` · ${[...new Set(serviceNames)].slice(0, 2).join(' · ')}` : ' · Sin servicio'}`,
+      score: getSearchScore(worker.name, searchText, term),
+    };
+  }));
+
+  const services = rankAndLimit(state.services.map((service) => {
+    const summary = getServiceHoursSummary(service);
+    const searchText = state.derived.serviceSearchById.get(service.id) || '';
+    return {
+      kind: 'service',
+      id: service.id,
+      query: service.name,
+      title: service.name,
+      subtitle: `${service.zone || 'Sin zona'} · ${summary.billedHours == null ? 'Facturación pendiente' : `${formatHours(summary.billedHours)} hs facturadas`} · ${formatHours(summary.assignedHours)} hs asignadas`,
+      score: getSearchScore(service.name, searchText, term),
+    };
+  }));
+
+  const assignments = rankAndLimit(state.assignments.map((assignment) => {
+    const worker = getWorkerById(assignment.worker_id);
+    const service = getServiceById(assignment.service_id);
+    const day = DAYS.find((item) => item.value === assignment.day_of_week);
+    const searchText = state.derived.assignmentSearchById.get(assignment.id) || '';
+    const title = `${service?.name || 'Servicio'} · ${worker?.name || 'Operario'}`;
+    return {
+      kind: 'assignment',
+      id: assignment.id,
+      query: `${service?.name || ''} ${worker?.name || ''}`.trim(),
+      title,
+      subtitle: `${day?.fullLabel || ''} · ${assignment.start_time.slice(0, 5)}-${assignment.end_time.slice(0, 5)}`,
+      score: getSearchScore(title, searchText, term),
+    };
+  }, 4));
+
+  const materials = rankAndLimit(state.serviceMaterials.map((serviceMaterial) => {
+    const service = getServiceById(serviceMaterial.service_id);
+    const material = getMaterialById(serviceMaterial.material_id);
+    const title = `${material?.name || 'Material'} · ${service?.name || 'Servicio'}`;
+    const searchText = state.derived.serviceMaterialSearchById.get(serviceMaterial.id) || '';
+    return {
+      kind: 'serviceMaterial',
+      id: serviceMaterial.id,
+      query: `${material?.name || ''} ${service?.name || ''}`.trim(),
+      title,
+      subtitle: `Stock ${formatNumber(serviceMaterial.current_stock || 0)} ${material?.unit || ''}`,
+      score: getSearchScore(title, searchText, term),
+    };
+  }, 4));
+
+  const incidents = rankAndLimit([
+    ...state.absences.map((absence) => {
+      const worker = getWorkerById(absence.worker_id);
+      const service = getServiceById(absence.service_id);
+      const title = `Ausencia · ${worker?.name || 'Operario'}`;
+      return {
+        kind: 'absence',
+        id: absence.id,
+        query: worker?.name || service?.name || '',
+        title,
+        subtitle: `${formatDateLabel(absence.absence_date)} · ${service?.name || 'Servicio'}`,
+        score: getSearchScore(title, state.derived.absenceSearchById.get(absence.id) || '', term),
+      };
+    }),
+    ...state.tardinesses.map((tardiness) => {
+      const worker = getWorkerById(tardiness.worker_id);
+      const service = getServiceById(tardiness.service_id);
+      const title = `Tardanza · ${worker?.name || 'Operario'}`;
+      return {
+        kind: 'tardiness',
+        id: tardiness.id,
+        query: worker?.name || service?.name || '',
+        title,
+        subtitle: `${formatDateLabel(tardiness.tardiness_date)} · ${service?.name || 'Servicio'} · ${tardiness.minutes_late || 0} min`,
+        score: getSearchScore(title, state.derived.tardinessSearchById.get(tardiness.id) || '', term),
+      };
+    }),
+  ], 4);
+
+  return [
+    { label: 'Operarios', items: workers },
+    { label: 'Servicios', items: services },
+    { label: 'Planner', items: assignments },
+    { label: 'Materiales', items: materials },
+    { label: 'Ausencias y tardanzas', items: incidents },
+  ].filter((group) => group.items.length);
+}
+
+function closeGlobalSearchResults() {
+  if (!el.globalSearchResults) return;
+  el.globalSearchResults.classList.add('hidden');
+  el.globalSearchResults.innerHTML = '';
+}
+
+function renderGlobalSearchResults() {
+  if (!el.globalSearchResults || !el.globalSearch) return;
+
+  const rawQuery = el.globalSearch.value.trim();
+  if (!rawQuery) {
+    closeGlobalSearchResults();
+    return;
+  }
+
+  if (normalizeSearchText(rawQuery).length < 2) {
+    el.globalSearchResults.innerHTML = '<div class="global-search-empty">Escribí al menos 2 caracteres.</div>';
+    el.globalSearchResults.classList.remove('hidden');
+    return;
+  }
+
+  const groups = buildGlobalSearchGroups(rawQuery);
+  el.globalSearchResults.innerHTML = groups.length
+    ? groups.map((group) => `
+        <div class="global-search-group">
+          <div class="global-search-group-title">${escapeHtml(group.label)}</div>
+          ${group.items.map((item) => `
+            <button
+              type="button"
+              class="global-search-result"
+              data-global-result-kind="${escapeHtml(item.kind)}"
+              data-global-result-id="${escapeHtml(item.id)}"
+              data-global-result-query="${escapeHtml(item.query)}"
+            >
+              <strong>${escapeHtml(item.title)}</strong>
+              <span>${escapeHtml(item.subtitle)}</span>
+            </button>
+          `).join('')}
+        </div>
+      `).join('')
+    : '<div class="global-search-empty">No se encontraron coincidencias en la app.</div>';
+  el.globalSearchResults.classList.remove('hidden');
+}
+
+function focusGlobalSearchTarget(kind, id) {
+  const selectors = {
+    worker: `[data-worker-row-id="${id}"]`,
+    service: `[data-service-id="${id}"]`,
+    assignment: `[data-assignment-id="${id}"]`,
+  };
+  const selector = selectors[kind];
+  if (!selector) return;
+
+  window.setTimeout(() => {
+    const target = document.querySelector(selector);
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+    flashElement(target);
+  }, 120);
+}
+
+function openGlobalSearchResult(button) {
+  const kind = button.dataset.globalResultKind;
+  const id = button.dataset.globalResultId;
+  const query = button.dataset.globalResultQuery || '';
+
+  if (el.globalSearch) el.globalSearch.value = query;
+  state.filters.search = normalizeSearchText(query);
+
+  let targetView = 'dashboard';
+  if (kind === 'worker') {
+    targetView = 'workers';
+    state.filters.workerType = 'all';
+    state.filters.status = 'all';
+    if (el.workerTypeFilter) el.workerTypeFilter.value = 'all';
+    if (el.statusFilter) el.statusFilter.value = 'all';
+    resetPagination('workers');
+  } else if (kind === 'service') {
+    targetView = 'services';
+    resetPagination('services');
+  } else if (kind === 'assignment') {
+    targetView = 'planner';
+  } else if (kind === 'serviceMaterial' || kind === 'material') {
+    targetView = 'materials';
+  } else if (kind === 'absence' || kind === 'tardiness') {
+    targetView = 'absences';
+    const record = kind === 'absence' ? getAbsenceById(id) : getTardinessById(id);
+    const dateKey = kind === 'absence' ? record?.absence_date : record?.tardiness_date;
+    const workerId = record?.worker_id;
+    if (el.absenceFilterMode) el.absenceFilterMode.value = 'day';
+    if (el.absenceDateFilter && dateKey) el.absenceDateFilter.value = dateKey;
+    if (el.absenceWorkerHistoryFilter && workerId) el.absenceWorkerHistoryFilter.value = workerId;
+    syncAbsencePeriodControls();
+  }
+
+  closeGlobalSearchResults();
+  goToView(targetView);
+  focusGlobalSearchTarget(kind, id);
+}
+
+function handleGlobalSearchInput() {
+  renderGlobalSearchResults();
+  debouncedHandleFilterInput();
+}
+
+function handleGlobalSearchKeydown(event) {
+  if (event.key === 'Escape') {
+    closeGlobalSearchResults();
+    return;
+  }
+
+  if (event.key === 'Enter') {
+    const firstResult = el.globalSearchResults?.querySelector('[data-global-result-kind]');
+    if (!firstResult) return;
+    event.preventDefault();
+    openGlobalSearchResult(firstResult);
+  }
+}
+
+function handleGlobalSearchResultClick(event) {
+  const button = event.target.closest('[data-global-result-kind]');
+  if (!button) return;
+  openGlobalSearchResult(button);
 }
 
 async function loadAllData() {
@@ -3004,6 +3889,7 @@ async function loadAllData() {
     servicesRes,
     assignmentsRes,
     absencesRes,
+    tardinessesRes,
     materialsRes,
     serviceMaterialsRes,
     materialConsumptionsRes,
@@ -3013,6 +3899,7 @@ async function loadAllData() {
       supabase.from('services').select('*').order('name'),
       supabase.from('assignments').select('*').eq('is_active', true).order('day_of_week').order('start_time'),
       supabase.from('absences').select('*').order('absence_date', { ascending: false }).order('created_at', { ascending: false }),
+      supabase.from('tardinesses').select('*').order('tardiness_date', { ascending: false }).order('created_at', { ascending: false }),
       supabase.from('materials').select('*').order('name'),
       supabase.from('service_materials').select('*').order('created_at', { ascending: false }),
       supabase.from('material_consumptions').select('*').order('consumption_date', { ascending: false }).order('created_at', { ascending: false }),
@@ -3029,12 +3916,16 @@ async function loadAllData() {
   state.services = servicesRes.data || [];
   state.assignments = assignmentsRes.data || [];
   state.absences = absencesRes.error ? [] : (absencesRes.data || []);
+  state.tardinesses = tardinessesRes.error ? [] : (tardinessesRes.data || []);
   state.materials = materialsRes.error ? [] : (materialsRes.data || []);
   state.serviceMaterials = serviceMaterialsRes.error ? [] : (serviceMaterialsRes.data || []);
   state.materialConsumptions = materialConsumptionsRes.error ? [] : (materialConsumptionsRes.data || []);
 
   if (absencesRes.error) {
     console.warn('La tabla de ausencias todavía no está disponible o devolvió error.', absencesRes.error);
+  }
+  if (tardinessesRes.error) {
+    console.warn('La tabla de tardanzas todavía no está disponible o devolvió error.', tardinessesRes.error);
   }
   if (materialsRes.error) {
     console.warn('La tabla de materiales todavía no está disponible o devolvió error.', materialsRes.error);
@@ -3135,6 +4026,7 @@ function subscribeRealtime() {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'services' }, scheduleRealtimeRefresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, scheduleRealtimeRefresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'absences' }, scheduleRealtimeRefresh)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'tardinesses' }, scheduleRealtimeRefresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'materials' }, scheduleRealtimeRefresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'service_materials' }, scheduleRealtimeRefresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'material_consumptions' }, scheduleRealtimeRefresh)
@@ -3172,6 +4064,7 @@ async function initAuth() {
       state.services = [];
       state.assignments = [];
       state.absences = [];
+      state.tardinesses = [];
       state.hasLoadedOnce = false;
       state.derived = createEmptyDerivedState();
       if (state.realtimeChannel) {
@@ -3334,6 +4227,7 @@ function openServiceDialog(serviceId = null) {
     $('serviceAddress').value = service.client_address || '';
     $('serviceZone').value = service.zone || '';
     $('serviceSupervisor').value = service.supervisor_name || '';
+    $('serviceBilledHours').value = service.billed_weekly_hours ?? '';
     $('serviceFrequency').value = service.frequency_type || 'fixed';
     $('serviceNotes').value = service.notes || '';
   }
@@ -3409,6 +4303,176 @@ function toggleAbsenceCoverageFields() {
   }
 
   updateAbsenceCoverageInfo();
+}
+
+
+function updateTardinessMinutesInfo() {
+  const scheduledStart = $('tardinessScheduledStart')?.value;
+  const actualArrival = $('tardinessActualArrival')?.value;
+  const minutesLate = calculateMinutesLate(scheduledStart, actualArrival);
+  if (el.tardinessMinutesInfo) {
+    el.tardinessMinutesInfo.value = minutesLate == null ? '' : formatMinutes(minutesLate);
+  }
+}
+
+function openTardinessDialog(options = {}) {
+  if (!ensureDataReady('abrir tardanzas')) return;
+
+  const { tardinessId = null, assignmentId = null, tardinessDate: forcedDate = '' } = typeof options === 'string'
+    ? { tardinessId: options }
+    : options;
+
+  el.tardinessForm.reset();
+  populateSelects();
+
+  $('tardinessId').value = '';
+  $('tardinessAssignmentId').value = '';
+  $('tardinessDialogTitle').textContent = tardinessId ? 'Editar tardanza' : 'Registrar tardanza';
+  $('deleteTardinessBtn').classList.toggle('hidden', !tardinessId);
+
+  const defaultDate = forcedDate || getAbsenceActivePeriod().startKey || getSelectedAbsenceDate();
+  if ($('tardinessDate')) $('tardinessDate').value = defaultDate;
+
+  if (tardinessId) {
+    const tardiness = getTardinessById(tardinessId);
+    if (!tardiness) return;
+
+    $('tardinessId').value = tardiness.id;
+    $('tardinessAssignmentId').value = tardiness.assignment_id || '';
+    $('tardinessDate').value = tardiness.tardiness_date || defaultDate;
+    $('tardinessWorker').value = tardiness.worker_id || '';
+    $('tardinessService').value = tardiness.service_id || '';
+    $('tardinessScheduledStart').value = tardiness.scheduled_start_time?.slice(0, 5) || '';
+    $('tardinessActualArrival').value = tardiness.actual_arrival_time?.slice(0, 5) || '';
+    $('tardinessNotes').value = tardiness.notes || '';
+  } else if (assignmentId) {
+    const assignment = getAssignmentById(assignmentId);
+    if (!assignment) return;
+
+    const existingTardiness = findTardinessForAssignmentOnDate(assignment, defaultDate);
+    if (existingTardiness) {
+      openTardinessDialog({ tardinessId: existingTardiness.id });
+      return;
+    }
+
+    $('tardinessAssignmentId').value = assignment.id;
+    $('tardinessWorker').value = assignment.worker_id || '';
+    $('tardinessService').value = assignment.service_id || '';
+    $('tardinessScheduledStart').value = assignment.start_time?.slice(0, 5) || '';
+  }
+
+  updateTardinessMinutesInfo();
+  el.tardinessDialog.showModal();
+}
+
+async function saveTardiness(event) {
+  event.preventDefault();
+
+  const tardinessId = $('tardinessId').value.trim();
+  const assignmentId = $('tardinessAssignmentId').value.trim();
+  const tardinessDate = $('tardinessDate')?.value;
+  const workerId = $('tardinessWorker')?.value;
+  const serviceId = $('tardinessService')?.value;
+  const scheduledStart = $('tardinessScheduledStart')?.value || null;
+  const actualArrival = $('tardinessActualArrival')?.value || null;
+  const notes = $('tardinessNotes')?.value.trim() || null;
+
+  if (!tardinessDate || !workerId || !serviceId || !scheduledStart || !actualArrival) {
+    alert('Completá fecha, operario, servicio, horario previsto y hora de llegada.');
+    return;
+  }
+
+  const minutesLate = calculateMinutesLate(scheduledStart, actualArrival);
+  if (minutesLate == null || minutesLate <= 0) {
+    alert('La llegada debe ser posterior al horario previsto para registrar una tardanza.');
+    return;
+  }
+
+  const submitBtn = el.tardinessForm?.querySelector('button[type="submit"]');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Guardando...';
+  }
+
+  try {
+    await ensureWriteSession();
+
+    const payload = {
+      assignment_id: assignmentId || null,
+      worker_id: workerId,
+      service_id: serviceId,
+      tardiness_date: tardinessDate,
+      day_of_week: getDateKeyDayOfWeek(tardinessDate),
+      scheduled_start_time: scheduledStart,
+      actual_arrival_time: actualArrival,
+      minutes_late: minutesLate,
+      notes,
+    };
+
+    const request = tardinessId
+      ? supabase.from('tardinesses').update(payload).eq('id', tardinessId)
+      : supabase.from('tardinesses').insert(payload);
+
+    markLocalMutation();
+
+    const { error } = await withTimeout(
+      request,
+      12000,
+      'Guardar tardanza tardó demasiado.'
+    );
+
+    if (error) {
+      console.error(error);
+      alert(error.message);
+      return;
+    }
+
+    el.tardinessDialog.close();
+    if (el.absenceDateFilter) el.absenceDateFilter.value = tardinessDate;
+    if (el.absenceMonthFilter) el.absenceMonthFilter.value = getMonthKey(tardinessDate);
+    goToView('absences');
+    await loadAllDataWithRetry(3, 300, { hardLock: false, silent: false });
+  } catch (error) {
+    console.error(error);
+    alert(error.message || 'No se pudo guardar la tardanza.');
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Guardar tardanza';
+    }
+  }
+}
+
+async function deleteTardinessById(tardinessId, options = {}) {
+  if (!ensureDataReady('eliminar la tardanza')) return;
+
+  const normalizedTardinessId = String(tardinessId || '').trim();
+  if (!normalizedTardinessId) return;
+
+  const shouldConfirm = options.confirm !== false;
+  if (shouldConfirm && !confirm('¿Eliminar esta tardanza?')) return;
+
+  markLocalMutation();
+
+  const { error } = await supabase.from('tardinesses').delete().eq('id', normalizedTardinessId);
+
+  if (error) {
+    console.error(error);
+    alert(error.message);
+    return;
+  }
+
+  if (options.closeDialog !== false) {
+    el.tardinessDialog?.close();
+  }
+
+  await loadAllDataWithRetry(2, 250, { hardLock: false, silent: false });
+}
+
+async function deleteTardiness() {
+  const tardinessId = $('tardinessId').value.trim();
+  if (!tardinessId) return;
+  await deleteTardinessById(tardinessId, { closeDialog: true });
 }
 
 function openAbsenceDialog(options = {}) {
@@ -4079,6 +5143,7 @@ async function saveService(event) {
   const serviceAddress = $('serviceAddress');
   const serviceZone = $('serviceZone');
   const serviceSupervisor = $('serviceSupervisor');
+  const serviceBilledHours = $('serviceBilledHours');
   const serviceFrequency = $('serviceFrequency');
   const serviceNotes = $('serviceNotes');
 
@@ -4096,11 +5161,19 @@ async function saveService(event) {
   try {
     await ensureWriteSession();
 
+    const billedHoursRaw = serviceBilledHours?.value.trim() || '';
+    const billedHours = billedHoursRaw === '' ? null : Number(billedHoursRaw);
+    if (billedHours != null && (!Number.isFinite(billedHours) || billedHours < 0)) {
+      alert('Las horas facturadas deben ser un número igual o mayor a 0.');
+      return;
+    }
+
     const payload = {
       name: serviceName.value.trim(),
       client_address: serviceAddress ? serviceAddress.value.trim() || null : null,
       zone: serviceZone ? serviceZone.value.trim() || null : null,
       supervisor_name: serviceSupervisor ? serviceSupervisor.value.trim() || null : null,
+      billed_weekly_hours: billedHours,
       frequency_type: serviceFrequency ? serviceFrequency.value : 'fixed',
       notes: serviceNotes ? serviceNotes.value.trim() || null : null,
     };
@@ -4119,7 +5192,10 @@ async function saveService(event) {
 
     if (error) {
       console.error(error);
-      alert(error.message);
+      const missingBilledHoursColumn = String(error.message || '').includes('billed_weekly_hours');
+      alert(missingBilledHoursColumn
+        ? 'Falta ejecutar la migración de base de datos incluida en sql/migration_add_billed_hours.sql. La migración agrega una columna nueva y no borra ni modifica los datos existentes.'
+        : error.message);
       return;
     }
 
@@ -4534,6 +5610,15 @@ function handleDynamicClicks(event) {
     return;
   }
 
+  const markTardinessBtn = event.target.closest('[data-mark-tardiness]');
+  if (markTardinessBtn) {
+    openTardinessDialog({
+      assignmentId: markTardinessBtn.dataset.markTardiness,
+      tardinessDate: markTardinessBtn.dataset.tardinessDate || '',
+    });
+    return;
+  }
+
   const editAbsenceBtn = event.target.closest('[data-edit-absence]');
   if (editAbsenceBtn) {
     openAbsenceDialog({ absenceId: editAbsenceBtn.dataset.editAbsence });
@@ -4543,6 +5628,28 @@ function handleDynamicClicks(event) {
   const deleteAbsenceBtn = event.target.closest('[data-delete-absence]');
   if (deleteAbsenceBtn) {
     deleteAbsenceById(deleteAbsenceBtn.dataset.deleteAbsence);
+    return;
+  }
+
+  const editTardinessBtn = event.target.closest('[data-edit-tardiness]');
+  if (editTardinessBtn) {
+    openTardinessDialog({ tardinessId: editTardinessBtn.dataset.editTardiness });
+    return;
+  }
+
+  const deleteTardinessBtn = event.target.closest('[data-delete-tardiness]');
+  if (deleteTardinessBtn) {
+    deleteTardinessById(deleteTardinessBtn.dataset.deleteTardiness);
+    return;
+  }
+
+  const focusTardinessWorkerBtn = event.target.closest('[data-focus-tardiness-worker]');
+  if (focusTardinessWorkerBtn) {
+    if (el.tardinessWorkerHistoryFilter) {
+      el.tardinessWorkerHistoryFilter.value = focusTardinessWorkerBtn.dataset.focusTardinessWorker;
+    }
+    resetPagination('tardinessEmployeeHistory');
+    scheduleRenderCurrentView();
     return;
   }
 
@@ -4582,10 +5689,10 @@ function getCurrentViewElement() {
 
 function buildDashboardExportData() {
   const summaries = getWorkerSummaries();
-  const totalAssignedHours = summaries.reduce((sum, worker) => sum + worker.totalHours, 0);
   const availableWorkers = summaries.filter((worker) => worker.status === 'available').length;
   const overloadedWorkers = summaries.filter((worker) => worker.status === 'over').length;
   const uncoveredServices = getUncoveredServices();
+  const hoursBalance = getOverallServiceHoursBalance();
   const criticalWorkers = summaries
     .filter((worker) => worker.status === 'available' || worker.status === 'over')
     .sort((a, b) => Math.abs(b.difference || 0) - Math.abs(a.difference || 0));
@@ -4597,10 +5704,28 @@ function buildDashboardExportData() {
         rows: [
           ['Métrica', 'Valor'],
           ['Operarios visibles', summaries.length],
-          ['Horas asignadas', totalAssignedHours],
-          ['Operarios con horas libres', availableWorkers],
-          ['Operarios excedidos', overloadedWorkers],
+          ['Horas facturadas cargadas', hoursBalance.totalBilledHours],
+          ['Horas asignadas en servicios cargados', hoursBalance.assignedHoursOnConfiguredServices],
+          ['Horas operativas totales', hoursBalance.totalAssignedHours],
+          ['Diferencia operativas - facturadas', hoursBalance.difference],
+          ['Servicios con horas facturadas pendientes', hoursBalance.pending.length],
+          ['Operarios a los que les faltan horas', availableWorkers],
+          ['Operarios por encima del objetivo', overloadedWorkers],
           ['Servicios sin cobertura', uncoveredServices.length],
+        ],
+      },
+      {
+        name: 'Balance servicios',
+        rows: [
+          ['Servicio', 'Zona', 'Horas facturadas', 'Horas asignadas', 'Diferencia', 'Estado'],
+          ...hoursBalance.summaries.map((service) => [
+            service.name,
+            service.zone || '',
+            service.billedHours == null ? 'Pendiente' : service.billedHours,
+            service.assignedHours,
+            service.difference == null ? '' : service.difference,
+            service.status,
+          ]),
         ],
       },
       {
@@ -4693,17 +5818,21 @@ function buildServicesExportData() {
       {
         name: 'Servicios',
         rows: [
-          ['Servicio', 'Dirección', 'Zona', 'Supervisor', 'Frecuencia', 'Notas', 'Cobertura activa'],
+          ['Servicio', 'Dirección', 'Zona', 'Supervisor', 'Frecuencia', 'Horas facturadas', 'Horas asignadas', 'Diferencia', 'Estado horas', 'Notas', 'Cobertura activa'],
           ...services.map((service) => {
-            const assignments = getServiceAssignments(service.id);
+            const summary = getServiceHoursSummary(service);
             return [
               service.name,
               service.client_address || '',
               service.zone || '',
               service.supervisor_name || '',
               service.frequency_type || '',
+              summary.billedHours == null ? 'Pendiente' : summary.billedHours,
+              summary.assignedHours,
+              summary.difference == null ? '' : summary.difference,
+              summary.status,
               service.notes || '',
-              assignments.length,
+              summary.assignments.length,
             ];
           }),
         ],
@@ -4745,7 +5874,7 @@ function buildPlannerExportData() {
   const filteredAssignments = state.assignments.filter((assignment) => {
     if (!searchTerm) return true;
     const hay = state.derived.assignmentSearchById.get(assignment.id) || '';
-    return hay.includes(searchTerm);
+    return matchesSearchText(hay, searchTerm);
   });
 
   return {
@@ -4773,95 +5902,35 @@ function buildPlannerExportData() {
   };
 }
 
-function getAbsencePeriodDescription(period = getAbsenceActivePeriod()) {
-  if (!period) return 'Sin filtro';
-  if (period.mode === 'day') return `Día: ${period.label}`;
-  if (period.mode === 'month') return `Mes: ${period.label}`;
-  if (period.mode === 'range') return `Rango: ${period.label}`;
-  if (period.mode === 'all') return 'Histórico total';
-  return period.label || 'Sin filtro';
-}
-
-function getAbsenceExportFileSuffix(period = getAbsenceActivePeriod()) {
-  if (!period) return 'sin-filtro';
-  if (period.mode === 'day') return `dia-${period.startKey}`;
-  if (period.mode === 'month') return `mes-${period.monthKey}`;
-  if (period.mode === 'range') return `rango-${period.startKey}-${period.endKey}`;
-  if (period.mode === 'all') return 'historico-total';
-  return 'sin-filtro';
-}
-
-function getAssignmentOccurrencesForExport(period, absences) {
-  if (period?.mode !== 'all') {
-    return getAssignmentOccurrencesForPeriod(period);
-  }
-
-  return absences
-    .map((absence) => {
-      const assignment = absence.assignment_id ? getAssignmentById(absence.assignment_id) : null;
-      return {
-        id: assignment?.id || absence.id,
-        worker_id: absence.worker_id,
-        service_id: absence.service_id,
-        day_of_week: absence.day_of_week,
-        start_time: absence.scheduled_start_time || assignment?.start_time || '',
-        end_time: absence.scheduled_end_time || assignment?.end_time || '',
-        occurrence_date: absence.absence_date,
-      };
-    })
-    .sort((a, b) => {
-      const byDate = String(a.occurrence_date || '').localeCompare(String(b.occurrence_date || ''));
-      if (byDate !== 0) return byDate;
-      const byService = String(getServiceById(a.service_id)?.name || '').localeCompare(String(getServiceById(b.service_id)?.name || ''));
-      if (byService !== 0) return byService;
-      return String(a.start_time || '').localeCompare(String(b.start_time || ''));
-    });
-}
-
-function buildMonthlyWorkerClosureRowsForPeriod(period, monthKeys) {
-  return monthKeys.flatMap((monthKey) => {
-    const monthLabel = formatMonthLabel(monthKey);
-    return buildMonthlyWorkerClosureRows(monthKey).map((row) => [monthLabel, ...row]);
-  });
-}
-
 function buildAbsencesExportData() {
   const period = getAbsenceActivePeriod();
-  const periodDescription = getAbsencePeriodDescription(period);
   const referenceDateKey = period.endKey || getSelectedAbsenceDate();
-  const absencesForPeriod = getFilteredAbsencesForPeriod(period);
-  const occurrences = getAssignmentOccurrencesForExport(period, absencesForPeriod);
-  const monthKeys = getAbsencePeriodMonthKeys(period, absencesForPeriod);
+  const monthKey = period.monthKey || getMonthKey(referenceDateKey);
+  const monthLabel = formatMonthLabel(monthKey);
 
-  const assignments = occurrences.map((assignment) => {
-    const worker = getWorkerById(assignment.worker_id);
-    const service = getServiceById(assignment.service_id);
-    const occurrenceDate = assignment.occurrence_date || referenceDateKey;
-    const absence = absencesForPeriod.find((item) => {
-      if (item.assignment_id && assignment.id) {
-        return item.assignment_id === assignment.id && item.absence_date === occurrenceDate;
-      }
-      return item.worker_id === assignment.worker_id
-        && item.service_id === assignment.service_id
-        && item.absence_date === occurrenceDate;
-    });
+  const scheduleRows = getAssignmentOccurrencesForPeriod(period).map((occurrence) => {
+    const worker = getWorkerById(occurrence.worker_id);
+    const service = getServiceById(occurrence.service_id);
+    const absence = findAbsenceForAssignmentOnDate(occurrence, occurrence.occurrence_date);
+    const tardiness = findTardinessForAssignmentOnDate(occurrence, occurrence.occurrence_date);
+    const tardinessMinutes = tardiness ? (tardiness.minutes_late ?? calculateMinutesLate(tardiness.scheduled_start_time, tardiness.actual_arrival_time)) : '';
 
     return [
-      formatDateLabel(occurrenceDate),
-      DAYS.find((day) => day.value === assignment.day_of_week)?.fullLabel || '',
+      formatDateLabel(occurrence.occurrence_date),
+      DAYS.find((day) => day.value === occurrence.day_of_week)?.fullLabel || '',
       service?.name || '',
       worker?.name || '',
       worker?.hire_date ? formatDateLabel(worker.hire_date) : '',
-      assignment.start_time && assignment.end_time
-        ? `${assignment.start_time.slice(0, 5)}-${assignment.end_time.slice(0, 5)}`
-        : '',
+      `${occurrence.start_time.slice(0, 5)}-${occurrence.end_time.slice(0, 5)}`,
       absence ? 'Sí' : 'No',
       absence ? formatAbsenceTypeLabel(absence.absence_type) : '',
       absence ? absence.coverage_status : '',
+      tardiness ? 'Sí' : 'No',
+      tardinessMinutes === '' ? '' : tardinessMinutes,
     ];
   });
 
-  const absencesRows = absencesForPeriod.map((absence) => {
+  const absencesForPeriod = getFilteredAbsencesForPeriod(period).map((absence) => {
     const worker = getWorkerById(absence.worker_id);
     const service = getServiceById(absence.service_id);
     const coverageWorker = absence.coverage_worker_id ? getWorkerById(absence.coverage_worker_id) : null;
@@ -4909,7 +5978,7 @@ function buildAbsencesExportData() {
 
   const historyWorkerId = getSelectedAbsenceHistoryWorkerId();
   const historyRows = buildAbsenceTimelineEntries(historyWorkerId)
-    .filter((entry) => entry.dateKey >= period.startKey && entry.dateKey <= period.endKey)
+    .filter((entry) => !period?.startKey || !period?.endKey || (entry.dateKey >= period.startKey && entry.dateKey <= period.endKey))
     .map((entry) => [
       entry.worker?.name || '',
       entry.worker?.hire_date ? formatDateLabel(entry.worker.hire_date) : '',
@@ -4926,10 +5995,9 @@ function buildAbsencesExportData() {
       entry.projectedAnnualAbsences == null ? '' : entry.projectedAnnualAbsences,
     ]);
 
-  const serviceClosureRows = absencesForPeriod.map((absence) => {
+  const monthlyServiceRows = getFilteredAbsencesForMonth(monthKey).map((absence) => {
     const service = getServiceById(absence.service_id);
     return [
-      formatMonthLabel(getMonthKey(absence.absence_date)),
       service?.name || '',
       'Sí',
       formatDateLabel(absence.absence_date),
@@ -4937,45 +6005,80 @@ function buildAbsencesExportData() {
     ];
   });
 
-  const workerClosureRows = buildMonthlyWorkerClosureRowsForPeriod(period, monthKeys);
+  const monthlyWorkerRows = buildMonthlyWorkerClosureRows(monthKey);
+
+  const tardinessRows = getFilteredTardinessesForPeriod(period).map((tardiness) => {
+    const worker = getWorkerById(tardiness.worker_id);
+    const service = getServiceById(tardiness.service_id);
+    const stats = getWorkerTardinessStats(worker, tardiness.tardiness_date);
+    const minutesLate = tardiness.minutes_late ?? calculateMinutesLate(tardiness.scheduled_start_time, tardiness.actual_arrival_time);
+
+    return [
+      formatDateLabel(tardiness.tardiness_date),
+      worker?.name || '',
+      worker?.hire_date ? formatDateLabel(worker.hire_date) : '',
+      service?.name || '',
+      tardiness.scheduled_start_time ? tardiness.scheduled_start_time.slice(0, 5) : '',
+      tardiness.actual_arrival_time ? tardiness.actual_arrival_time.slice(0, 5) : '',
+      minutesLate == null ? '' : minutesLate,
+      stats?.tardinessCount ?? '',
+      stats?.annualizedPercent ?? '',
+      stats?.calendarYearPercent ?? '',
+      stats?.projectedAnnualTardinesses ?? '',
+      tardiness.notes || '',
+    ];
+  });
+
+  const tardinessTrackingRows = getFilteredWorkerTardinessStats(referenceDateKey).map((item) => [
+    item.worker?.name || '',
+    TYPE_META[item.worker?.worker_type]?.label || '',
+    item.worker?.hire_date ? formatDateLabel(item.worker.hire_date) : '',
+    item.periodStartKey ? formatDateLabel(item.periodStartKey) : '',
+    formatDateLabel(referenceDateKey),
+    item.elapsedDays,
+    item.tardinessCount,
+    item.annualizedPercent == null ? '' : item.annualizedPercent,
+    item.calendarYearPercent == null ? '' : item.calendarYearPercent,
+    item.projectedAnnualTardinesses == null ? '' : item.projectedAnnualTardinesses,
+    item.hireDateMissing ? 'Falta fecha de ingreso' : item.startedYet ? (item.status === 'high' ? 'Tardanza alta' : item.status === 'medium' ? 'En seguimiento' : 'Tardanza baja') : 'Ingreso posterior',
+  ]);
+
+  const tardinessHistoryWorkerId = getSelectedTardinessHistoryWorkerId();
+  const tardinessHistoryRows = buildTardinessTimelineEntries(tardinessHistoryWorkerId, period).map((entry) => [
+    entry.worker?.name || '',
+    entry.worker?.hire_date ? formatDateLabel(entry.worker.hire_date) : '',
+    formatDateLabel(entry.tardiness.tardiness_date),
+    entry.service?.name || '',
+    entry.tardiness.scheduled_start_time ? entry.tardiness.scheduled_start_time.slice(0, 5) : '',
+    entry.tardiness.actual_arrival_time ? entry.tardiness.actual_arrival_time.slice(0, 5) : '',
+    entry.minutesLate == null ? '' : entry.minutesLate,
+    entry.cumulativeTardinesses,
+    entry.cumulativeAnnualizedPercent == null ? '' : entry.cumulativeAnnualizedPercent,
+    entry.cumulativeCalendarYearPercent == null ? '' : entry.cumulativeCalendarYearPercent,
+    entry.projectedAnnualTardinesses == null ? '' : entry.projectedAnnualTardinesses,
+    entry.tardiness.notes || '',
+  ]);
 
   return {
-    meta: {
-      period,
-      description: periodDescription,
-      fileSuffix: getAbsenceExportFileSuffix(period),
-    },
     sheets: [
       {
-        name: 'Filtro aplicado',
+        name: 'Programacion',
         rows: [
-          ['Concepto', 'Valor'],
-          ['Vista', 'Ausencias'],
-          ['Filtro', periodDescription],
-          ['Desde', period.startKey ? formatDateLabel(period.startKey) : ''],
-          ['Hasta', period.endKey ? formatDateLabel(period.endKey) : ''],
-          ['Búsqueda', state.filters.search || 'Sin filtro'],
-          ['Tipo de operario', state.filters.workerType || 'all'],
-        ],
-      },
-      {
-        name: 'Programacion periodo',
-        rows: [
-          ['Fecha', 'Día', 'Servicio', 'Operario', 'Fecha ingreso', 'Horario', 'Ausencia registrada', 'Tipo falta', 'Estado'],
-          ...assignments,
+          ['Fecha', 'Día', 'Servicio', 'Operario', 'Fecha ingreso', 'Horario', 'Ausencia registrada', 'Tipo falta', 'Estado ausencia', 'Tardanza registrada', 'Minutos tarde'],
+          ...scheduleRows,
         ],
       },
       {
         name: 'Ausencias',
         rows: [
-          ['Fecha', 'Operario ausente', 'Fecha ingreso', 'Tipo falta', 'Servicio', 'Horario asignado', 'Resultado', 'Operario cobertura', 'Fecha cobertura', 'Horario cobertura', 'Horas cubiertas', 'Faltas acumuladas a esa fecha', '% anualizado a esa fecha', '% sobre año calendario', 'Proyección anual', 'Notas'],
-          ...absencesRows,
+          ['Fecha', 'Operario ausente', 'Fecha ingreso', 'Tipo falta', 'Servicio', 'Horario asignado', 'Resultado', 'Operario cobertura', 'Fecha cobertura', 'Horario cobertura', 'Horas cubiertas', 'Faltas acumuladas a esa fecha', '% anualizado a esa fecha', '% año calendario', 'Proyección anual', 'Notas'],
+          ...absencesForPeriod,
         ],
       },
       {
         name: 'Seguimiento anual',
         rows: [
-          ['Operario', 'Tipo', 'Fecha ingreso', 'Inicio de cálculo', 'Fecha analizada', 'Días computados', 'Faltas acumuladas', '% anualizado', '% sobre año calendario', 'Proyección anual', 'Margen hasta 3%', 'Estado'],
+          ['Operario', 'Tipo', 'Fecha ingreso', 'Inicio de cálculo', 'Fecha analizada', 'Días computados', 'Faltas acumuladas', '% anualizado', '% año calendario', 'Proyección anual', 'Margen hasta 3%', 'Estado'],
           ...annualTracking,
         ],
       },
@@ -4987,17 +6090,38 @@ function buildAbsencesExportData() {
         ],
       },
       {
+        name: 'Tardanzas',
+        rows: [
+          ['Fecha', 'Operario', 'Fecha ingreso', 'Servicio', 'Hora prevista', 'Hora llegada', 'Minutos tarde', 'Tardanzas acumuladas a esa fecha', '% anualizado a esa fecha', '% año calendario', 'Proyección anual', 'Notas'],
+          ...tardinessRows,
+        ],
+      },
+      {
+        name: 'Seguimiento tardanzas',
+        rows: [
+          ['Operario', 'Tipo', 'Fecha ingreso', 'Inicio de cálculo', 'Fecha analizada', 'Días computados', 'Tardanzas acumuladas', '% anualizado', '% año calendario', 'Proyección anual', 'Estado'],
+          ...tardinessTrackingRows,
+        ],
+      },
+      {
+        name: 'Historial tardanzas',
+        rows: [
+          ['Operario', 'Fecha ingreso', 'Fecha', 'Servicio', 'Hora prevista', 'Hora llegada', 'Minutos tarde', 'Acumulado a esa fecha', '% anualizado a esa fecha', '% año calendario', 'Proyección anual', 'Notas'],
+          ...tardinessHistoryRows,
+        ],
+      },
+      {
         name: 'cierre servicios mes',
         rows: [
           ['Mes', 'Servicio', 'Ausencia registrada', 'Fecha falta', 'Resultado'],
-          ...serviceClosureRows,
+          ...monthlyServiceRows.map((row) => [monthLabel, ...row]),
         ],
       },
       {
         name: 'cierre operarios mes',
         rows: [
           ['Mes', 'Operario', 'Ausencia registrada total', 'injustificada', 'justificada', 'suspensión', 'horas totales mensuales'],
-          ...workerClosureRows,
+          ...monthlyWorkerRows.map((row) => [monthLabel, ...row]),
         ],
       },
     ],
@@ -5104,12 +6228,6 @@ function buildCurrentExportData() {
   }
 }
 
-function buildExportFilename(extension, exportData = null) {
-  const dateStamp = new Date().toISOString().slice(0, 10);
-  const suffix = exportData?.meta?.fileSuffix ? `-${exportData.meta.fileSuffix}` : '';
-  return `cleanit-${state.currentView}${suffix}-${dateStamp}.${extension}`;
-}
-
 function exportCurrentViewToExcel() {
   if (!ensureDataReady('exportar a Excel')) return;
   if (!window.XLSX) {
@@ -5125,66 +6243,27 @@ function exportCurrentViewToExcel() {
     window.XLSX.utils.book_append_sheet(wb, ws, sheet.name.slice(0, 31));
   });
 
-  window.XLSX.writeFile(wb, buildExportFilename('xlsx', exportData));
-}
-
-function exportAbsencesToPdf(exportData) {
-  const { jsPDF } = window.jspdf;
-  const pdf = new jsPDF('p', 'mm', 'a4');
-  const margin = 12;
-  const pageWidth = pdf.internal.pageSize.getWidth();
-  const pageHeight = pdf.internal.pageSize.getHeight();
-  const usableWidth = pageWidth - margin * 2;
-  const lineHeight = 4.6;
-  let y = margin;
-
-  const ensurePage = (requiredHeight = lineHeight) => {
-    if (y + requiredHeight > pageHeight - margin) {
-      pdf.addPage();
-      y = margin;
-    }
-  };
-
-  const writeWrapped = (textValue, fontStyle = 'normal', fontSize = 8.5, extraGap = 1.2) => {
-    const safeText = String(textValue ?? '');
-    pdf.setFont('helvetica', fontStyle);
-    pdf.setFontSize(fontSize);
-    const lines = pdf.splitTextToSize(safeText, usableWidth);
-    const requiredHeight = Math.max(lineHeight, lines.length * lineHeight) + extraGap;
-    ensurePage(requiredHeight);
-    pdf.text(lines, margin, y);
-    y += requiredHeight;
-  };
-
-  writeWrapped('Clean It · Ausencias', 'bold', 14, 2);
-  writeWrapped(`Filtro aplicado: ${exportData?.meta?.description || 'Sin filtro'}`, 'normal', 9.5, 4);
-
-  exportData.sheets.forEach((sheet, sheetIndex) => {
-    if (sheetIndex > 0) {
-      ensurePage(8);
-      y += 1;
-    }
-
-    writeWrapped(sheet.name, 'bold', 11, 1.6);
-    const rows = sheet.rows || [];
-    rows.forEach((row, rowIndex) => {
-      const line = row.map((cell) => String(cell ?? '')).join(' | ');
-      writeWrapped(line, rowIndex === 0 ? 'bold' : 'normal', rowIndex === 0 ? 8.8 : 8.1, 0.8);
-    });
-  });
-
-  pdf.save(buildExportFilename('pdf', exportData));
+  const filename = `cleanit-${state.currentView}-${new Date().toISOString().slice(0, 10)}.xlsx`;
+  window.XLSX.writeFile(wb, filename);
 }
 
 async function exportCurrentViewToPdf() {
   if (!ensureDataReady('exportar a PDF')) return;
-  if (!window.jspdf?.jsPDF) {
+  if (!window.html2canvas || !window.jspdf?.jsPDF) {
     alert('No se cargaron las librerías de PDF.');
+    return;
+  }
+
+  const target = getCurrentViewElement();
+  if (!target) {
+    alert('No se encontró la vista activa para exportar.');
     return;
   }
 
   const button = el.exportPdfBtn;
   const originalLabel = button?.textContent;
+
+  const originalPaginationState = [];
 
   try {
     if (button) {
@@ -5193,20 +6272,15 @@ async function exportCurrentViewToPdf() {
     }
 
     if (state.currentView === 'absences') {
-      const exportData = buildAbsencesExportData();
-      exportAbsencesToPdf(exportData);
-      return;
-    }
-
-    if (!window.html2canvas) {
-      alert('No se cargó la librería de captura para PDF.');
-      return;
-    }
-
-    const target = getCurrentViewElement();
-    if (!target) {
-      alert('No se encontró la vista activa para exportar.');
-      return;
+      ['absenceSchedule', 'absenceHistory', 'absenceMonthly', 'absenceTracker', 'absenceEmployeeHistory', 'tardinessHistory', 'tardinessTracker', 'tardinessEmployeeHistory'].forEach((key) => {
+        const pagination = state.pagination[key];
+        if (!pagination) return;
+        originalPaginationState.push([key, pagination.page, pagination.pageSize]);
+        pagination.page = 1;
+        pagination.pageSize = 5000;
+      });
+      scheduleRenderCurrentView();
+      await new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
     }
 
     const canvas = await window.html2canvas(target, {
@@ -5237,11 +6311,21 @@ async function exportCurrentViewToPdf() {
       heightLeft -= pageHeight - margin * 2;
     }
 
-    pdf.save(buildExportFilename('pdf'));
+    pdf.save(`cleanit-${state.currentView}-${new Date().toISOString().slice(0, 10)}.pdf`);
   } catch (error) {
     console.error(error);
     alert('No se pudo generar el PDF de la vista actual.');
   } finally {
+    if (originalPaginationState.length) {
+      originalPaginationState.forEach(([key, page, pageSize]) => {
+        const pagination = state.pagination[key];
+        if (!pagination) return;
+        pagination.page = page;
+        pagination.pageSize = pageSize;
+      });
+      scheduleRenderCurrentView();
+    }
+
     if (button) {
       button.disabled = false;
       button.textContent = originalLabel || 'Descargar PDF';
@@ -5273,7 +6357,10 @@ function bindEvents() {
   el.logoutBtn?.addEventListener('click', handleLogout);
   el.refreshBtn?.addEventListener('click', () => loadAllDataWithRetry(4, 500, { hardLock: false, silent: false }));
   el.navTabs?.addEventListener('click', handleViewChange);
-  el.globalSearch?.addEventListener('input', debouncedHandleFilterInput);
+  el.globalSearch?.addEventListener('input', handleGlobalSearchInput);
+  el.globalSearch?.addEventListener('focus', renderGlobalSearchResults);
+  el.globalSearch?.addEventListener('keydown', handleGlobalSearchKeydown);
+  el.globalSearchResults?.addEventListener('click', handleGlobalSearchResultClick);
   el.workerTypeFilter?.addEventListener('change', handleFilterChange);
   el.statusFilter?.addEventListener('change', handleFilterChange);
   el.printViewBtn?.addEventListener('click', printCurrentView);
@@ -5291,6 +6378,7 @@ function bindEvents() {
   el.addAssignmentBtn?.addEventListener('click', () => openAssignmentDialog());
   el.bulkAssignmentBtn?.addEventListener('click', () => openBulkAssignmentDialog());
   el.addAbsenceBtn?.addEventListener('click', () => openAbsenceDialog());
+  el.addTardinessBtn?.addEventListener('click', () => openTardinessDialog());
   el.addMaterialCatalogBtn?.addEventListener('click', () => openMaterialCatalogDialog());
   el.addServiceMaterialBtn?.addEventListener('click', () => openServiceMaterialDialog());
   el.addMaterialConsumptionBtn?.addEventListener('click', () => openMaterialConsumptionDialog());
@@ -5300,6 +6388,7 @@ function bindEvents() {
   el.assignmentForm?.addEventListener('submit', saveAssignment);
   el.bulkAssignmentForm?.addEventListener('submit', saveBulkAssignments);
   el.absenceForm?.addEventListener('submit', saveAbsence);
+  el.tardinessForm?.addEventListener('submit', saveTardiness);
   el.materialCatalogForm?.addEventListener('submit', saveMaterialCatalog);
   el.serviceMaterialForm?.addEventListener('submit', saveServiceMaterial);
   el.materialConsumptionForm?.addEventListener('submit', saveMaterialConsumption);
@@ -5308,6 +6397,7 @@ function bindEvents() {
   $('deleteServiceBtn')?.addEventListener('click', deleteService);
   $('deleteAssignmentBtn')?.addEventListener('click', deleteAssignment);
   $('deleteAbsenceBtn')?.addEventListener('click', deleteAbsence);
+  $('deleteTardinessBtn')?.addEventListener('click', deleteTardiness);
   $('deleteMaterialCatalogBtn')?.addEventListener('click', deleteMaterialCatalog);
   $('deleteServiceMaterialBtn')?.addEventListener('click', deleteServiceMaterial);
   $('deleteMaterialConsumptionBtn')?.addEventListener('click', deleteMaterialConsumption);
@@ -5318,6 +6408,9 @@ function bindEvents() {
     resetPagination('absenceMonthly');
     resetPagination('absenceEmployeeHistory');
     resetPagination('absenceTracker');
+    resetPagination('tardinessHistory');
+    resetPagination('tardinessTracker');
+    resetPagination('tardinessEmployeeHistory');
     syncAbsencePeriodControls();
     scheduleRenderCurrentView();
   };
@@ -5341,11 +6434,17 @@ function bindEvents() {
     resetPagination('absenceEmployeeHistory');
     scheduleRenderCurrentView();
   });
+  el.tardinessWorkerHistoryFilter?.addEventListener('change', () => {
+    resetPagination('tardinessEmployeeHistory');
+    scheduleRenderCurrentView();
+  });
   el.materialsMonthFilter?.addEventListener('change', () => scheduleRenderCurrentView());
   el.materialsServiceFilter?.addEventListener('change', () => scheduleRenderCurrentView());
   $('absenceCoverageStatus')?.addEventListener('change', toggleAbsenceCoverageFields);
   $('absenceCoverageStart')?.addEventListener('input', updateAbsenceCoverageInfo);
   $('absenceCoverageEnd')?.addEventListener('input', updateAbsenceCoverageInfo);
+  $('tardinessScheduledStart')?.addEventListener('input', updateTardinessMinutesInfo);
+  $('tardinessActualArrival')?.addEventListener('input', updateTardinessMinutesInfo);
   $('serviceMaterialCatalog')?.addEventListener('input', () => updateMaterialCatalogAutocomplete('serviceMaterialCatalog', 'serviceMaterialUnit', 'serviceMaterialPresentation'));
   $('materialConsumptionService')?.addEventListener('change', updateMaterialConsumptionOptions);
   $('materialConsumptionMaterial')?.addEventListener('input', updateMaterialConsumptionMeta);
@@ -5360,10 +6459,16 @@ function bindEvents() {
   el.absenceWorkerTrackerPagination?.addEventListener('click', handlePaginationClick);
   el.absenceEmployeeHistoryPagination?.addEventListener('click', handlePaginationClick);
   el.absenceMonthlyPagination?.addEventListener('click', handlePaginationClick);
+  el.tardinessHistoryPagination?.addEventListener('click', handlePaginationClick);
+  el.tardinessWorkerTrackerPagination?.addEventListener('click', handlePaginationClick);
+  el.tardinessEmployeeHistoryPagination?.addEventListener('click', handlePaginationClick);
   el.absenceScheduleBoard?.addEventListener('click', handleDynamicClicks);
   el.absenceHistoryBoard?.addEventListener('click', handleDynamicClicks);
   el.absenceWorkerTrackerBoard?.addEventListener('click', handleDynamicClicks);
   el.absenceEmployeeHistoryBoard?.addEventListener('click', handleDynamicClicks);
+  el.tardinessHistoryBoard?.addEventListener('click', handleDynamicClicks);
+  el.tardinessWorkerTrackerBoard?.addEventListener('click', handleDynamicClicks);
+  el.tardinessEmployeeHistoryBoard?.addEventListener('click', handleDynamicClicks);
   el.serviceMaterialsBoard?.addEventListener('click', handleDynamicClicks);
   el.materialsConsumptionHistoryBoard?.addEventListener('click', handleDynamicClicks);
 
@@ -5372,6 +6477,11 @@ function bindEvents() {
       const dialog = $(button.dataset.close);
       if (dialog) dialog.close();
     });
+  });
+
+  document.addEventListener('click', (event) => {
+    if (event.target.closest('.global-search-shell')) return;
+    closeGlobalSearchResults();
   });
 }
 
@@ -5400,9 +6510,11 @@ function boot() {
       exportPdfBtn: $('exportPdfBtn'),
       navTabs: $('navTabs'),
       globalSearch: $('globalSearch'),
+      globalSearchResults: $('globalSearchResults'),
       workerTypeFilter: $('workerTypeFilter'),
       statusFilter: $('statusFilter'),
       kpiCards: $('kpiCards'),
+      serviceHoursBalance: $('serviceHoursBalance'),
       criticalWorkers: $('criticalWorkers'),
       serviceGaps: $('serviceGaps'),
       workersTableBody: $('workersTableBody'),
@@ -5418,6 +6530,7 @@ function boot() {
       absenceRangeStart: $('absenceRangeStart'),
       absenceRangeEnd: $('absenceRangeEnd'),
       absenceWorkerHistoryFilter: $('absenceWorkerHistoryFilter'),
+      tardinessWorkerHistoryFilter: $('tardinessWorkerHistoryFilter'),
       absenceKpiCards: $('absenceKpiCards'),
       absenceScheduleTitle: $('absenceScheduleTitle'),
       absenceScheduleSubtitle: $('absenceScheduleSubtitle'),
@@ -5436,6 +6549,13 @@ function boot() {
       absenceWorkerTrackerPagination: $('absenceWorkerTrackerPagination'),
       absenceEmployeeHistoryBoard: $('absenceEmployeeHistoryBoard'),
       absenceEmployeeHistoryPagination: $('absenceEmployeeHistoryPagination'),
+      tardinessKpiCards: $('tardinessKpiCards'),
+      tardinessHistoryBoard: $('tardinessHistoryBoard'),
+      tardinessHistoryPagination: $('tardinessHistoryPagination'),
+      tardinessWorkerTrackerBoard: $('tardinessWorkerTrackerBoard'),
+      tardinessWorkerTrackerPagination: $('tardinessWorkerTrackerPagination'),
+      tardinessEmployeeHistoryBoard: $('tardinessEmployeeHistoryBoard'),
+      tardinessEmployeeHistoryPagination: $('tardinessEmployeeHistoryPagination'),
       materialsMonthFilter: $('materialsMonthFilter'),
       materialsServiceFilter: $('materialsServiceFilter'),
       materialKpiCards: $('materialKpiCards'),
@@ -5447,6 +6567,7 @@ function boot() {
       addAssignmentBtn: $('addAssignmentBtn'),
       bulkAssignmentBtn: $('bulkAssignmentBtn'),
       addAbsenceBtn: $('addAbsenceBtn'),
+      addTardinessBtn: $('addTardinessBtn'),
       addMaterialCatalogBtn: $('addMaterialCatalogBtn'),
       addServiceMaterialBtn: $('addServiceMaterialBtn'),
       addMaterialConsumptionBtn: $('addMaterialConsumptionBtn'),
@@ -5455,6 +6576,7 @@ function boot() {
       assignmentDialog: $('assignmentDialog'),
       bulkAssignmentDialog: $('bulkAssignmentDialog'),
       absenceDialog: $('absenceDialog'),
+      tardinessDialog: $('tardinessDialog'),
       materialCatalogDialog: $('materialCatalogDialog'),
       serviceMaterialDialog: $('serviceMaterialDialog'),
       materialConsumptionDialog: $('materialConsumptionDialog'),
@@ -5463,10 +6585,12 @@ function boot() {
       assignmentForm: $('assignmentForm'),
       bulkAssignmentForm: $('bulkAssignmentForm'),
       absenceForm: $('absenceForm'),
+      tardinessForm: $('tardinessForm'),
       materialCatalogForm: $('materialCatalogForm'),
       serviceMaterialForm: $('serviceMaterialForm'),
       materialConsumptionForm: $('materialConsumptionForm'),
       absenceCoverageHoursInfo: $('absenceCoverageHoursInfo'),
+      tardinessMinutesInfo: $('tardinessMinutesInfo'),
     });
 
     if (!el.loginForm) {

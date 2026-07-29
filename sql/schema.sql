@@ -18,11 +18,25 @@ create table if not exists public.services (
   name text not null,
   client_address text,
   zone text,
+  billed_weekly_hours numeric(8,2),
   frequency_type text not null default 'fixed' check (frequency_type in ('fixed', 'variable', 'replacement')),
   notes text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.services add column if not exists billed_weekly_hours numeric(8,2);
+
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'services_billed_weekly_hours_nonnegative'
+      AND conrelid = 'public.services'::regclass
+  ) THEN
+    ALTER TABLE public.services
+      ADD CONSTRAINT services_billed_weekly_hours_nonnegative
+      CHECK (billed_weekly_hours IS NULL OR billed_weekly_hours >= 0);
+  END IF;
+END $$;
 
 -- Tabla de asignaciones semanales recurrentes
 create table if not exists public.assignments (

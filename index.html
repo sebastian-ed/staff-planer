@@ -72,9 +72,10 @@
 
           <div class="sidebar-panel stack-md">
             <h3>Filtros</h3>
-            <div class="field">
+            <div class="field global-search-shell">
               <label for="globalSearch">Buscar</label>
-              <input id="globalSearch" type="search" placeholder="Operario, servicio o zona" />
+              <input id="globalSearch" type="search" placeholder="Buscar en toda la app" autocomplete="off" />
+              <div id="globalSearchResults" class="global-search-results hidden" aria-live="polite"></div>
             </div>
             <div class="field">
               <label for="workerTypeFilter">Tipo de operario</label>
@@ -89,9 +90,9 @@
               <label for="statusFilter">Estado semanal</label>
               <select id="statusFilter">
                 <option value="all">Todos</option>
-                <option value="available">Con horas disponibles</option>
+                <option value="available">Le faltan horas</option>
                 <option value="balanced">En objetivo</option>
-                <option value="over">Con exceso de horas</option>
+                <option value="over">Supera horas objetivo</option>
                 <option value="insurance">Seguro / por hora</option>
               </select>
             </div>
@@ -101,6 +102,7 @@
         <section class="content stack-lg">
           <section id="dashboardView" class="view stack-lg">
             <div class="cards-grid" id="kpiCards"></div>
+            <article id="serviceHoursBalance" class="card"></article>
             <div class="split-grid">
               <article class="card">
                 <div class="section-head">
@@ -205,7 +207,6 @@
                       <option value="day">Por día</option>
                       <option value="month">Por mes</option>
                       <option value="range">Por rango</option>
-                      <option value="all">Histórico total</option>
                     </select>
                   </div>
                   <div class="field absence-date-field" id="absenceDateFilterField">
@@ -232,6 +233,7 @@
                     </select>
                   </div>
                   <button id="addAbsenceBtn" class="btn btn-primary" type="button">Registrar ausencia</button>
+                  <button id="addTardinessBtn" class="btn btn-secondary" type="button">Registrar tardanza</button>
                 </div>
               </div>
 
@@ -296,6 +298,56 @@
                   <div id="absenceEmployeeHistoryPagination" class="pagination-shell"></div>
                 </article>
               </div>
+
+              <article class="card-lite">
+                <div class="section-head">
+                  <div>
+                    <h3>Tardanzas</h3>
+                    <span class="muted">Llegadas tarde registradas, seguimiento anual e histórico desde el ingreso</span>
+                  </div>
+                  <div class="field absence-date-field">
+                    <label for="tardinessWorkerHistoryFilter">Operario</label>
+                    <select id="tardinessWorkerHistoryFilter">
+                      <option value="all">Todos</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="cards-grid" id="tardinessKpiCards"></div>
+                <div class="split-grid">
+                  <article class="card-lite">
+                    <div class="section-head">
+                      <div>
+                        <h3>Tardanzas registradas</h3>
+                        <span class="muted">Detalle de cada llegada tarde del período filtrado</span>
+                      </div>
+                    </div>
+                    <div id="tardinessHistoryBoard" class="stack-list"></div>
+                    <div id="tardinessHistoryPagination" class="pagination-shell"></div>
+                  </article>
+
+                  <article class="card-lite">
+                    <div class="section-head">
+                      <div>
+                        <h3>Seguimiento anual por operario · tardanzas</h3>
+                        <span class="muted">% anualizado sobre días trabajados y % sobre el año calendario</span>
+                      </div>
+                    </div>
+                    <div id="tardinessWorkerTrackerBoard" class="stack-list"></div>
+                    <div id="tardinessWorkerTrackerPagination" class="pagination-shell"></div>
+                  </article>
+                </div>
+
+                <article class="card-lite">
+                  <div class="section-head">
+                    <div>
+                      <h3>Historial de tardanzas</h3>
+                      <span class="muted">Evolución de tardanzas desde el ingreso del operario</span>
+                    </div>
+                  </div>
+                  <div id="tardinessEmployeeHistoryBoard" class="stack-list"></div>
+                  <div id="tardinessEmployeeHistoryPagination" class="pagination-shell"></div>
+                </article>
+              </article>
             </article>
           </section>
 
@@ -428,6 +480,11 @@
       <div class="field">
         <label for="serviceSupervisor">Supervisor a cargo</label>
         <input id="serviceSupervisor" placeholder="Ej. Andrés" />
+      </div>
+      <div class="field">
+        <label for="serviceBilledHours">Horas facturadas por semana</label>
+        <input id="serviceBilledHours" type="number" min="0" step="0.25" inputmode="decimal" placeholder="Ej. 40" />
+        <small class="field-help">Es el total semanal vendido al cliente. No modifica las asignaciones actuales.</small>
       </div>
       <div class="field">
         <label for="serviceFrequency">Frecuencia</label>
@@ -651,6 +708,64 @@
   </dialog>
 
 
+
+
+  
+
+  <dialog id="tardinessDialog" class="modal">
+    <form id="tardinessForm" class="modal-card stack-md">
+      <div class="section-head with-action">
+        <h3 id="tardinessDialogTitle">Registrar tardanza</h3>
+        <button class="icon-btn" type="button" data-close="tardinessDialog">✕</button>
+      </div>
+
+      <input type="hidden" id="tardinessId" />
+      <input type="hidden" id="tardinessAssignmentId" />
+
+      <div class="grid-2">
+        <div class="field">
+          <label for="tardinessDate">Fecha</label>
+          <input id="tardinessDate" type="date" required />
+        </div>
+        <div class="field">
+          <label for="tardinessMinutesInfo">Tiempo de tardanza</label>
+          <input id="tardinessMinutesInfo" type="text" placeholder="Se calcula automáticamente" readonly />
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="tardinessWorker">Operario</label>
+        <select id="tardinessWorker" required></select>
+      </div>
+
+      <div class="field">
+        <label for="tardinessService">Servicio</label>
+        <select id="tardinessService" required></select>
+      </div>
+
+      <div class="grid-2">
+        <div class="field">
+          <label for="tardinessScheduledStart">Hora prevista</label>
+          <input id="tardinessScheduledStart" type="time" required />
+        </div>
+        <div class="field">
+          <label for="tardinessActualArrival">Hora de llegada</label>
+          <input id="tardinessActualArrival" type="time" required />
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="tardinessNotes">Observaciones</label>
+        <textarea id="tardinessNotes" rows="3" placeholder="Opcional"></textarea>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-secondary" type="button" data-close="tardinessDialog">Cancelar</button>
+        <button id="deleteTardinessBtn" class="btn btn-ghost hidden" type="button">Eliminar</button>
+        <button class="btn btn-primary" type="submit">Guardar tardanza</button>
+      </div>
+    </form>
+  </dialog>
 
 
   <dialog id="materialCatalogDialog" class="modal">

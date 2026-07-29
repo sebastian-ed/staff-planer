@@ -11,6 +11,29 @@ Web app mobile-first para visualizar y editar asignaciones de operarios por serv
 - Ver cambios en vivo entre varios usuarios.
 - Crear usuarios nuevos desde el login para que ingresen con las mismas funcionalidades.
 - Imprimir la vista filtrada actual y descargar cada panel en Excel o PDF.
+- Cargar horas semanales facturadas por servicio y compararlas con las horas operativas asignadas.
+- Buscar operarios, servicios, asignaciones, materiales, ausencias y tardanzas desde un único buscador global.
+
+## Actualización: horas facturadas por servicio
+
+Antes de publicar esta versión, ejecutá una sola vez en el SQL Editor de Supabase:
+
+`sql/migration_add_billed_hours.sql`
+
+La migración es aditiva: crea la columna `billed_weekly_hours` en `services` y una validación para impedir valores negativos. **No borra, reemplaza ni modifica los servicios, operarios, frecuencias o asignaciones existentes.** Los servicios actuales quedan con el campo vacío hasta que cargues sus horas facturadas.
+
+Después de ejecutar la migración:
+
+1. Entrá en **Servicios**.
+2. Editá cada servicio.
+3. Completá **Horas facturadas por semana**.
+4. Revisá el balance total en el Dashboard y el detalle en cada tarjeta de servicio.
+
+En los estados de operarios, el criterio visual queda así:
+
+- Rojo: al operario le faltan horas para alcanzar su objetivo.
+- Verde: el operario supera su objetivo de horas.
+- Azul: está exactamente en objetivo.
 
 ## Stack
 
@@ -96,3 +119,8 @@ Ese roadmap ya es más serio y reduce bastante el caos operativo.
 ## Seguimiento de ausentismo anualizado
 
 La sección **Ausencias** calcula el acumulado anual por operario usando un criterio de 365 días y una tolerancia interna de 3% anual. Para medir bien, cada operario debe tener cargada su **fecha de ingreso** (`hire_date`). Si falta ese dato, la app lo marca y evita inventar un porcentaje engañoso.
+
+
+## Tardanzas
+
+La sección **Ausencias** ahora permite registrar **tardanzas** por operario, servicio y fecha, con hora prevista, hora real de llegada, minutos de demora, seguimiento anualizado y registro histórico desde el ingreso del operario.
