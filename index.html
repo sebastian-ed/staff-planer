@@ -72,9 +72,10 @@
 
           <div class="sidebar-panel stack-md">
             <h3>Filtros</h3>
-            <div class="field">
+            <div class="field global-search-shell">
               <label for="globalSearch">Buscar</label>
-              <input id="globalSearch" type="search" placeholder="Operario, servicio o zona" />
+              <input id="globalSearch" type="search" placeholder="Buscar en toda la app" autocomplete="off" />
+              <div id="globalSearchResults" class="global-search-results hidden" aria-live="polite"></div>
             </div>
             <div class="field">
               <label for="workerTypeFilter">Tipo de operario</label>
@@ -89,9 +90,9 @@
               <label for="statusFilter">Estado semanal</label>
               <select id="statusFilter">
                 <option value="all">Todos</option>
-                <option value="available">Con horas disponibles</option>
+                <option value="available">Le faltan horas</option>
                 <option value="balanced">En objetivo</option>
-                <option value="over">Con exceso de horas</option>
+                <option value="over">Supera horas objetivo</option>
                 <option value="insurance">Seguro / por hora</option>
               </select>
             </div>
@@ -100,7 +101,18 @@
 
         <section class="content stack-lg">
           <section id="dashboardView" class="view stack-lg">
+            <article class="card dashboard-period-bar">
+              <div>
+                <h3>Control mensual de horas</h3>
+                <p class="muted">Compara las horas mensuales facturadas con las horas operativas mensuales proyectadas desde el cronograma semanal activo.</p>
+              </div>
+              <div class="field dashboard-month-field">
+                <label for="dashboardMonthFilter">Mes de análisis</label>
+                <input id="dashboardMonthFilter" type="month" />
+              </div>
+            </article>
             <div class="cards-grid" id="kpiCards"></div>
+            <article id="serviceHoursBalance" class="card"></article>
             <div class="split-grid">
               <article class="card">
                 <div class="section-head">
@@ -137,7 +149,8 @@
                       <th>Antigüedad</th>
                       <th>Período de prueba</th>
                       <th>Horas objetivo</th>
-                      <th>Horas asignadas</th>
+                      <th>Horas asignadas semanales</th>
+                      <th>Horas del mes</th>
                       <th>Diferencia</th>
                       <th>Estado</th>
                       <th>Servicios</th>
@@ -478,6 +491,11 @@
       <div class="field">
         <label for="serviceSupervisor">Supervisor a cargo</label>
         <input id="serviceSupervisor" placeholder="Ej. Andrés" />
+      </div>
+      <div class="field">
+        <label for="serviceBilledHours">Horas totales facturadas por mes</label>
+        <input id="serviceBilledHours" type="number" min="0" step="0.25" inputmode="decimal" placeholder="Ej. 176" />
+        <small class="field-help">Es el total mensual vendido al cliente. No modifica horarios, frecuencias ni asignaciones existentes.</small>
       </div>
       <div class="field">
         <label for="serviceFrequency">Frecuencia</label>

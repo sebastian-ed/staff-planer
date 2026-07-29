@@ -11,6 +11,36 @@ Web app mobile-first para visualizar y editar asignaciones de operarios por serv
 - Ver cambios en vivo entre varios usuarios.
 - Crear usuarios nuevos desde el login para que ingresen con las mismas funcionalidades.
 - Imprimir la vista filtrada actual y descargar cada panel en Excel o PDF.
+- Cargar horas mensuales facturadas por servicio y compararlas con la proyección mensual del cronograma operativo activo.
+- Buscar operarios, servicios, asignaciones, materiales, ausencias y tardanzas desde un único buscador global.
+
+## Actualización: balance mensual de horas por servicio
+
+Antes de publicar esta versión, ejecutá una sola vez en el SQL Editor de Supabase:
+
+`sql/migration_add_billed_monthly_hours.sql`
+
+La migración es aditiva: crea la columna `billed_monthly_hours` en `services` y una validación para impedir valores negativos. **No borra, reemplaza ni modifica los servicios, operarios, frecuencias, horarios o asignaciones existentes.** La columna semanal anterior, si ya existe, queda conservada y sin cambios.
+
+Después de ejecutar la migración:
+
+1. Entrá en **Servicios**.
+2. Editá cada servicio.
+3. Completá **Horas totales facturadas por mes**.
+4. Seleccioná el mes en el Dashboard.
+5. Revisá el total facturado, el total operativo mensual y los desvíos por servicio.
+
+La carga operativa mensual se calcula con el calendario real: cada turno semanal se multiplica por la cantidad de veces que ese día aparece en el mes seleccionado. No se aplica un factor fijo de cuatro semanas.
+
+En los estados semanales de operarios, el criterio visual queda así:
+
+- Rojo: al operario le faltan horas y se muestra la cantidad exacta.
+- Verde: al operario le sobran horas respecto de su objetivo y se muestra la cantidad exacta.
+- Azul: está exactamente en objetivo.
+
+Además, la vista de operarios muestra las horas mensuales proyectadas para el mes seleccionado.
+
+**Alcance:** el cálculo usa el cronograma activo actual. No reconstruye automáticamente cambios históricos realizados dentro de un mes.
 
 ## Stack
 
@@ -85,7 +115,6 @@ No sigas empujando toda la lógica en una sola grilla. Escala mal, se vuelve ile
 La siguiente fase lógica es agregar:
 
 - importador CSV desde tu Google Sheet actual,
-- vista mensual,
 - bloqueo por permisos,
 - alertas de superposición horaria,
 - panel de reemplazos.

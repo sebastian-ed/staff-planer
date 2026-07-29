@@ -86,6 +86,7 @@ const state = {
   serviceMaterials: [],
   materialConsumptions: [],
   currentView: 'dashboard',
+  dashboardMonth: '',
   authMode: 'login',
   filters: {
     search: '',
@@ -136,6 +137,38 @@ function normalizeText(value) {
     .replace(/\s+/g, ' ');
 }
 
+function normalizeSearchText(value) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function matchesSearchText(haystack, query) {
+  const normalizedQuery = normalizeSearchText(query);
+  if (!normalizedQuery) return true;
+
+  const normalizedHaystack = normalizeSearchText(haystack);
+  const tokens = normalizedQuery.split(' ').filter(Boolean);
+  return tokens.every((token) => normalizedHaystack.includes(token));
+}
+
+function getSearchScore(primaryText, searchText, query) {
+  const normalizedQuery = normalizeSearchText(query);
+  const normalizedPrimary = normalizeSearchText(primaryText);
+  const normalizedSearch = normalizeSearchText(searchText);
+
+  if (!normalizedQuery || !matchesSearchText(normalizedSearch, normalizedQuery)) return -1;
+  if (normalizedPrimary === normalizedQuery) return 100;
+  if (normalizedPrimary.startsWith(normalizedQuery)) return 80;
+  if (normalizedPrimary.includes(normalizedQuery)) return 65;
+  if (normalizedSearch.includes(normalizedQuery)) return 50;
+  return 35;
+}
+
 function formatNumber(value) {
   if (value == null || Number.isNaN(value)) return '—';
   const num = Number(value);
@@ -150,7 +183,40 @@ function getMonthKey(dateKey) {
 }
 
 function getCurrentMonthKey() {
-  return new Date().toISOString().slice(0, 7);
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function getSelectedDashboardMonth() {
+  const fallback = /^\d{4}-\d{2}$/.test(state.dashboardMonth)
+    ? state.dashboardMonth
+    : getCurrentMonthKey();
+
+  if (!el.dashboardMonthFilter) return fallback;
+
+  if (!/^\d{4}-\d{2}$/.test(el.dashboardMonthFilter.value || '')) {
+    el.dashboardMonthFilter.value = fallback;
+  }
+
+  state.dashboardMonth = el.dashboardMonthFilter.value || fallback;
+  return state.dashboardMonth;
+}
+
+function initializeDashboardMonth() {
+  let savedMonth = '';
+  try {
+    savedMonth = window.localStorage.getItem('staffPlannerDashboardMonth') || '';
+  } catch (error) {
+    savedMonth = '';
+  }
+
+  state.dashboardMonth = /^\d{4}-\d{2}$/.test(savedMonth)
+    ? savedMonth
+    : getCurrentMonthKey();
+
+  if (el.dashboardMonthFilter) {
+    el.dashboardMonthFilter.value = state.dashboardMonth;
+  }
 }
 
 function formatMonthLabel(monthKey) {
@@ -245,6 +311,33 @@ function calculateHours(startTime, endTime) {
   return ((eh * 60 + em) - (sh * 60 + sm)) / 60;
 }
 
+function getWeekdayOccurrencesInMonth(monthKey) {
+  const monthStart = getMonthStartDate(monthKey);
+  const monthEnd = getMonthEndDate(monthKey);
+  const occurrences = new Map(DAYS.map((day) => [day.value, 0]));
+  if (!monthStart || !monthEnd) return occurrences;
+
+  const cursor = new Date(monthStart);
+  while (cursor <= monthEnd) {
+    const weekday = cursor.getDay();
+    occurrences.set(weekday, (occurrences.get(weekday) || 0) + 1);
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return occurrences;
+}
+
+function calculateMonthlyAssignmentHours(assignments, monthKey = getSelectedDashboardMonth()) {
+  const weekdayOccurrences = getWeekdayOccurrencesInMonth(monthKey);
+  const total = (assignments || []).reduce((sum, assignment) => {
+    const weeklyShiftHours = calculateHours(assignment.start_time, assignment.end_time);
+    const occurrences = weekdayOccurrences.get(Number(assignment.day_of_week)) || 0;
+    return sum + (weeklyShiftHours * occurrences);
+  }, 0);
+
+  return Number(total.toFixed(2));
+}
+
 function calculateMinutesLate(scheduledStart, actualArrival) {
   if (!scheduledStart || !actualArrival) return null;
   const [sh, sm] = scheduledStart.split(':').map(Number);
@@ -304,9 +397,14 @@ function rebuildDerivedState() {
     derived.serviceById.set(service.id, service);
     derived.serviceSearchById.set(
       service.id,
-      [service.name, service.zone || '', service.client_address || '', service.supervisor_name || '', service.notes || '']
-        .join(' ')
-        .toLowerCase()
+      normalizeSearchText([
+        service.name,
+        service.zone || '',
+        service.client_address || '',
+        service.supervisor_name || '',
+        service.notes || '',
+        service.billed_monthly_hours ?? '',
+      ].join(' '))
     );
   });
 
@@ -323,15 +421,13 @@ function rebuildDerivedState() {
 
     derived.assignmentSearchById.set(
       assignment.id,
-      [
+      normalizeSearchText([
         worker?.name || '',
         service?.name || '',
         service?.zone || '',
         service?.client_address || '',
         service?.supervisor_name || '',
-      ]
-        .join(' ')
-        .toLowerCase()
+      ].join(' '))
     );
   });
 
@@ -340,9 +436,7 @@ function rebuildDerivedState() {
     derived.materialByNormalizedName.set(normalizeText(material.name), material);
     derived.materialSearchById.set(
       material.id,
-      [material.name || '', material.unit || '', material.presentation || '', material.notes || '']
-        .join(' ')
-        .toLowerCase()
+      normalizeSearchText([material.name || '', material.unit || '', material.presentation || '', material.notes || ''].join(' '))
     );
   });
 
@@ -356,7 +450,7 @@ function rebuildDerivedState() {
 
     derived.serviceMaterialSearchById.set(
       serviceMaterial.id,
-      [
+      normalizeSearchText([
         service?.name || '',
         service?.zone || '',
         service?.client_address || '',
@@ -365,9 +459,7 @@ function rebuildDerivedState() {
         material?.unit || '',
         material?.presentation || '',
         serviceMaterial.notes || '',
-      ]
-        .join(' ')
-        .toLowerCase()
+      ].join(' '))
     );
   });
 
@@ -390,7 +482,7 @@ function rebuildDerivedState() {
 
     derived.absenceSearchById.set(
       absence.id,
-      [
+      normalizeSearchText([
         absence.absence_date || '',
         worker?.name || '',
         service?.name || '',
@@ -402,9 +494,7 @@ function rebuildDerivedState() {
         absence.coverage_status || '',
         absence.absence_type || '',
         formatAbsenceTypeLabel(absence.absence_type),
-      ]
-        .join(' ')
-        .toLowerCase()
+      ].join(' '))
     );
   });
 
@@ -420,7 +510,7 @@ function rebuildDerivedState() {
 
     derived.tardinessSearchById.set(
       tardiness.id,
-      [
+      normalizeSearchText([
         tardiness.tardiness_date || '',
         worker?.name || '',
         service?.name || '',
@@ -431,9 +521,7 @@ function rebuildDerivedState() {
         tardiness.scheduled_start_time || '',
         tardiness.actual_arrival_time || '',
         minutesLate == null ? '' : String(minutesLate),
-      ]
-        .join(' ')
-        .toLowerCase()
+      ].join(' '))
     );
   });
 
@@ -871,7 +959,7 @@ function getFilteredWorkersForAbsenceTracking() {
 
       if (!term) return true;
 
-      const hay = [
+      const hay = normalizeSearchText([
         worker.name || '',
         worker.notes || '',
         worker.hire_date || '',
@@ -879,11 +967,9 @@ function getFilteredWorkersForAbsenceTracking() {
           const service = getServiceById(assignment.service_id);
           return `${service?.name || ''} ${service?.zone || ''} ${service?.client_address || ''}`;
         }),
-      ]
-        .join(' ')
-        .toLowerCase();
+      ].join(' '));
 
-      return hay.includes(term);
+      return matchesSearchText(hay, term);
     })
     .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es', { sensitivity: 'base' }));
 }
@@ -1076,7 +1162,7 @@ function goToWorkerPlanner(workerId) {
   if (!workerName) return;
 
   if (el.globalSearch) el.globalSearch.value = workerName;
-  state.filters.search = workerName.toLowerCase();
+  state.filters.search = normalizeSearchText(workerName);
 
   goToView('planner');
 
@@ -1103,7 +1189,7 @@ function goToAbsenceWorkerHistory(workerId) {
     el.globalSearch.value = worker.name || '';
   }
 
-  state.filters.search = String(worker.name || '').toLowerCase();
+  state.filters.search = normalizeSearchText(worker.name || '');
   resetPagination('absenceEmployeeHistory');
   goToView('absences');
 
@@ -1125,6 +1211,65 @@ function getWorkerAssignments(workerId) {
 
 function getServiceAssignments(serviceId) {
   return state.derived.assignmentsByServiceId.get(serviceId) || [];
+}
+
+function getServiceBilledHours(service) {
+  if (!service || service.billed_monthly_hours == null || service.billed_monthly_hours === '') return null;
+  const value = Number(service.billed_monthly_hours);
+  return Number.isFinite(value) ? value : null;
+}
+
+function getServiceHoursSummary(service, monthKey = getSelectedDashboardMonth()) {
+  const assignments = getServiceAssignments(service.id);
+  const assignedHours = calculateMonthlyAssignmentHours(assignments, monthKey);
+  const billedHours = getServiceBilledHours(service);
+  const difference = billedHours == null
+    ? null
+    : Number((assignedHours - billedHours).toFixed(2));
+
+  let status = 'pending';
+  if (difference != null) {
+    if (Math.abs(difference) < 0.01) status = 'balanced';
+    else if (difference < 0) status = 'missing';
+    else status = 'over';
+  }
+
+  return {
+    ...service,
+    monthKey,
+    assignments,
+    billedHours,
+    assignedHours,
+    difference,
+    status,
+  };
+}
+
+function getAllServiceHoursSummaries(monthKey = getSelectedDashboardMonth()) {
+  return state.services
+    .map((service) => getServiceHoursSummary(service, monthKey))
+    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es', { sensitivity: 'base' }));
+}
+
+function getOverallServiceHoursBalance(monthKey = getSelectedDashboardMonth()) {
+  const summaries = getAllServiceHoursSummaries(monthKey);
+  const configured = summaries.filter((service) => service.billedHours != null);
+  const pending = summaries.filter((service) => service.billedHours == null);
+  const totalBilledHours = Number(configured.reduce((sum, service) => sum + service.billedHours, 0).toFixed(2));
+  const totalAssignedHours = Number(summaries.reduce((sum, service) => sum + service.assignedHours, 0).toFixed(2));
+  const assignedHoursOnConfiguredServices = Number(configured.reduce((sum, service) => sum + service.assignedHours, 0).toFixed(2));
+  const difference = Number((assignedHoursOnConfiguredServices - totalBilledHours).toFixed(2));
+
+  return {
+    monthKey,
+    summaries,
+    configured,
+    pending,
+    totalBilledHours,
+    totalAssignedHours,
+    assignedHoursOnConfiguredServices,
+    difference,
+  };
 }
 
 function resetPagination(viewKey) {
@@ -1283,7 +1428,7 @@ function getFilteredServices() {
 
   return state.services.filter((service) => {
     const hay = state.derived.serviceSearchById.get(service.id) || '';
-    return !term || hay.includes(term);
+    return !term || matchesSearchText(hay, term);
   });
 }
 
@@ -1307,7 +1452,7 @@ function getFilteredServiceMaterials() {
     .filter((serviceMaterial) => {
       if (serviceId !== 'all' && serviceMaterial.service_id !== serviceId) return false;
       const hay = state.derived.serviceMaterialSearchById.get(serviceMaterial.id) || '';
-      return !term || hay.includes(term);
+      return !term || matchesSearchText(hay, term);
     })
     .sort((a, b) => {
       const serviceA = getServiceById(a.service_id);
@@ -1338,9 +1483,9 @@ function getFilteredMaterialConsumptions(monthKey = getSelectedMaterialsMonth())
             getServiceById(consumption.service_id)?.name || '',
             getMaterialById(consumption.material_id)?.name || '',
             consumption.notes || '',
-          ].join(' ').toLowerCase();
+          ].join(' ');
 
-      return hay.includes(term);
+      return matchesSearchText(hay, term);
     })
     .sort((a, b) => {
       const byDate = String(b.consumption_date || '').localeCompare(String(a.consumption_date || ''));
@@ -1379,6 +1524,7 @@ function getWorkerSummaries() {
       );
 
       const targetHours = getTargetHours(worker);
+      const monthlyHours = calculateMonthlyAssignmentHours(assignments, getSelectedDashboardMonth());
       const difference =
         targetHours == null ? null : Number((targetHours - totalHours).toFixed(2));
 
@@ -1397,6 +1543,7 @@ function getWorkerSummaries() {
         ...worker,
         assignments,
         totalHours: Number(totalHours.toFixed(2)),
+        monthlyHours,
         targetHours,
         difference,
         services,
@@ -1411,17 +1558,15 @@ function getWorkerSummaries() {
 function matchesFilters(summary) {
   const term = state.filters.search;
 
-  const searchSource = [
+  const searchSource = normalizeSearchText([
     summary.name,
     summary.notes || '',
     ...summary.services.map(
       (service) => `${service.name} ${service.zone || ''} ${service.client_address || ''}`
     ),
-  ]
-    .join(' ')
-    .toLowerCase();
+  ].join(' '));
 
-  const searchOk = !term || searchSource.includes(term);
+  const searchOk = !term || matchesSearchText(searchSource, term);
   const typeOk =
     state.filters.workerType === 'all' || summary.worker_type === state.filters.workerType;
   const statusOk =
@@ -1433,12 +1578,19 @@ function matchesFilters(summary) {
 function renderStatusPill(status) {
   const labels = {
     balanced: 'Equilibrado',
-    available: 'Con horas libres',
-    over: 'Excedido',
+    available: 'Le faltan horas',
+    over: 'Supera el objetivo',
     insurance: 'Seguro',
   };
 
-  return `<span class="status-pill status-${status}">${labels[status] || status}</span>`;
+  const classes = {
+    balanced: 'status-balanced',
+    available: 'status-hours-missing',
+    over: 'status-hours-over',
+    insurance: 'status-insurance',
+  };
+
+  return `<span class="status-pill ${classes[status] || 'status-balanced'}">${labels[status] || status}</span>`;
 }
 
 function renderDifferencePill(worker) {
@@ -1447,14 +1599,30 @@ function renderDifferencePill(worker) {
   }
 
   if (worker.difference > 0) {
-    return `<span class="status-pill status-available">Faltan ${formatHours(worker.difference)} hs</span>`;
+    return `<span class="status-pill status-hours-missing">Le faltan ${formatHours(worker.difference)} hs</span>`;
   }
 
   if (worker.difference < 0) {
-    return `<span class="status-pill status-over">Se pasó ${formatHours(Math.abs(worker.difference))} hs</span>`;
+    return `<span class="status-pill status-hours-over">Le sobran ${formatHours(Math.abs(worker.difference))} hs</span>`;
   }
 
-  return `<span class="status-pill status-balanced">Exacto</span>`;
+  return `<span class="status-pill status-balanced">En objetivo</span>`;
+}
+
+function renderServiceHoursPill(serviceSummary) {
+  if (serviceSummary.billedHours == null) {
+    return '<span class="status-pill status-hours-pending">Falta cargar facturación</span>';
+  }
+
+  if (serviceSummary.difference < 0) {
+    return `<span class="status-pill status-hours-missing">Faltan cubrir ${formatHours(Math.abs(serviceSummary.difference))} hs</span>`;
+  }
+
+  if (serviceSummary.difference > 0) {
+    return `<span class="status-pill status-hours-over">Exceso operativo: ${formatHours(serviceSummary.difference)} hs</span>`;
+  }
+
+  return '<span class="status-pill status-balanced">Horas alineadas</span>';
 }
 
 function getUncoveredServices() {
@@ -1552,11 +1720,24 @@ function populateSelects() {
 }
 
 function renderKpis(summaries) {
-  const totalAssignedHours = summaries.reduce((sum, worker) => sum + worker.totalHours, 0);
-  const availableWorkers = summaries.filter((worker) => worker.status === 'available').length;
-  const overloadedWorkers = summaries.filter((worker) => worker.status === 'over').length;
+  const balance = getOverallServiceHoursBalance();
+  const monthLabel = formatMonthLabel(balance.monthKey);
   const unassignedWorkers = summaries.filter((worker) => worker.services.length === 0).length;
   const uncoveredServices = getUncoveredServices().length;
+
+  let balanceValue = '0';
+  let balanceFoot = `Horas alineadas en ${monthLabel}`;
+  if (balance.difference < 0) {
+    balanceValue = `-${formatHours(Math.abs(balance.difference))}`;
+    balanceFoot = 'Horas facturadas pendientes de cobertura operativa';
+  } else if (balance.difference > 0) {
+    balanceValue = `+${formatHours(balance.difference)}`;
+    balanceFoot = 'Horas operativas por encima de lo facturado';
+  }
+
+  if (balance.pending.length) {
+    balanceFoot = `Parcial · ${balance.pending.length} servicio${balance.pending.length === 1 ? '' : 's'} sin carga mensual`;
+  }
 
   const cards = [
     {
@@ -1565,16 +1746,21 @@ function renderKpis(summaries) {
       foot: `${unassignedWorkers} sin servicio asignado`,
     },
     {
-      label: 'Horas asignadas',
-      value: formatHours(totalAssignedHours),
-      foot: 'Suma semanal visible',
+      label: 'Horas facturadas del mes',
+      value: formatHours(balance.totalBilledHours),
+      foot: balance.pending.length
+        ? `${balance.configured.length} servicios cargados · ${balance.pending.length} pendientes`
+        : `${balance.configured.length} servicios cargados · ${monthLabel}`,
     },
     {
-      label: 'Operarios con horas libres',
-      value: availableWorkers,
-      foot: overloadedWorkers
-        ? `${overloadedWorkers} excedidos`
-        : 'Sin excesos detectados',
+      label: 'Horas operativas del mes',
+      value: formatHours(balance.totalAssignedHours),
+      foot: `Calculadas según los días reales de ${monthLabel}`,
+    },
+    {
+      label: 'Balance mensual',
+      value: balanceValue,
+      foot: balanceFoot,
     },
     {
       label: 'Servicios sin cobertura',
@@ -1594,6 +1780,84 @@ function renderKpis(summaries) {
       `
     )
     .join('');
+}
+
+function renderServiceHoursBalance() {
+  if (!el.serviceHoursBalance) return;
+
+  const balance = getOverallServiceHoursBalance();
+  const monthLabel = formatMonthLabel(balance.monthKey);
+  const configuredDeviations = balance.configured
+    .filter((service) => Math.abs(service.difference || 0) >= 0.01)
+    .sort((a, b) => Math.abs(b.difference || 0) - Math.abs(a.difference || 0));
+  const rows = [...configuredDeviations, ...balance.pending].slice(0, 10);
+
+  let differenceLabel = 'Horas equilibradas';
+  let differenceClass = 'status-balanced';
+  if (balance.difference < 0) {
+    differenceLabel = `Faltan cubrir ${formatHours(Math.abs(balance.difference))} hs`;
+    differenceClass = 'status-hours-missing';
+  } else if (balance.difference > 0) {
+    differenceLabel = `Exceso operativo: ${formatHours(balance.difference)} hs`;
+    differenceClass = 'status-hours-over';
+  }
+
+  el.serviceHoursBalance.innerHTML = `
+    <div class="hours-balance-card">
+      <div class="section-head">
+        <div>
+          <h3>Balance mensual · ${escapeHtml(monthLabel)}</h3>
+          <span class="muted">Horas mensuales facturadas contra horas mensuales asignadas</span>
+        </div>
+        <span class="status-pill ${differenceClass}">${differenceLabel}</span>
+      </div>
+
+      <div class="hours-balance-summary">
+        <div class="hours-balance-metric">
+          <span>Horas facturadas cargadas</span>
+          <strong>${formatHours(balance.totalBilledHours)} hs</strong>
+        </div>
+        <div class="hours-balance-metric">
+          <span>Horas operativas en servicios cargados</span>
+          <strong>${formatHours(balance.assignedHoursOnConfiguredServices)} hs</strong>
+        </div>
+        <div class="hours-balance-metric">
+          <span>Total operativo general</span>
+          <strong>${formatHours(balance.totalAssignedHours)} hs</strong>
+        </div>
+      </div>
+
+      <div class="hours-balance-note">
+        El cálculo operativo cuenta cuántas veces aparece cada día asignado dentro de ${escapeHtml(monthLabel)}. No multiplica automáticamente por cuatro: un turno de lunes se computa cuatro o cinco veces según el calendario real del mes.
+      </div>
+
+      ${balance.pending.length
+        ? `<div class="hours-balance-note">El balance es parcial: faltan cargar las horas mensuales facturadas de ${balance.pending.length} servicio${balance.pending.length === 1 ? '' : 's'}. Sus horas operativas están incluidas en el total general, pero no en la diferencia comercial.</div>`
+        : ''}
+
+      <div>
+        <div class="section-head">
+          <div>
+            <h4>Principales diferencias por servicio</h4>
+            <span class="muted">Rojo: falta cobertura frente a lo facturado. Verde: se asignaron más horas que las facturadas.</span>
+          </div>
+        </div>
+        <div class="hours-balance-list">
+          ${rows.length
+            ? rows.map((service) => `
+                <div class="hours-balance-row">
+                  <div>
+                    <strong>${escapeHtml(service.name)}</strong>
+                    <p>Facturadas mes: ${service.billedHours == null ? 'Pendiente' : `${formatHours(service.billedHours)} hs`} · Operativas mes: ${formatHours(service.assignedHours)} hs</p>
+                  </div>
+                  ${renderServiceHoursPill(service)}
+                </div>
+              `).join('')
+            : '<div class="empty-state">No hay diferencias entre las horas mensuales facturadas y las operativas.</div>'}
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function renderCriticalWorkers(summaries) {
@@ -1663,7 +1927,7 @@ function renderWorkersTable(summaries) {
         const lifecycleInfo = worker.lifecycleInfo || getWorkerLifecycleInfo(worker);
 
         return `
-        <tr>
+        <tr data-worker-row-id="${worker.id}">
           <td>
             <button
               type="button"
@@ -1691,8 +1955,12 @@ function renderWorkersTable(summaries) {
           </td>
           <td>${worker.targetHours == null ? 'SEGURO' : formatHours(worker.targetHours)}</td>
           <td>${formatHours(worker.totalHours)}</td>
+          <td>
+            <strong>${formatHours(worker.monthlyHours)} hs</strong>
+            <div class="muted">${escapeHtml(formatMonthLabel(getSelectedDashboardMonth()))}</div>
+          </td>
           <td>${worker.difference == null ? 'SEGURO' : formatHours(worker.difference)}</td>
-          <td>${renderStatusPill(worker.status)}</td>
+          <td>${renderDifferencePill(worker)}</td>
           <td>
             ${
               worker.services.length
@@ -1726,7 +1994,7 @@ function renderWorkerAvailability(summaries) {
           <header class="availability-header">
             <div>
               <h3>${escapeHtml(worker.name)}</h3>
-              <p>${TYPE_META[worker.worker_type].label} · ${escapeHtml(lifecycleInfo.tenureText)}</p>
+              <p>${TYPE_META[worker.worker_type].label} · ${escapeHtml(lifecycleInfo.tenureText)} · ${formatHours(worker.monthlyHours)} hs en ${escapeHtml(formatMonthLabel(getSelectedDashboardMonth()))}</p>
               <div class="worker-availability-meta">
                 ${renderProbationBadge(lifecycleInfo)}
                 <span class="muted worker-probation-detail">${escapeHtml(lifecycleInfo.probationDetailText)}</span>
@@ -1775,25 +2043,44 @@ function renderWorkerAvailability(summaries) {
 function renderServices() {
   const services = getFilteredServices();
   const paginationMeta = getPaginationMeta(services, 'services');
+  const monthLabel = formatMonthLabel(getSelectedDashboardMonth());
 
   el.servicesGrid.innerHTML = paginationMeta.items
     .map((service) => {
-      const assignments = getServiceAssignments(service.id);
-      const assignmentsByDay = groupAssignmentsByDay(assignments);
+      const hoursSummary = getServiceHoursSummary(service);
+      const assignmentsByDay = groupAssignmentsByDay(hoursSummary.assignments);
 
       return `
-        <article class="service-card">
+        <article class="service-card" data-service-id="${service.id}">
           <header class="service-card-header">
             <div>
               <h3>${escapeHtml(service.name)}</h3>
               <p>${escapeHtml(service.client_address || 'Sin dirección')}</p>
             </div>
             <div class="service-meta">
+              <span class="chip">${escapeHtml(monthLabel)}</span>
               <span class="chip">${escapeHtml(service.frequency_type || 'fixed')}</span>
               <span class="chip">${escapeHtml(service.zone || 'Sin zona')}</span>
               ${service.supervisor_name ? `<span class="chip">Sup. ${escapeHtml(service.supervisor_name)}</span>` : ''}
             </div>
           </header>
+
+          <div class="service-hours-strip">
+            <div class="service-hours-metric">
+              <span>Facturadas mes</span>
+              <strong>${hoursSummary.billedHours == null ? 'Pendiente' : `${formatHours(hoursSummary.billedHours)} hs`}</strong>
+            </div>
+            <div class="service-hours-metric">
+              <span>Operativas mes</span>
+              <strong>${formatHours(hoursSummary.assignedHours)} hs</strong>
+            </div>
+            <div class="service-hours-metric">
+              <span>Balance mensual</span>
+              <strong>${hoursSummary.difference == null ? '—' : `${hoursSummary.difference > 0 ? '+' : ''}${formatHours(hoursSummary.difference)} hs`}</strong>
+            </div>
+          </div>
+
+          <div>${renderServiceHoursPill(hoursSummary)}</div>
 
           <div class="inline-actions service-actions">
             <button class="btn btn-secondary btn-sm" type="button" data-edit-service="${service.id}">Editar</button>
@@ -1845,7 +2132,7 @@ function renderPlanner() {
     const items = getAssignmentsByDay(day.value).filter((assignment) => {
       if (!searchTerm) return true;
       const hay = state.derived.assignmentSearchById.get(assignment.id) || '';
-      return hay.includes(searchTerm);
+      return matchesSearchText(hay, searchTerm);
     });
 
     return `
@@ -1859,7 +2146,7 @@ function renderPlanner() {
                   const service = getServiceById(item.service_id);
 
                   return `
-                    <article class="planner-card" data-planner-worker-id="${item.worker_id}">
+                    <article class="planner-card" data-planner-worker-id="${item.worker_id}" data-assignment-id="${item.id}">
                       <h4>${escapeHtml(service?.name || 'Servicio')}</h4>
                       <p>${escapeHtml(worker?.name || 'Operario')}</p>
                       <small>${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}</small>
@@ -2067,7 +2354,7 @@ function getFilteredAbsencesForDate(dateKey) {
     .filter((absence) => {
       if (searchTerm) {
         const hay = state.derived.absenceSearchById.get(absence.id) || '';
-        if (!hay.includes(searchTerm)) return false;
+        if (!matchesSearchText(hay, searchTerm)) return false;
       }
 
       if (workerTypeFilter !== 'all') {
@@ -2099,7 +2386,7 @@ function getFilteredAbsencesForPeriod(period = getAbsenceActivePeriod()) {
 
       if (searchTerm) {
         const hay = state.derived.absenceSearchById.get(absence.id) || '';
-        if (!hay.includes(searchTerm)) return false;
+        if (!matchesSearchText(hay, searchTerm)) return false;
       }
 
       if (workerTypeFilter !== 'all') {
@@ -2147,7 +2434,7 @@ function getFilteredTardinessesForPeriod(period = getAbsenceActivePeriod()) {
 
       if (searchTerm) {
         const hay = state.derived.tardinessSearchById.get(tardiness.id) || '';
-        if (!hay.includes(searchTerm)) return false;
+        if (!matchesSearchText(hay, searchTerm)) return false;
       }
 
       if (workerTypeFilter !== 'all') {
@@ -2320,7 +2607,7 @@ function getAssignmentOccurrencesForPeriod(period = getAbsenceActivePeriod()) {
 
       if (searchTerm) {
         const hay = state.derived.assignmentSearchById.get(assignment.id) || '';
-        if (!hay.includes(searchTerm)) return;
+        if (!matchesSearchText(hay, searchTerm)) return;
       }
 
       occurrences.push({
@@ -3399,6 +3686,7 @@ function renderCurrentView() {
     default: {
       const summaries = getWorkerSummaries();
       renderKpis(summaries);
+      renderServiceHoursBalance();
       renderCriticalWorkers(summaries);
       renderServiceGaps();
       break;
@@ -3426,7 +3714,7 @@ function handleViewChange(event) {
 function handleFilterChange() {
   if (!ensureDataReady('filtrar')) return;
 
-  state.filters.search = el.globalSearch.value.trim().toLowerCase();
+  state.filters.search = normalizeSearchText(el.globalSearch.value);
   state.filters.workerType = el.workerTypeFilter.value;
   state.filters.status = el.statusFilter.value;
   resetPagination('workers');
@@ -3440,6 +3728,244 @@ function handleFilterChange() {
   resetPagination('tardinessTracker');
   resetPagination('tardinessEmployeeHistory');
   scheduleRenderCurrentView();
+}
+
+function buildGlobalSearchGroups(query) {
+  const term = normalizeSearchText(query);
+  if (term.length < 2) return [];
+
+  const rankAndLimit = (items, limit = 5) => items
+    .filter((item) => item.score >= 0)
+    .sort((a, b) => b.score - a.score || String(a.title || '').localeCompare(String(b.title || ''), 'es', { sensitivity: 'base' }))
+    .slice(0, limit);
+
+  const workers = rankAndLimit(state.workers.map((worker) => {
+    const assignments = getWorkerAssignments(worker.id);
+    const serviceNames = assignments
+      .map((assignment) => getServiceById(assignment.service_id)?.name || '')
+      .filter(Boolean);
+    const searchText = [
+      worker.name,
+      TYPE_META[worker.worker_type]?.label || '',
+      worker.notes || '',
+      ...serviceNames,
+    ].join(' ');
+
+    return {
+      kind: 'worker',
+      id: worker.id,
+      query: worker.name,
+      title: worker.name,
+      subtitle: `${TYPE_META[worker.worker_type]?.label || 'Operario'}${serviceNames.length ? ` · ${[...new Set(serviceNames)].slice(0, 2).join(' · ')}` : ' · Sin servicio'}`,
+      score: getSearchScore(worker.name, searchText, term),
+    };
+  }));
+
+  const services = rankAndLimit(state.services.map((service) => {
+    const summary = getServiceHoursSummary(service);
+    const searchText = state.derived.serviceSearchById.get(service.id) || '';
+    return {
+      kind: 'service',
+      id: service.id,
+      query: service.name,
+      title: service.name,
+      subtitle: `${service.zone || 'Sin zona'} · ${summary.billedHours == null ? 'Facturación mensual pendiente' : `${formatHours(summary.billedHours)} hs facturadas/mes`} · ${formatHours(summary.assignedHours)} hs operativas en ${formatMonthLabel(summary.monthKey)}`,
+      score: getSearchScore(service.name, searchText, term),
+    };
+  }));
+
+  const assignments = rankAndLimit(state.assignments.map((assignment) => {
+    const worker = getWorkerById(assignment.worker_id);
+    const service = getServiceById(assignment.service_id);
+    const day = DAYS.find((item) => item.value === assignment.day_of_week);
+    const searchText = state.derived.assignmentSearchById.get(assignment.id) || '';
+    const title = `${service?.name || 'Servicio'} · ${worker?.name || 'Operario'}`;
+    return {
+      kind: 'assignment',
+      id: assignment.id,
+      query: `${service?.name || ''} ${worker?.name || ''}`.trim(),
+      title,
+      subtitle: `${day?.fullLabel || ''} · ${assignment.start_time.slice(0, 5)}-${assignment.end_time.slice(0, 5)}`,
+      score: getSearchScore(title, searchText, term),
+    };
+  }, 4));
+
+  const materials = rankAndLimit(state.serviceMaterials.map((serviceMaterial) => {
+    const service = getServiceById(serviceMaterial.service_id);
+    const material = getMaterialById(serviceMaterial.material_id);
+    const title = `${material?.name || 'Material'} · ${service?.name || 'Servicio'}`;
+    const searchText = state.derived.serviceMaterialSearchById.get(serviceMaterial.id) || '';
+    return {
+      kind: 'serviceMaterial',
+      id: serviceMaterial.id,
+      query: `${material?.name || ''} ${service?.name || ''}`.trim(),
+      title,
+      subtitle: `Stock ${formatNumber(serviceMaterial.current_stock || 0)} ${material?.unit || ''}`,
+      score: getSearchScore(title, searchText, term),
+    };
+  }, 4));
+
+  const incidents = rankAndLimit([
+    ...state.absences.map((absence) => {
+      const worker = getWorkerById(absence.worker_id);
+      const service = getServiceById(absence.service_id);
+      const title = `Ausencia · ${worker?.name || 'Operario'}`;
+      return {
+        kind: 'absence',
+        id: absence.id,
+        query: worker?.name || service?.name || '',
+        title,
+        subtitle: `${formatDateLabel(absence.absence_date)} · ${service?.name || 'Servicio'}`,
+        score: getSearchScore(title, state.derived.absenceSearchById.get(absence.id) || '', term),
+      };
+    }),
+    ...state.tardinesses.map((tardiness) => {
+      const worker = getWorkerById(tardiness.worker_id);
+      const service = getServiceById(tardiness.service_id);
+      const title = `Tardanza · ${worker?.name || 'Operario'}`;
+      return {
+        kind: 'tardiness',
+        id: tardiness.id,
+        query: worker?.name || service?.name || '',
+        title,
+        subtitle: `${formatDateLabel(tardiness.tardiness_date)} · ${service?.name || 'Servicio'} · ${tardiness.minutes_late || 0} min`,
+        score: getSearchScore(title, state.derived.tardinessSearchById.get(tardiness.id) || '', term),
+      };
+    }),
+  ], 4);
+
+  return [
+    { label: 'Operarios', items: workers },
+    { label: 'Servicios', items: services },
+    { label: 'Planner', items: assignments },
+    { label: 'Materiales', items: materials },
+    { label: 'Ausencias y tardanzas', items: incidents },
+  ].filter((group) => group.items.length);
+}
+
+function closeGlobalSearchResults() {
+  if (!el.globalSearchResults) return;
+  el.globalSearchResults.classList.add('hidden');
+  el.globalSearchResults.innerHTML = '';
+}
+
+function renderGlobalSearchResults() {
+  if (!el.globalSearchResults || !el.globalSearch) return;
+
+  const rawQuery = el.globalSearch.value.trim();
+  if (!rawQuery) {
+    closeGlobalSearchResults();
+    return;
+  }
+
+  if (normalizeSearchText(rawQuery).length < 2) {
+    el.globalSearchResults.innerHTML = '<div class="global-search-empty">Escribí al menos 2 caracteres.</div>';
+    el.globalSearchResults.classList.remove('hidden');
+    return;
+  }
+
+  const groups = buildGlobalSearchGroups(rawQuery);
+  el.globalSearchResults.innerHTML = groups.length
+    ? groups.map((group) => `
+        <div class="global-search-group">
+          <div class="global-search-group-title">${escapeHtml(group.label)}</div>
+          ${group.items.map((item) => `
+            <button
+              type="button"
+              class="global-search-result"
+              data-global-result-kind="${escapeHtml(item.kind)}"
+              data-global-result-id="${escapeHtml(item.id)}"
+              data-global-result-query="${escapeHtml(item.query)}"
+            >
+              <strong>${escapeHtml(item.title)}</strong>
+              <span>${escapeHtml(item.subtitle)}</span>
+            </button>
+          `).join('')}
+        </div>
+      `).join('')
+    : '<div class="global-search-empty">No se encontraron coincidencias en la app.</div>';
+  el.globalSearchResults.classList.remove('hidden');
+}
+
+function focusGlobalSearchTarget(kind, id) {
+  const selectors = {
+    worker: `[data-worker-row-id="${id}"]`,
+    service: `[data-service-id="${id}"]`,
+    assignment: `[data-assignment-id="${id}"]`,
+  };
+  const selector = selectors[kind];
+  if (!selector) return;
+
+  window.setTimeout(() => {
+    const target = document.querySelector(selector);
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+    flashElement(target);
+  }, 120);
+}
+
+function openGlobalSearchResult(button) {
+  const kind = button.dataset.globalResultKind;
+  const id = button.dataset.globalResultId;
+  const query = button.dataset.globalResultQuery || '';
+
+  if (el.globalSearch) el.globalSearch.value = query;
+  state.filters.search = normalizeSearchText(query);
+
+  let targetView = 'dashboard';
+  if (kind === 'worker') {
+    targetView = 'workers';
+    state.filters.workerType = 'all';
+    state.filters.status = 'all';
+    if (el.workerTypeFilter) el.workerTypeFilter.value = 'all';
+    if (el.statusFilter) el.statusFilter.value = 'all';
+    resetPagination('workers');
+  } else if (kind === 'service') {
+    targetView = 'services';
+    resetPagination('services');
+  } else if (kind === 'assignment') {
+    targetView = 'planner';
+  } else if (kind === 'serviceMaterial' || kind === 'material') {
+    targetView = 'materials';
+  } else if (kind === 'absence' || kind === 'tardiness') {
+    targetView = 'absences';
+    const record = kind === 'absence' ? getAbsenceById(id) : getTardinessById(id);
+    const dateKey = kind === 'absence' ? record?.absence_date : record?.tardiness_date;
+    const workerId = record?.worker_id;
+    if (el.absenceFilterMode) el.absenceFilterMode.value = 'day';
+    if (el.absenceDateFilter && dateKey) el.absenceDateFilter.value = dateKey;
+    if (el.absenceWorkerHistoryFilter && workerId) el.absenceWorkerHistoryFilter.value = workerId;
+    syncAbsencePeriodControls();
+  }
+
+  closeGlobalSearchResults();
+  goToView(targetView);
+  focusGlobalSearchTarget(kind, id);
+}
+
+function handleGlobalSearchInput() {
+  renderGlobalSearchResults();
+  debouncedHandleFilterInput();
+}
+
+function handleGlobalSearchKeydown(event) {
+  if (event.key === 'Escape') {
+    closeGlobalSearchResults();
+    return;
+  }
+
+  if (event.key === 'Enter') {
+    const firstResult = el.globalSearchResults?.querySelector('[data-global-result-kind]');
+    if (!firstResult) return;
+    event.preventDefault();
+    openGlobalSearchResult(firstResult);
+  }
+}
+
+function handleGlobalSearchResultClick(event) {
+  const button = event.target.closest('[data-global-result-kind]');
+  if (!button) return;
+  openGlobalSearchResult(button);
 }
 
 async function loadAllData() {
@@ -3786,6 +4312,7 @@ function openServiceDialog(serviceId = null) {
     $('serviceAddress').value = service.client_address || '';
     $('serviceZone').value = service.zone || '';
     $('serviceSupervisor').value = service.supervisor_name || '';
+    $('serviceBilledHours').value = service.billed_monthly_hours ?? '';
     $('serviceFrequency').value = service.frequency_type || 'fixed';
     $('serviceNotes').value = service.notes || '';
   }
@@ -4701,6 +5228,7 @@ async function saveService(event) {
   const serviceAddress = $('serviceAddress');
   const serviceZone = $('serviceZone');
   const serviceSupervisor = $('serviceSupervisor');
+  const serviceBilledHours = $('serviceBilledHours');
   const serviceFrequency = $('serviceFrequency');
   const serviceNotes = $('serviceNotes');
 
@@ -4718,11 +5246,19 @@ async function saveService(event) {
   try {
     await ensureWriteSession();
 
+    const billedHoursRaw = serviceBilledHours?.value.trim() || '';
+    const billedHours = billedHoursRaw === '' ? null : Number(billedHoursRaw);
+    if (billedHours != null && (!Number.isFinite(billedHours) || billedHours < 0)) {
+      alert('Las horas mensuales facturadas deben ser un número igual o mayor a 0.');
+      return;
+    }
+
     const payload = {
       name: serviceName.value.trim(),
       client_address: serviceAddress ? serviceAddress.value.trim() || null : null,
       zone: serviceZone ? serviceZone.value.trim() || null : null,
       supervisor_name: serviceSupervisor ? serviceSupervisor.value.trim() || null : null,
+      billed_monthly_hours: billedHours,
       frequency_type: serviceFrequency ? serviceFrequency.value : 'fixed',
       notes: serviceNotes ? serviceNotes.value.trim() || null : null,
     };
@@ -4741,7 +5277,10 @@ async function saveService(event) {
 
     if (error) {
       console.error(error);
-      alert(error.message);
+      const missingBilledHoursColumn = String(error.message || '').includes('billed_monthly_hours');
+      alert(missingBilledHoursColumn
+        ? 'Falta ejecutar la migración de base de datos incluida en sql/migration_add_billed_monthly_hours.sql. La migración agrega una columna nueva y no borra ni modifica los datos existentes.'
+        : error.message);
       return;
     }
 
@@ -5235,10 +5774,11 @@ function getCurrentViewElement() {
 
 function buildDashboardExportData() {
   const summaries = getWorkerSummaries();
-  const totalAssignedHours = summaries.reduce((sum, worker) => sum + worker.totalHours, 0);
   const availableWorkers = summaries.filter((worker) => worker.status === 'available').length;
   const overloadedWorkers = summaries.filter((worker) => worker.status === 'over').length;
   const uncoveredServices = getUncoveredServices();
+  const hoursBalance = getOverallServiceHoursBalance();
+  const monthLabel = formatMonthLabel(hoursBalance.monthKey);
   const criticalWorkers = summaries
     .filter((worker) => worker.status === 'available' || worker.status === 'over')
     .sort((a, b) => Math.abs(b.difference || 0) - Math.abs(a.difference || 0));
@@ -5249,11 +5789,31 @@ function buildDashboardExportData() {
         name: 'KPIs',
         rows: [
           ['Métrica', 'Valor'],
+          ['Mes de análisis', monthLabel],
           ['Operarios visibles', summaries.length],
-          ['Horas asignadas', totalAssignedHours],
-          ['Operarios con horas libres', availableWorkers],
-          ['Operarios excedidos', overloadedWorkers],
+          ['Horas mensuales facturadas cargadas', hoursBalance.totalBilledHours],
+          ['Horas operativas mensuales en servicios cargados', hoursBalance.assignedHoursOnConfiguredServices],
+          ['Horas operativas mensuales totales', hoursBalance.totalAssignedHours],
+          ['Balance mensual: operativas - facturadas', hoursBalance.difference],
+          ['Servicios con horas mensuales facturadas pendientes', hoursBalance.pending.length],
+          ['Operarios a los que les faltan horas', availableWorkers],
+          ['Operarios por encima del objetivo', overloadedWorkers],
           ['Servicios sin cobertura', uncoveredServices.length],
+        ],
+      },
+      {
+        name: 'Balance servicios',
+        rows: [
+          ['Mes de análisis', 'Servicio', 'Zona', 'Horas facturadas mensuales', 'Horas operativas mensuales', 'Diferencia', 'Estado'],
+          ...hoursBalance.summaries.map((service) => [
+            monthLabel,
+            service.name,
+            service.zone || '',
+            service.billedHours == null ? 'Pendiente' : service.billedHours,
+            service.assignedHours,
+            service.difference == null ? '' : service.difference,
+            service.status,
+          ]),
         ],
       },
       {
@@ -5295,13 +5855,15 @@ function buildWorkersExportData() {
       {
         name: 'Operarios',
         rows: [
-          ['Operario', 'Tipo', 'Fecha de ingreso', 'Horas objetivo', 'Horas asignadas', 'Diferencia', 'Estado', 'Servicios'],
+          ['Operario', 'Tipo', 'Fecha de ingreso', 'Mes de análisis', 'Horas objetivo semanales', 'Horas asignadas semanales', 'Horas operativas mensuales', 'Diferencia semanal', 'Estado', 'Servicios'],
           ...summaries.map((worker) => [
             worker.name,
             TYPE_META[worker.worker_type].label,
             worker.hire_date ? formatDateLabel(worker.hire_date) : '',
+            formatMonthLabel(getSelectedDashboardMonth()),
             worker.targetHours == null ? 'SEGURO' : worker.targetHours,
             worker.totalHours,
+            worker.monthlyHours,
             worker.difference == null ? 'SEGURO' : worker.difference,
             worker.status,
             worker.services.map((service) => service.name).join(' | ') || 'Sin servicio',
@@ -5340,23 +5902,30 @@ function buildWorkersExportData() {
 
 function buildServicesExportData() {
   const services = getFilteredServices();
+  const monthKey = getSelectedDashboardMonth();
+  const monthLabel = formatMonthLabel(monthKey);
 
   return {
     sheets: [
       {
         name: 'Servicios',
         rows: [
-          ['Servicio', 'Dirección', 'Zona', 'Supervisor', 'Frecuencia', 'Notas', 'Cobertura activa'],
+          ['Mes de análisis', 'Servicio', 'Dirección', 'Zona', 'Supervisor', 'Frecuencia', 'Horas facturadas mensuales', 'Horas operativas mensuales', 'Diferencia', 'Estado horas', 'Notas', 'Cobertura activa'],
           ...services.map((service) => {
-            const assignments = getServiceAssignments(service.id);
+            const summary = getServiceHoursSummary(service, monthKey);
             return [
+              monthLabel,
               service.name,
               service.client_address || '',
               service.zone || '',
               service.supervisor_name || '',
               service.frequency_type || '',
+              summary.billedHours == null ? 'Pendiente' : summary.billedHours,
+              summary.assignedHours,
+              summary.difference == null ? '' : summary.difference,
+              summary.status,
               service.notes || '',
-              assignments.length,
+              summary.assignments.length,
             ];
           }),
         ],
@@ -5398,7 +5967,7 @@ function buildPlannerExportData() {
   const filteredAssignments = state.assignments.filter((assignment) => {
     if (!searchTerm) return true;
     const hay = state.derived.assignmentSearchById.get(assignment.id) || '';
-    return hay.includes(searchTerm);
+    return matchesSearchText(hay, searchTerm);
   });
 
   return {
@@ -5881,9 +6450,21 @@ function bindEvents() {
   el.logoutBtn?.addEventListener('click', handleLogout);
   el.refreshBtn?.addEventListener('click', () => loadAllDataWithRetry(4, 500, { hardLock: false, silent: false }));
   el.navTabs?.addEventListener('click', handleViewChange);
-  el.globalSearch?.addEventListener('input', debouncedHandleFilterInput);
+  el.globalSearch?.addEventListener('input', handleGlobalSearchInput);
+  el.globalSearch?.addEventListener('focus', renderGlobalSearchResults);
+  el.globalSearch?.addEventListener('keydown', handleGlobalSearchKeydown);
+  el.globalSearchResults?.addEventListener('click', handleGlobalSearchResultClick);
   el.workerTypeFilter?.addEventListener('change', handleFilterChange);
   el.statusFilter?.addEventListener('change', handleFilterChange);
+  el.dashboardMonthFilter?.addEventListener('change', () => {
+    state.dashboardMonth = el.dashboardMonthFilter.value || getCurrentMonthKey();
+    try {
+      window.localStorage.setItem('staffPlannerDashboardMonth', state.dashboardMonth);
+    } catch (error) {
+      // La app sigue funcionando aunque el navegador bloquee el almacenamiento local.
+    }
+    scheduleRenderCurrentView();
+  });
   el.printViewBtn?.addEventListener('click', printCurrentView);
   el.exportExcelBtn?.addEventListener('click', exportCurrentViewToExcel);
   el.exportPdfBtn?.addEventListener('click', exportCurrentViewToPdf);
@@ -5999,6 +6580,11 @@ function bindEvents() {
       if (dialog) dialog.close();
     });
   });
+
+  document.addEventListener('click', (event) => {
+    if (event.target.closest('.global-search-shell')) return;
+    closeGlobalSearchResults();
+  });
 }
 
 function boot() {
@@ -6026,9 +6612,12 @@ function boot() {
       exportPdfBtn: $('exportPdfBtn'),
       navTabs: $('navTabs'),
       globalSearch: $('globalSearch'),
+      globalSearchResults: $('globalSearchResults'),
       workerTypeFilter: $('workerTypeFilter'),
       statusFilter: $('statusFilter'),
+      dashboardMonthFilter: $('dashboardMonthFilter'),
       kpiCards: $('kpiCards'),
+      serviceHoursBalance: $('serviceHoursBalance'),
       criticalWorkers: $('criticalWorkers'),
       serviceGaps: $('serviceGaps'),
       workersTableBody: $('workersTableBody'),
@@ -6111,6 +6700,7 @@ function boot() {
       throw new Error('No se encontró #loginForm');
     }
 
+    initializeDashboardMonth();
     setCurrentView('dashboard');
     setAuthMode('login');
     setDataReady(false);

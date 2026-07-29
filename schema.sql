@@ -32,6 +32,8 @@ create table if not exists public.services (
   client_address text,
   zone text,
   supervisor_name text,
+  billed_weekly_hours numeric(8,2),
+  billed_monthly_hours numeric(10,2),
   frequency_type text not null default 'fixed' check (frequency_type in ('fixed', 'variable', 'replacement')),
   notes text,
   created_at timestamptz not null default now(),
@@ -39,6 +41,31 @@ create table if not exists public.services (
 );
 
 alter table public.services add column if not exists supervisor_name text;
+alter table public.services add column if not exists billed_weekly_hours numeric(8,2);
+alter table public.services add column if not exists billed_monthly_hours numeric(10,2);
+
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'services_billed_weekly_hours_nonnegative'
+      AND conrelid = 'public.services'::regclass
+  ) THEN
+    ALTER TABLE public.services
+      ADD CONSTRAINT services_billed_weekly_hours_nonnegative
+      CHECK (billed_weekly_hours IS NULL OR billed_weekly_hours >= 0);
+  END IF;
+END $$;
+
+
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'services_billed_monthly_hours_nonnegative'
+      AND conrelid = 'public.services'::regclass
+  ) THEN
+    ALTER TABLE public.services
+      ADD CONSTRAINT services_billed_monthly_hours_nonnegative
+      CHECK (billed_monthly_hours IS NULL OR billed_monthly_hours >= 0);
+  END IF;
+END $$;
 
 -- Asignaciones
 create table if not exists public.assignments (
