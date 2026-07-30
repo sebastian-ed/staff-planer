@@ -29,6 +29,7 @@ const VIEW_IDS = {
   planner: 'plannerView',
   map: 'mapView',
   optimizer: 'optimizerView',
+  proximity: 'proximityView',
   absences: 'absencesView',
   materials: 'materialsView',
 };
@@ -90,6 +91,7 @@ const state = {
   currentView: 'dashboard',
   dashboardMonth: '',
   optimizerResults: null,
+  proximityResults: null,
   mapSelection: null,
   mapHasFitted: false,
   authMode: 'login',
@@ -1817,6 +1819,12 @@ function populateSelects() {
     if ([...el.optimizerExistingService.options].some((option) => option.value === previousValue)) {
       el.optimizerExistingService.value = previousValue;
     }
+  }
+
+  if (el.proximityWorkerFilter) {
+    const previousValue = el.proximityWorkerFilter.value || 'all';
+    el.proximityWorkerFilter.innerHTML = `<option value="all">Todos los operarios</option>${workerOptions}`;
+    el.proximityWorkerFilter.value = state.workers.some((worker) => worker.id === previousValue) ? previousValue : 'all';
   }
 
   const assignmentWorker = $('assignmentWorker');
@@ -4455,6 +4463,525 @@ function prepareOptimizerAssignment(workerId) {
 }
 
 
+
+function getUniqueWorkerServiceRelations() {
+  const seen = new Set();
+  return state.assignments.reduce((relations, assignment) => {
+    const key = `${assignment.worker_id}:${assignment.service_id}`;
+    if (seen.has(key)) return relations;
+    seen.add(key);
+    const worker = getWorkerById(assignment.worker_id);
+    const service = getServiceById(assignment.service_id);
+    if (!worker || !service) return relations;
+    relations.push({ worker, service, workerId: worker.id, serviceId: service.id });
+    return relations;
+  }, []);
+}
+
+function getUniqueAssignedWorkerIds(serviceId) {
+  return [...new Set(getServiceAssignments(serviceId).map((assignment) => assignment.worker_id).filter(Boolean))];
+}
+
+function getUniqueAssignedServiceIds(workerId) {
+  return [...new Set(getWorkerAssignments(workerId).map((assignment) => assignment.service_id).filter(Boolean))];
+}
+
+function formatProximityDistance(distanceKm) {
+  return distanceKm == null ? 'Sin coordenadas' : `${formatNumber(distanceKm)} km`;
+}
+
+function getProximitySettings() {
+  return {
+    workerId: el.proximityWorkerFilter?.value || 'all',
+    minimumSaving: Math.max(0, Number(el.proximityMinimumSaving?.value || 2)),
+    bothImprove: Boolean(el.proximityBothImprove?.checked),
+  };
+}
+
+function buildWorkerProximityAnalysis(worker, servicesWithCoordinates) {
+  const workerCoordinates = getEntityCoordinates(worker);
+  if (!workerCoordinates) {
+    return {
+      worker,
+      hasCoordinates: false,
+      currentServices: [],
+      nearestServices: [],
+      averageCurrentDistance: null,
+      farthestCurrentDistance: null,
+      bestAlternativeSaving: null,
+    };
+  }
+
+  const currentServiceIds = new Set(getUniqueAssignedServiceIds(worker.id));
+  const serviceDistances = servicesWithCoordinates
+    .map((service) => {
+      const distanceKm = haversineDistanceKm(workerCoordinates, getEntityCoordinates(service));
+      const assignedWorkerIds = getUniqueAssignedWorkerIds(service.id);
+      return {
+        service,
+        distanceKm,
+        isCurrent: currentServiceIds.has(service.id),
+        assignedWorkerIds,
+        assignedWorkersCount: assignedWorkerIds.length,
+      };
+    })
+    .filter((item) => item.distanceKm != null)
+    .sort((a, b) => a.distanceKm - b.distanceKm || String(a.service.name || '').localeCompare(String(b.service.name || ''), 'es'));
+
+  const currentServices = serviceDistances.filter((item) => item.isCurrent);
+  const nearestServices = serviceDistances.slice(0, 12);
+  const averageCurrentDistance = currentServices.length
+    ? Number((currentServices.reduce((sum, item) => sum + item.distanceKm, 0) / currentServices.length).toFixed(2))
+    : null;
+  const farthestCurrent = currentServices.reduce((max, item) => (!max || item.distanceKm > max.distanceKm ? item : max), null);
+  const nearestAlternative = serviceDistances.find((item) => !item.isCurrent) || null;
+  const bestAlternativeSaving = farthestCurrent && nearestAlternative
+    ? Number((farthestCurrent.distanceKm - nearestAlternative.distanceKm).toFixed(2))
+    : null;
+
+  return {
+    worker,
+    hasCoordinates: true,
+    currentServices,
+    nearestServices,
+    allServiceDistances: serviceDistances,
+    averageCurrentDistance,
+    farthestCurrentDistance: farthestCurrent?.distanceKm ?? null,
+    bestAlternativeSaving,
+    farthestCurrent,
+    nearestAlternative,
+  };
+}
+
+function buildProximityRelocations(workerAnalyses, settings) {
+  const suggestions = [];
+
+  workerAnalyses.forEach((analysis) => {
+    if (!analysis.hasCoordinates || !analysis.currentServices.length) return;
+    const currentIds = new Set(analysis.currentServices.map((item) => item.service.id));
+
+    analysis.currentServices.forEach((current) => {
+      const alternative = analysis.allServiceDistances.find((candidate) => (
+        !currentIds.has(candidate.service.id)
+        && current.distanceKm - candidate.distanceKm >= settings.minimumSaving
+      ));
+      if (!alternative) return;
+
+      suggestions.push({
+        worker: analysis.worker,
+        currentService: current.service,
+        suggestedService: alternative.service,
+        currentDistance: current.distanceKm,
+        suggestedDistance: alternative.distanceKm,
+        savingKm: Number((current.distanceKm - alternative.distanceKm).toFixed(2)),
+        suggestedAssignedWorkerIds: alternative.assignedWorkerIds,
+        suggestedAssignedWorkersCount: alternative.assignedWorkersCount,
+        directOpportunity: alternative.assignedWorkersCount === 0,
+      });
+    });
+  });
+
+  const seen = new Set();
+  return suggestions
+    .sort((a, b) => b.savingKm - a.savingKm)
+    .filter((item) => {
+      const key = `${item.worker.id}:${item.suggestedService.id}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 50);
+}
+
+function buildProximitySwaps(settings) {
+  const relations = getUniqueWorkerServiceRelations()
+    .filter((relation) => getEntityCoordinates(relation.worker) && getEntityCoordinates(relation.service))
+    .map((relation) => ({
+      ...relation,
+      distanceKm: haversineDistanceKm(getEntityCoordinates(relation.worker), getEntityCoordinates(relation.service)),
+    }))
+    .filter((relation) => relation.distanceKm != null);
+
+  const currentServiceIdsByWorker = new Map();
+  state.workers.forEach((worker) => currentServiceIdsByWorker.set(worker.id, new Set(getUniqueAssignedServiceIds(worker.id))));
+  const suggestions = [];
+  const seen = new Set();
+
+  for (let indexA = 0; indexA < relations.length; indexA += 1) {
+    const first = relations[indexA];
+    for (let indexB = indexA + 1; indexB < relations.length; indexB += 1) {
+      const second = relations[indexB];
+      if (first.workerId === second.workerId || first.serviceId === second.serviceId) continue;
+      if (currentServiceIdsByWorker.get(first.workerId)?.has(second.serviceId)) continue;
+      if (currentServiceIdsByWorker.get(second.workerId)?.has(first.serviceId)) continue;
+
+      const pairKey = [first.workerId, second.workerId].sort().join(':') + '|' + [first.serviceId, second.serviceId].sort().join(':');
+      if (seen.has(pairKey)) continue;
+
+      const firstNewDistance = haversineDistanceKm(getEntityCoordinates(first.worker), getEntityCoordinates(second.service));
+      const secondNewDistance = haversineDistanceKm(getEntityCoordinates(second.worker), getEntityCoordinates(first.service));
+      if (firstNewDistance == null || secondNewDistance == null) continue;
+
+      const firstSaving = Number((first.distanceKm - firstNewDistance).toFixed(2));
+      const secondSaving = Number((second.distanceKm - secondNewDistance).toFixed(2));
+      const totalSaving = Number((firstSaving + secondSaving).toFixed(2));
+      if (totalSaving < settings.minimumSaving) continue;
+      if (settings.bothImprove && (firstSaving <= 0 || secondSaving <= 0)) continue;
+      if (!settings.bothImprove && firstSaving <= -settings.minimumSaving) continue;
+      if (!settings.bothImprove && secondSaving <= -settings.minimumSaving) continue;
+
+      seen.add(pairKey);
+      suggestions.push({
+        first: {
+          worker: first.worker,
+          currentService: first.service,
+          currentDistance: first.distanceKm,
+          suggestedService: second.service,
+          suggestedDistance: firstNewDistance,
+          savingKm: firstSaving,
+        },
+        second: {
+          worker: second.worker,
+          currentService: second.service,
+          currentDistance: second.distanceKm,
+          suggestedService: first.service,
+          suggestedDistance: secondNewDistance,
+          savingKm: secondSaving,
+        },
+        totalSaving,
+      });
+    }
+  }
+
+  return suggestions.sort((a, b) => b.totalSaving - a.totalSaving).slice(0, 40);
+}
+
+function analyzeProximityOptimizer() {
+  const settings = getProximitySettings();
+  const servicesWithCoordinates = state.services.filter((service) => getEntityCoordinates(service));
+  const workersWithCoordinates = state.workers.filter((worker) => getEntityCoordinates(worker));
+  const workerAnalyses = state.workers.map((worker) => buildWorkerProximityAnalysis(worker, servicesWithCoordinates));
+  const relocationSuggestions = buildProximityRelocations(workerAnalyses, settings);
+  const swapSuggestions = buildProximitySwaps(settings);
+  const currentRelations = getUniqueWorkerServiceRelations();
+  const measurableRelations = currentRelations
+    .map((relation) => {
+      const workerCoordinates = getEntityCoordinates(relation.worker);
+      const serviceCoordinates = getEntityCoordinates(relation.service);
+      return workerCoordinates && serviceCoordinates
+        ? haversineDistanceKm(workerCoordinates, serviceCoordinates)
+        : null;
+    })
+    .filter((distance) => distance != null);
+  const averageCurrentDistance = measurableRelations.length
+    ? Number((measurableRelations.reduce((sum, distance) => sum + distance, 0) / measurableRelations.length).toFixed(2))
+    : null;
+  const workersWithPotential = new Set(relocationSuggestions.map((item) => item.worker.id)).size;
+
+  return {
+    settings,
+    workerAnalyses,
+    relocationSuggestions,
+    swapSuggestions,
+    stats: {
+      mappedWorkers: workersWithCoordinates.length,
+      mappedServices: servicesWithCoordinates.length,
+      measurableRelations: measurableRelations.length,
+      totalRelations: currentRelations.length,
+      averageCurrentDistance,
+      workersWithPotential,
+    },
+  };
+}
+
+function renderProximityKpis(results) {
+  if (!el.proximityKpiCards) return;
+  const stats = results.stats;
+  el.proximityKpiCards.innerHTML = `
+    <article class="card"><span class="kpi-label">Operarios ubicados</span><strong class="kpi-value">${stats.mappedWorkers}</strong><span class="kpi-foot">de ${state.workers.length}</span></article>
+    <article class="card"><span class="kpi-label">Distancia actual promedio</span><strong class="kpi-value">${stats.averageCurrentDistance == null ? '—' : formatProximityDistance(stats.averageCurrentDistance)}</strong><span class="kpi-foot">Sobre ${stats.measurableRelations} vínculos medibles</span></article>
+    <article class="card"><span class="kpi-label">Operarios con oportunidad</span><strong class="kpi-value">${stats.workersWithPotential}</strong><span class="kpi-foot">Ahorro mínimo: ${formatNumber(results.settings.minimumSaving)} km</span></article>
+    <article class="card"><span class="kpi-label">Intercambios sugeridos</span><strong class="kpi-value">${results.swapSuggestions.length}</strong><span class="kpi-foot">Antes de validar horarios</span></article>
+  `;
+}
+
+function renderProximitySummary(results) {
+  if (!el.proximitySummary) return;
+  const bestRelocation = results.relocationSuggestions[0];
+  const bestSwap = results.swapSuggestions[0];
+
+  if (!bestRelocation && !bestSwap) {
+    el.proximitySummary.innerHTML = `
+      <div class="optimizer-no-candidate">
+        <h3>No se detectaron mejoras por encima del umbral actual</h3>
+        <p>Esto puede indicar una distribución razonable o, más probablemente, falta de coordenadas. Revisá la calidad de datos antes de concluir que no hay desvíos.</p>
+      </div>
+    `;
+    return;
+  }
+
+  el.proximitySummary.innerHTML = `
+    <div class="proximity-summary-grid">
+      <div>
+        <span class="eyebrow">Lectura ejecutiva</span>
+        <h3>${results.stats.workersWithPotential} operario${results.stats.workersWithPotential === 1 ? '' : 's'} con alternativas más cercanas</h3>
+        <p class="muted">La app encontró ${results.relocationSuggestions.length} reubicaciones posibles y ${results.swapSuggestions.length} intercambios. Son hipótesis territoriales: todavía falta validar horarios, horas contratadas y continuidad del servicio.</p>
+      </div>
+      <div class="proximity-highlight-list">
+        ${bestRelocation ? `<div><span>Mayor ahorro individual</span><strong>${escapeHtml(bestRelocation.worker.name)}</strong><small>${formatProximityDistance(bestRelocation.currentDistance)} → ${formatProximityDistance(bestRelocation.suggestedDistance)} · ahorra ${formatNumber(bestRelocation.savingKm)} km</small></div>` : ''}
+        ${bestSwap ? `<div><span>Mejor intercambio</span><strong>${escapeHtml(bestSwap.first.worker.name)} ↔ ${escapeHtml(bestSwap.second.worker.name)}</strong><small>Ahorro conjunto estimado: ${formatNumber(bestSwap.totalSaving)} km directos</small></div>` : ''}
+      </div>
+    </div>
+    <p class="optimizer-decision-note">No conviene ejecutar un cambio solo por kilómetros. Esta vista sirve para detectar candidatos y luego contrastarlos con el Optimizador de asignaciones, que sí revisa días, horarios y carga.</p>
+  `;
+}
+
+function renderProximityWorkerCard(analysis) {
+  if (!analysis.hasCoordinates) {
+    return `
+      <article class="proximity-worker-card proximity-worker-card-warning">
+        <div><strong>${escapeHtml(analysis.worker.name)}</strong><span>Sin coordenadas de domicilio</span></div>
+        <button class="btn btn-secondary btn-sm" type="button" data-edit-worker="${analysis.worker.id}">Completar ubicación</button>
+      </article>
+    `;
+  }
+
+  const alternative = analysis.nearestAlternative;
+  return `
+    <article class="proximity-worker-card">
+      <div class="proximity-worker-card-head">
+        <div>
+          <strong>${escapeHtml(analysis.worker.name)}</strong>
+          <span>${analysis.currentServices.length ? `${analysis.currentServices.length} servicio${analysis.currentServices.length === 1 ? '' : 's'} actual${analysis.currentServices.length === 1 ? '' : 'es'}` : 'Sin servicio asignado'}</span>
+        </div>
+        <button class="btn btn-secondary btn-sm" type="button" data-proximity-show-worker="${analysis.worker.id}">Ver detalle</button>
+      </div>
+      <div class="proximity-mini-metrics">
+        <div><span>Promedio actual</span><strong>${analysis.averageCurrentDistance == null ? '—' : formatProximityDistance(analysis.averageCurrentDistance)}</strong></div>
+        <div><span>Servicio alternativo más cercano</span><strong>${alternative ? escapeHtml(alternative.service.name) : '—'}</strong><small>${alternative ? formatProximityDistance(alternative.distanceKm) : 'Sin alternativa medible'}</small></div>
+        <div><span>Mejora potencial</span><strong>${analysis.bestAlternativeSaving != null && analysis.bestAlternativeSaving > 0 ? `${formatNumber(analysis.bestAlternativeSaving)} km` : 'Sin mejora clara'}</strong></div>
+      </div>
+    </article>
+  `;
+}
+
+function renderProximityWorkerDetail(analysis) {
+  const currentRows = analysis.currentServices.length
+    ? analysis.currentServices
+      .sort((a, b) => b.distanceKm - a.distanceKm)
+      .map((item) => `
+        <div class="proximity-distance-row">
+          <div><strong>${escapeHtml(item.service.name)}</strong><span>${escapeHtml(item.service.zone || item.service.client_address || 'Sin zona')}</span></div>
+          <div class="proximity-distance-value">${formatProximityDistance(item.distanceKm)}</div>
+          <button class="btn btn-ghost btn-sm" type="button" data-proximity-map-service="${item.service.id}">Mapa</button>
+        </div>
+      `).join('')
+    : '<div class="empty-state">Este operario no tiene servicios asignados actualmente.</div>';
+
+  const nearestRows = analysis.nearestServices.length
+    ? analysis.nearestServices.map((item, index) => {
+      const status = item.isCurrent
+        ? 'Asignación actual'
+        : item.assignedWorkersCount === 0
+          ? 'Sin operarios asignados'
+          : `Asignado a ${item.assignedWorkersCount} operario${item.assignedWorkersCount === 1 ? '' : 's'}`;
+      return `
+        <div class="proximity-distance-row ${item.isCurrent ? 'is-current' : ''}">
+          <div class="proximity-rank">${index + 1}</div>
+          <div><strong>${escapeHtml(item.service.name)}</strong><span>${escapeHtml(status)} · ${escapeHtml(item.service.zone || 'Sin zona')}</span></div>
+          <div class="proximity-distance-value">${formatProximityDistance(item.distanceKm)}</div>
+          <button class="btn btn-ghost btn-sm" type="button" data-proximity-map-service="${item.service.id}">Mapa</button>
+        </div>
+      `;
+    }).join('')
+    : '<div class="empty-state">No hay servicios con coordenadas para comparar.</div>';
+
+  return `
+    <article class="proximity-detail-card">
+      <div class="section-head with-action">
+        <div>
+          <h4>${escapeHtml(analysis.worker.name)}</h4>
+          <span class="muted">${escapeHtml(analysis.worker.home_zone || analysis.worker.home_address || 'Domicilio sin descripción')}</span>
+        </div>
+        <button class="btn btn-secondary btn-sm" type="button" data-proximity-map-worker="${analysis.worker.id}">Ver domicilio en mapa</button>
+      </div>
+      <div class="proximity-detail-columns">
+        <section>
+          <h5>Servicios actuales</h5>
+          <div class="proximity-distance-list">${currentRows}</div>
+        </section>
+        <section>
+          <h5>Servicios más cercanos al domicilio</h5>
+          <div class="proximity-distance-list">${nearestRows}</div>
+        </section>
+      </div>
+    </article>
+  `;
+}
+
+function renderProximityWorkerAnalysis(results) {
+  if (!el.proximityWorkerAnalysis) return;
+  const selectedWorkerId = results.settings.workerId;
+  if (selectedWorkerId !== 'all') {
+    const analysis = results.workerAnalyses.find((item) => item.worker.id === selectedWorkerId);
+    el.proximityWorkerAnalysis.innerHTML = analysis
+      ? renderProximityWorkerDetail(analysis)
+      : '<div class="empty-state">No se encontró el operario seleccionado.</div>';
+    return;
+  }
+
+  const ranked = [...results.workerAnalyses]
+    .sort((a, b) => (b.bestAlternativeSaving ?? -Infinity) - (a.bestAlternativeSaving ?? -Infinity))
+    .slice(0, 16);
+  el.proximityWorkerAnalysis.innerHTML = ranked.length
+    ? ranked.map(renderProximityWorkerCard).join('')
+    : '<div class="empty-state">No hay operarios para analizar.</div>';
+}
+
+function renderProximityRelocations(results) {
+  if (!el.proximityRelocations) return;
+  const filtered = results.settings.workerId === 'all'
+    ? results.relocationSuggestions
+    : results.relocationSuggestions.filter((item) => item.worker.id === results.settings.workerId);
+
+  el.proximityRelocations.innerHTML = filtered.length
+    ? filtered.slice(0, 20).map((item) => `
+      <article class="proximity-suggestion-card">
+        <div class="proximity-suggestion-head">
+          <div>
+            <strong>${escapeHtml(item.worker.name)}</strong>
+            <span>${item.directOpportunity ? 'Oportunidad directa: servicio sin operarios' : 'Requiere reorganización o intercambio'}</span>
+          </div>
+          <div class="proximity-saving-badge">-${formatNumber(item.savingKm)} km</div>
+        </div>
+        <div class="proximity-route-change">
+          <div><span>Actual</span><strong>${escapeHtml(item.currentService.name)}</strong><small>${formatProximityDistance(item.currentDistance)}</small></div>
+          <div class="proximity-arrow">→</div>
+          <div><span>Alternativa</span><strong>${escapeHtml(item.suggestedService.name)}</strong><small>${formatProximityDistance(item.suggestedDistance)}</small></div>
+        </div>
+        <div class="inline-actions">
+          <button class="btn btn-secondary btn-sm" type="button" data-proximity-show-worker="${item.worker.id}">Analizar operario</button>
+          <button class="btn btn-ghost btn-sm" type="button" data-proximity-map-service="${item.suggestedService.id}">Ver servicio</button>
+        </div>
+      </article>
+    `).join('')
+    : '<div class="empty-state">No se detectaron reubicaciones por encima del ahorro mínimo seleccionado.</div>';
+}
+
+function renderProximitySwaps(results) {
+  if (!el.proximitySwaps) return;
+  const filtered = results.settings.workerId === 'all'
+    ? results.swapSuggestions
+    : results.swapSuggestions.filter((item) => item.first.worker.id === results.settings.workerId || item.second.worker.id === results.settings.workerId);
+
+  el.proximitySwaps.innerHTML = filtered.length
+    ? filtered.slice(0, 16).map((item, index) => `
+      <article class="proximity-swap-card">
+        <header>
+          <div><span>Intercambio ${index + 1}</span><strong>Ahorro conjunto: ${formatNumber(item.totalSaving)} km directos</strong></div>
+          <span class="status-pill status-hours-over">Mejora territorial</span>
+        </header>
+        <div class="proximity-swap-people">
+          <div>
+            <strong>${escapeHtml(item.first.worker.name)}</strong>
+            <span>${escapeHtml(item.first.currentService.name)} → ${escapeHtml(item.first.suggestedService.name)}</span>
+            <small>${formatProximityDistance(item.first.currentDistance)} → ${formatProximityDistance(item.first.suggestedDistance)} · ${item.first.savingKm >= 0 ? 'ahorra' : 'suma'} ${formatNumber(Math.abs(item.first.savingKm))} km</small>
+          </div>
+          <div>
+            <strong>${escapeHtml(item.second.worker.name)}</strong>
+            <span>${escapeHtml(item.second.currentService.name)} → ${escapeHtml(item.second.suggestedService.name)}</span>
+            <small>${formatProximityDistance(item.second.currentDistance)} → ${formatProximityDistance(item.second.suggestedDistance)} · ${item.second.savingKm >= 0 ? 'ahorra' : 'suma'} ${formatNumber(Math.abs(item.second.savingKm))} km</small>
+          </div>
+        </div>
+        <p class="proximity-swap-warning">Validar horarios, cantidad de horas, capacitación y condiciones específicas de ambos servicios antes de ejecutar el cambio.</p>
+      </article>
+    `).join('')
+    : '<div class="empty-state">No se encontraron intercambios compatibles con el criterio seleccionado.</div>';
+}
+
+function renderProximityDataQuality(results) {
+  if (!el.proximityDataQuality) return;
+  const missingWorkers = state.workers.filter((worker) => !getEntityCoordinates(worker));
+  const missingServices = state.services.filter((service) => !getEntityCoordinates(service));
+  const coverage = state.workers.length + state.services.length
+    ? Math.round(((results.stats.mappedWorkers + results.stats.mappedServices) / (state.workers.length + state.services.length)) * 100)
+    : 0;
+
+  el.proximityDataQuality.innerHTML = `
+    <div class="optimizer-data-quality-grid proximity-quality-grid">
+      <div class="optimizer-quality-metric"><span>Cobertura general</span><strong>${coverage}%</strong><small>Operarios y servicios ubicados</small></div>
+      <div class="optimizer-quality-metric"><span>Operarios sin coordenadas</span><strong>${missingWorkers.length}</strong><small>No pueden compararse</small></div>
+      <div class="optimizer-quality-metric"><span>Servicios sin coordenadas</span><strong>${missingServices.length}</strong><small>No entran en el ranking</small></div>
+      <div class="optimizer-quality-metric"><span>Vínculos medibles</span><strong>${results.stats.measurableRelations}</strong><small>de ${results.stats.totalRelations} actuales</small></div>
+    </div>
+    ${(missingWorkers.length || missingServices.length) ? `
+      <div class="optimizer-missing-locations">
+        <div><h4>Completar para mejorar el análisis</h4><p class="muted">Con una coordenada aproximada del barrio alcanza; no hace falta registrar la puerta exacta del domicilio.</p></div>
+        <div class="optimizer-location-items">
+          ${missingWorkers.slice(0, 6).map((worker) => `<button type="button" class="optimizer-location-item" data-edit-worker="${worker.id}"><span>Operario</span><strong>${escapeHtml(worker.name)}</strong></button>`).join('')}
+          ${missingServices.slice(0, 6).map((service) => `<button type="button" class="optimizer-location-item" data-edit-service="${service.id}"><span>Servicio</span><strong>${escapeHtml(service.name)}</strong></button>`).join('')}
+        </div>
+      </div>
+    ` : '<div class="empty-state">La cobertura geográfica está completa.</div>'}
+  `;
+}
+
+function renderProximityOptimizer() {
+  if (!state.proximityResults) {
+    if (el.proximityKpiCards) el.proximityKpiCards.innerHTML = '';
+    if (el.proximitySummary) el.proximitySummary.innerHTML = '<div class="empty-state">Ejecutá el análisis para detectar reubicaciones e intercambios posibles.</div>';
+    if (el.proximityWorkerAnalysis) el.proximityWorkerAnalysis.innerHTML = '<div class="empty-state">Todavía no se ejecutó un análisis.</div>';
+    if (el.proximityRelocations) el.proximityRelocations.innerHTML = '<div class="empty-state">Todavía no se ejecutó un análisis.</div>';
+    if (el.proximitySwaps) el.proximitySwaps.innerHTML = '<div class="empty-state">Todavía no se ejecutó un análisis.</div>';
+    if (el.proximityDataQuality) {
+      const preview = {
+        stats: {
+          mappedWorkers: state.workers.filter((worker) => getEntityCoordinates(worker)).length,
+          mappedServices: state.services.filter((service) => getEntityCoordinates(service)).length,
+          measurableRelations: 0,
+          totalRelations: getUniqueWorkerServiceRelations().length,
+        },
+      };
+      renderProximityDataQuality(preview);
+    }
+    return;
+  }
+
+  renderProximityKpis(state.proximityResults);
+  renderProximitySummary(state.proximityResults);
+  renderProximityWorkerAnalysis(state.proximityResults);
+  renderProximityRelocations(state.proximityResults);
+  renderProximitySwaps(state.proximityResults);
+  renderProximityDataQuality(state.proximityResults);
+}
+
+function handleProximityAnalyze() {
+  if (!ensureDataReady('analizar cercanía')) return;
+  state.proximityResults = analyzeProximityOptimizer();
+  renderProximityOptimizer();
+}
+
+function refreshProximityResults() {
+  if (!state.proximityResults) return;
+  state.proximityResults = analyzeProximityOptimizer();
+  renderProximityOptimizer();
+}
+
+function showProximityWorker(workerId) {
+  if (el.proximityWorkerFilter) el.proximityWorkerFilter.value = workerId;
+  state.proximityResults = analyzeProximityOptimizer();
+  renderProximityOptimizer();
+  el.proximityWorkerAnalysis?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function openProximityMap(type, id) {
+  goToView('map');
+  window.setTimeout(() => {
+    renderMap();
+    revealMapEntity(type, id);
+  }, 100);
+}
+
 function getMapEntityKey(type, id) {
   return `${type}:${id}`;
 }
@@ -4945,6 +5472,9 @@ function renderCurrentView() {
     case 'optimizer':
       renderOptimizer();
       break;
+    case 'proximity':
+      renderProximityOptimizer();
+      break;
     case 'absences':
       renderAbsences();
       break;
@@ -5277,6 +5807,7 @@ async function loadAllData() {
   state.serviceMaterials = serviceMaterialsRes.error ? [] : (serviceMaterialsRes.data || []);
   state.materialConsumptions = materialConsumptionsRes.error ? [] : (materialConsumptionsRes.data || []);
   state.optimizerResults = null;
+  state.proximityResults = null;
 
   if (absencesRes.error) {
     console.warn('La tabla de ausencias todavía no está disponible o devolvió error.', absencesRes.error);
@@ -7064,6 +7595,24 @@ function handleDynamicClicks(event) {
     return;
   }
 
+  const proximityWorkerBtn = event.target.closest('[data-proximity-show-worker]');
+  if (proximityWorkerBtn) {
+    showProximityWorker(proximityWorkerBtn.dataset.proximityShowWorker);
+    return;
+  }
+
+  const proximityMapWorkerBtn = event.target.closest('[data-proximity-map-worker]');
+  if (proximityMapWorkerBtn) {
+    openProximityMap('worker', proximityMapWorkerBtn.dataset.proximityMapWorker);
+    return;
+  }
+
+  const proximityMapServiceBtn = event.target.closest('[data-proximity-map-service]');
+  if (proximityMapServiceBtn) {
+    openProximityMap('service', proximityMapServiceBtn.dataset.proximityMapService);
+    return;
+  }
+
   const assignmentBtn = event.target.closest('[data-edit-assignment]');
   if (assignmentBtn) {
     openAssignmentDialog(assignmentBtn.dataset.editAssignment);
@@ -7078,6 +7627,7 @@ function getCurrentViewTitle() {
     planner: 'Planner semanal',
     map: 'Mapa',
     optimizer: 'Optimizador',
+    proximity: 'Optimizador de cercanía',
     absences: 'Ausencias',
     materials: 'Materiales',
   };
@@ -7725,6 +8275,79 @@ function buildOptimizerExportData() {
   };
 }
 
+
+function buildProximityExportData() {
+  const results = state.proximityResults;
+  if (!results) {
+    return { sheets: [{ name: 'Cercania', rows: [['Estado'], ['No se ejecutó un análisis.']] }] };
+  }
+
+  return {
+    sheets: [
+      {
+        name: 'Resumen',
+        rows: [
+          ['Métrica', 'Valor'],
+          ['Ahorro mínimo considerado (km directos)', results.settings.minimumSaving],
+          ['Exigir mejora para ambos en intercambios', results.settings.bothImprove ? 'Sí' : 'No'],
+          ['Operarios ubicados', results.stats.mappedWorkers],
+          ['Servicios ubicados', results.stats.mappedServices],
+          ['Vínculos actuales medibles', results.stats.measurableRelations],
+          ['Distancia actual promedio (km directos)', results.stats.averageCurrentDistance ?? 'Sin datos'],
+          ['Operarios con oportunidades', results.stats.workersWithPotential],
+          ['Reubicaciones sugeridas', results.relocationSuggestions.length],
+          ['Intercambios sugeridos', results.swapSuggestions.length],
+        ],
+      },
+      {
+        name: 'Reubicaciones',
+        rows: [
+          ['Operario', 'Servicio actual', 'Distancia actual km', 'Servicio sugerido', 'Distancia sugerida km', 'Ahorro km', 'Tipo'],
+          ...results.relocationSuggestions.map((item) => [
+            item.worker.name,
+            item.currentService.name,
+            item.currentDistance,
+            item.suggestedService.name,
+            item.suggestedDistance,
+            item.savingKm,
+            item.directOpportunity ? 'Servicio sin operarios' : 'Requiere reorganización',
+          ]),
+        ],
+      },
+      {
+        name: 'Intercambios',
+        rows: [
+          ['Operario A', 'Servicio actual A', 'Servicio sugerido A', 'Ahorro A km', 'Operario B', 'Servicio actual B', 'Servicio sugerido B', 'Ahorro B km', 'Ahorro conjunto km'],
+          ...results.swapSuggestions.map((item) => [
+            item.first.worker.name,
+            item.first.currentService.name,
+            item.first.suggestedService.name,
+            item.first.savingKm,
+            item.second.worker.name,
+            item.second.currentService.name,
+            item.second.suggestedService.name,
+            item.second.savingKm,
+            item.totalSaving,
+          ]),
+        ],
+      },
+      {
+        name: 'Ranking por operario',
+        rows: [
+          ['Operario', 'Servicio', 'Distancia km', 'Asignación actual', 'Operarios asignados al servicio'],
+          ...results.workerAnalyses.flatMap((analysis) => analysis.nearestServices.map((item) => [
+            analysis.worker.name,
+            item.service.name,
+            item.distanceKm,
+            item.isCurrent ? 'Sí' : 'No',
+            item.assignedWorkersCount,
+          ])),
+        ],
+      },
+    ],
+  };
+}
+
 function buildCurrentExportData() {
   switch (state.currentView) {
     case 'workers':
@@ -7737,6 +8360,8 @@ function buildCurrentExportData() {
       return buildMapExportData();
     case 'optimizer':
       return buildOptimizerExportData();
+    case 'proximity':
+      return buildProximityExportData();
     case 'absences':
       return buildAbsencesExportData();
     case 'materials':
@@ -7902,6 +8527,14 @@ function bindEvents() {
   el.optimizerCandidates?.addEventListener('click', handleDynamicClicks);
   el.optimizerRejected?.addEventListener('click', handleDynamicClicks);
   el.optimizerDataQuality?.addEventListener('click', handleDynamicClicks);
+  el.proximityAnalyzeBtn?.addEventListener('click', handleProximityAnalyze);
+  el.proximityWorkerFilter?.addEventListener('change', refreshProximityResults);
+  el.proximityMinimumSaving?.addEventListener('change', refreshProximityResults);
+  el.proximityBothImprove?.addEventListener('change', refreshProximityResults);
+  el.proximityWorkerAnalysis?.addEventListener('click', handleDynamicClicks);
+  el.proximityRelocations?.addEventListener('click', handleDynamicClicks);
+  el.proximitySwaps?.addEventListener('click', handleDynamicClicks);
+  el.proximityDataQuality?.addEventListener('click', handleDynamicClicks);
   const debouncedMapRender = debounce(() => renderMap({ fit: true }), 180);
   el.mapSearch?.addEventListener('input', debouncedMapRender);
   el.mapEntityFilter?.addEventListener('change', () => renderMap({ fit: true }));
@@ -8102,6 +8735,16 @@ function boot() {
       optimizerDataQuality: $('optimizerDataQuality'),
       optimizerClearBtn: $('optimizerClearBtn'),
       optimizerCreateServiceBtn: $('optimizerCreateServiceBtn'),
+      proximityAnalyzeBtn: $('proximityAnalyzeBtn'),
+      proximityWorkerFilter: $('proximityWorkerFilter'),
+      proximityMinimumSaving: $('proximityMinimumSaving'),
+      proximityBothImprove: $('proximityBothImprove'),
+      proximityKpiCards: $('proximityKpiCards'),
+      proximitySummary: $('proximitySummary'),
+      proximityWorkerAnalysis: $('proximityWorkerAnalysis'),
+      proximityRelocations: $('proximityRelocations'),
+      proximitySwaps: $('proximitySwaps'),
+      proximityDataQuality: $('proximityDataQuality'),
       absenceFilterMode: $('absenceFilterMode'),
       absenceApplyFilterBtn: $('absenceApplyFilterBtn'),
       absenceDateFilter: $('absenceDateFilter'),

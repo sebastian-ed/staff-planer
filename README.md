@@ -175,3 +175,16 @@ La sección **Ausencias** calcula el acumulado anual por operario usando un crit
 ## Tardanzas
 
 La sección **Ausencias** ahora permite registrar **tardanzas** por operario, servicio y fecha, con hora prevista, hora real de llegada, minutos de demora, seguimiento anualizado y registro histórico desde el ingreso del operario.
+
+
+## Optimizador de cercanía
+
+La sección **Optimizador de cercanía** compara las coordenadas del domicilio de cada operario con las coordenadas de todos los servicios. Muestra:
+
+- distancia promedio actual por operario;
+- ranking de servicios cercanos;
+- oportunidades de reubicación;
+- intercambios entre dos operarios que reducen la distancia conjunta;
+- registros sin coordenadas que limitan la precisión.
+
+Esta primera etapa analiza únicamente distancia. No modifica asignaciones ni valida horarios, carga semanal, requisitos del cliente o continuidad. Para confirmar una propuesta, debe revisarse luego en el Optimizador de asignaciones. No requiere una migración SQL adicional.

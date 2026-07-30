@@ -1412,3 +1412,203 @@ select option:checked {
 select option:disabled {
   color: #7f8dad;
 }
+
+
+/* Optimizador de cercanía */
+.proximity-intro .proximity-method-note {
+  border-color: rgba(91, 140, 255, 0.28);
+  background: rgba(91, 140, 255, 0.08);
+}
+
+.proximity-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(220px, 0.7fr) minmax(320px, 1.5fr);
+  gap: 14px;
+  align-items: end;
+}
+
+.proximity-toggle { min-height: 72px; }
+.proximity-summary { min-height: 150px; }
+.proximity-summary-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
+  gap: 24px;
+  align-items: start;
+}
+.proximity-summary-grid h3 { margin: 7px 0 8px; font-size: clamp(22px, 2.5vw, 32px); }
+.proximity-highlight-list { display: grid; gap: 10px; }
+.proximity-highlight-list > div {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255,255,255,0.03);
+}
+.proximity-highlight-list span,
+.proximity-highlight-list small { color: var(--muted); }
+.proximity-highlight-list span { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+.proximity-highlight-list small { font-size: 12px; line-height: 1.4; }
+
+.proximity-main-grid { align-items: start; }
+.proximity-worker-analysis,
+.proximity-suggestion-list { display: grid; gap: 12px; }
+.proximity-worker-card,
+.proximity-detail-card,
+.proximity-suggestion-card,
+.proximity-swap-card {
+  display: grid;
+  gap: 13px;
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  background: rgba(255,255,255,0.028);
+}
+.proximity-worker-card-warning { border-color: rgba(255, 203, 102, 0.28); }
+.proximity-worker-card-head,
+.proximity-suggestion-head,
+.proximity-swap-card > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.proximity-worker-card-head > div,
+.proximity-suggestion-head > div,
+.proximity-swap-card > header > div { display: grid; gap: 4px; }
+.proximity-worker-card span,
+.proximity-suggestion-card span,
+.proximity-swap-card span { color: var(--muted); font-size: 12px; }
+.proximity-mini-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.proximity-mini-metrics > div {
+  display: grid;
+  gap: 4px;
+  padding: 10px 11px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.02);
+}
+.proximity-mini-metrics span,
+.proximity-mini-metrics small { color: var(--muted); font-size: 11px; }
+
+.proximity-detail-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+.proximity-detail-columns h5 { margin-bottom: 10px; }
+.proximity-distance-list { display: grid; gap: 7px; }
+.proximity-distance-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.02);
+}
+.proximity-distance-row:has(.proximity-rank) { grid-template-columns: auto minmax(0, 1fr) auto auto; }
+.proximity-distance-row.is-current { border-color: rgba(117, 240, 194, 0.3); background: rgba(117, 240, 194, 0.05); }
+.proximity-distance-row > div:not(.proximity-rank):not(.proximity-distance-value) { display: grid; gap: 3px; }
+.proximity-distance-row span { color: var(--muted); font-size: 11px; }
+.proximity-distance-value { white-space: nowrap; font-weight: 800; color: var(--primary-2); }
+.proximity-rank {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  background: rgba(91, 140, 255, 0.13);
+  font-weight: 800;
+  font-size: 12px;
+}
+
+.proximity-saving-badge {
+  padding: 7px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(117, 240, 194, 0.32);
+  color: var(--success);
+  background: rgba(117, 240, 194, 0.08);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.proximity-route-change {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+.proximity-route-change > div:not(.proximity-arrow) {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.proximity-route-change small { color: var(--muted); }
+.proximity-arrow { color: var(--primary-2); font-size: 20px; font-weight: 800; }
+
+.proximity-swap-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 13px;
+}
+.proximity-swap-people { display: grid; gap: 8px; }
+.proximity-swap-people > div {
+  display: grid;
+  gap: 4px;
+  padding: 11px 12px;
+  border-radius: 13px;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.02);
+}
+.proximity-swap-people small { color: var(--muted); line-height: 1.4; }
+.proximity-swap-warning {
+  margin: 0;
+  color: var(--warning);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+@media (max-width: 1100px) {
+  .proximity-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .proximity-toggle { grid-column: 1 / -1; }
+  .proximity-summary-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 820px) {
+  .proximity-controls,
+  .proximity-detail-columns,
+  .proximity-mini-metrics { grid-template-columns: 1fr; }
+  .proximity-toggle { grid-column: auto; }
+  .proximity-swap-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 540px) {
+  .proximity-worker-card-head,
+  .proximity-suggestion-head,
+  .proximity-swap-card > header { align-items: stretch; flex-direction: column; }
+  .proximity-distance-row,
+  .proximity-distance-row:has(.proximity-rank) { grid-template-columns: 1fr; }
+  .proximity-rank { display: none; }
+  .proximity-route-change { grid-template-columns: 1fr; }
+  .proximity-arrow { transform: rotate(90deg); justify-self: center; }
+}
+
+@media print {
+  .proximity-worker-card,
+  .proximity-detail-card,
+  .proximity-suggestion-card,
+  .proximity-swap-card,
+  .proximity-highlight-list > div {
+    background: #ffffff !important;
+    color: #111111 !important;
+    border-color: #d6d6d6 !important;
+  }
+}

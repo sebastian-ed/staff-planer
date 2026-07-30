@@ -69,6 +69,7 @@
             <button class="nav-tab" data-view="planner">Planner semanal</button>
             <button class="nav-tab" data-view="map">Mapa</button>
             <button class="nav-tab" data-view="optimizer">Optimizador</button>
+            <button class="nav-tab" data-view="proximity">Optimizador de cercanía</button>
             <button class="nav-tab" data-view="absences">Ausencias</button>
             <button class="nav-tab" data-view="materials">Materiales</button>
           </nav>
@@ -430,6 +431,103 @@
                 </div>
               </div>
               <div id="optimizerDataQuality"></div>
+            </article>
+          </section>
+
+
+
+          <section id="proximityView" class="view hidden stack-lg">
+            <article class="card optimizer-intro proximity-intro">
+              <div>
+                <span class="eyebrow">Eficiencia territorial</span>
+                <h3>Optimizador de cercanía</h3>
+                <p class="muted">Compara el domicilio de cada operario con todos los servicios y detecta oportunidades de reubicación o intercambio para reducir traslados.</p>
+              </div>
+              <div class="optimizer-method-note proximity-method-note">
+                <strong>Primera etapa: solo distancia</strong>
+                <span>Este análisis no valida horarios ni carga de horas. Las propuestas deben revisarse antes de modificar una asignación.</span>
+              </div>
+            </article>
+
+            <article class="card">
+              <div class="section-head with-action section-head-stack-mobile">
+                <div>
+                  <h3>Parámetros del análisis</h3>
+                  <span class="muted">Elegí un operario para profundizar o analizá toda la dotación.</span>
+                </div>
+                <button id="proximityAnalyzeBtn" class="btn btn-primary" type="button">Analizar cercanía</button>
+              </div>
+
+              <div class="proximity-controls">
+                <div class="field">
+                  <label for="proximityWorkerFilter">Operario</label>
+                  <select id="proximityWorkerFilter">
+                    <option value="all">Todos los operarios</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="proximityMinimumSaving">Ahorro mínimo para sugerir</label>
+                  <select id="proximityMinimumSaving">
+                    <option value="1">1 km directo</option>
+                    <option value="2" selected>2 km directos</option>
+                    <option value="3">3 km directos</option>
+                    <option value="5">5 km directos</option>
+                  </select>
+                </div>
+                <label class="optimizer-toggle proximity-toggle">
+                  <input id="proximityBothImprove" type="checkbox" checked />
+                  <span>
+                    <strong>En intercambios, mejorar a ambos operarios</strong>
+                    <small>Evita propuestas que reduzcan el total a costa de empeorar claramente el viaje de una persona.</small>
+                  </span>
+                </label>
+              </div>
+            </article>
+
+            <div id="proximityKpiCards" class="cards-grid"></div>
+
+            <article id="proximitySummary" class="card proximity-summary"></article>
+
+            <div class="split-grid proximity-main-grid">
+              <article class="card">
+                <div class="section-head">
+                  <div>
+                    <h3>Análisis por operario</h3>
+                    <span class="muted">Servicios actuales y alternativas más cercanas al domicilio.</span>
+                  </div>
+                </div>
+                <div id="proximityWorkerAnalysis" class="proximity-worker-analysis"></div>
+              </article>
+
+              <article class="card">
+                <div class="section-head">
+                  <div>
+                    <h3>Reubicaciones sugeridas</h3>
+                    <span class="muted">Alternativas cercanas, aunque hoy puedan estar ocupadas.</span>
+                  </div>
+                </div>
+                <div id="proximityRelocations" class="proximity-suggestion-list"></div>
+              </article>
+            </div>
+
+            <article class="card">
+              <div class="section-head">
+                <div>
+                  <h3>Intercambios sugeridos</h3>
+                  <span class="muted">Cambios entre dos operarios que reducen la distancia conjunta.</span>
+                </div>
+              </div>
+              <div id="proximitySwaps" class="proximity-swap-grid"></div>
+            </article>
+
+            <article class="card">
+              <div class="section-head">
+                <div>
+                  <h3>Calidad de los datos</h3>
+                  <span class="muted">Las comparaciones exactas requieren coordenadas tanto del domicilio como del servicio.</span>
+                </div>
+              </div>
+              <div id="proximityDataQuality"></div>
             </article>
           </section>
 

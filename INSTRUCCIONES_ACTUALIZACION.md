@@ -42,3 +42,8 @@ La sección **Mapa** usa los mismos campos de ubicación incorporados para el Op
 4. Los registros sin coordenadas aparecen en **Ubicaciones pendientes** y se pueden editar desde esa lista.
 
 El mapa base utiliza OpenStreetMap mediante Leaflet. Requiere conexión a internet para descargar las capas cartográficas, pero los datos operativos siguen almacenados únicamente en Supabase.
+
+
+## Nueva sección: Optimizador de cercanía
+
+Esta actualización no requiere ejecutar SQL. Reutiliza los campos de ubicación ya incorporados por `sql/migration_add_optimizer_locations.sql`. No borra ni modifica servicios, operarios, frecuencias, horarios o asignaciones existentes. La sección es analítica: no ejecuta cambios automáticamente.
