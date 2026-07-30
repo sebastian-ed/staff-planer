@@ -13,6 +13,7 @@ Web app mobile-first para visualizar y editar asignaciones de operarios por serv
 - Imprimir la vista filtrada actual y descargar cada panel en Excel o PDF.
 - Cargar horas mensuales facturadas por servicio y compararlas con la proyección mensual del cronograma operativo activo.
 - Buscar operarios, servicios, asignaciones, materiales, ausencias y tardanzas desde un único buscador global.
+- Visualizar servicios y zonas de residencia de operarios en un mapa operativo con filtros y vínculos de asignación.
 
 ## Actualización: balance mensual de horas por servicio
 
@@ -41,6 +42,50 @@ En los estados semanales de operarios, el criterio visual queda así:
 Además, la vista de operarios muestra las horas mensuales proyectadas para el mes seleccionado.
 
 **Alcance:** el cálculo usa el cronograma activo actual. No reconstruye automáticamente cambios históricos realizados dentro de un mes.
+
+## Actualización: Optimizador de asignaciones
+
+Antes de publicar esta versión, ejecutá una sola vez:
+
+`sql/migration_add_optimizer_locations.sql`
+
+La migración es aditiva. Solo agrega campos opcionales de domicilio, zona y coordenadas en `workers` y coordenadas en `services`. No borra ni modifica operarios, servicios, horarios, frecuencias, materiales o asignaciones existentes.
+
+La nueva sección **Optimizador** permite:
+
+- simular un servicio nuevo o analizar uno ya cargado;
+- excluir superposiciones horarias;
+- validar si el traslado desde el servicio anterior y hacia el siguiente entra en la ventana disponible;
+- comparar la nueva carga con las horas objetivo del operario;
+- ponderar cercanía desde el domicilio y continuidad de zona;
+- mostrar un ranking explicado con motivos, riesgos y descartes;
+- preparar la carga rápida en el Planner cuando el servicio ya existe.
+
+Las distancias se calculan localmente con coordenadas y una estimación urbana. No representan tiempos de tránsito en vivo. Cuando faltan coordenadas, la app usa la zona como aproximación y lo informa.
+
+### Datos geográficos
+
+En cada operario podés cargar domicilio de referencia, zona y coordenadas. En cada servicio podés cargar coordenadas. El campo acepta `latitud, longitud` o enlaces de Google Maps que contengan las coordenadas. Para proteger privacidad, puede usarse una ubicación aproximada o el centro del barrio.
+
+Google My Maps no se consulta directamente en esta versión. La estructura quedó preparada para una integración posterior mediante exportación KML o una API de mapas.
+
+## Actualización: Mapa operativo
+
+La sección **Mapa** reutiliza las coordenadas ya incorporadas por `sql/migration_add_optimizer_locations.sql`, por lo que no requiere una nueva modificación de base de datos.
+
+Incluye:
+
+- marcadores diferenciados para servicios y operarios;
+- búsqueda por nombre, zona, dirección o asignaciones vinculadas;
+- filtros por tipo de registro y zona;
+- detalle de horas, agenda y cobertura al seleccionar un punto;
+- líneas visuales entre un operario y sus servicios activos, o entre un servicio y sus operarios asignados;
+- listado de registros sin coordenadas con acceso directo a edición;
+- exportación a Excel de ubicaciones cargadas y pendientes.
+
+El mapa base se carga con **Leaflet + OpenStreetMap**. No se sincroniza automáticamente con Google My Maps: la fuente de verdad sigue siendo Supabase, lo que evita mantener dos bases desalineadas. Google Maps se usa solo como enlace externo opcional para abrir una ubicación puntual.
+
+Para domicilios de operarios, es recomendable guardar una coordenada aproximada del barrio o una esquina cercana en lugar de la ubicación exacta.
 
 ## Stack
 

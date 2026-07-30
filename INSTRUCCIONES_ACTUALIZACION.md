@@ -1,45 +1,44 @@
-# Actualización segura de Staff Planner
+# Actualización del Staff Planner
 
-## Orden recomendado
+## 1. Respaldo
 
-1. Ingresar al proyecto actual de Supabase.
-2. Abrir **SQL Editor**.
-3. Ejecutar únicamente el contenido de `sql/migration_add_billed_monthly_hours.sql`.
-4. Confirmar que el script finalice sin errores.
-5. Reemplazar los archivos del frontend en GitHub con los de esta carpeta.
-6. Esperar la publicación de GitHub Pages y actualizar la web con `Ctrl + F5`.
+La migración no borra datos, pero antes de cualquier cambio productivo conviene exportar un respaldo de Supabase.
 
-## Qué hace la migración
+## 2. Migraciones
 
-- Agrega `billed_monthly_hours` a la tabla `services`.
-- Permite valores vacíos para que todos los servicios actuales continúen funcionando.
-- Impide guardar valores negativos.
-- Conserva sin cambios la columna anterior `billed_weekly_hours`, en caso de que ya exista.
+Si todavía no cargaste las horas mensuales facturadas, ejecutá:
 
-## Qué no hace
+`sql/migration_add_billed_monthly_hours.sql`
 
-- No elimina filas ni tablas.
-- No modifica servicios, zonas, supervisores o frecuencias.
-- No modifica operarios.
-- No modifica horarios ni asignaciones.
-- No transforma ni reemplaza los valores semanales cargados anteriormente.
+Para activar el Optimizador, ejecutá:
 
-## Carga posterior
+`sql/migration_add_optimizer_locations.sql`
 
-En **Servicios > Editar**, completar **Horas totales facturadas por mes**.
+Esta segunda migración solo agrega campos opcionales de ubicación. No modifica operarios, servicios, horarios, frecuencias ni asignaciones existentes.
 
-En el Dashboard, seleccionar el **Mes de análisis**. La app calcula la carga operativa contando las apariciones reales de cada día de la semana dentro de ese mes. Por ejemplo, un turno de lunes se multiplica por cuatro o cinco según cuántos lunes tenga el calendario seleccionado.
+## 3. Publicación
 
-El resultado muestra:
+Reemplazá los archivos del repositorio por los incluidos en este ZIP y publicá normalmente en GitHub Pages. Conservá tu `supabase-config.js` actual.
 
-- total mensual facturado;
-- total mensual operativo proyectado;
-- diferencia general;
-- desvío por servicio;
-- horas mensuales proyectadas por operario.
+## 4. Puesta en marcha del Optimizador
 
-Los servicios sin horas mensuales facturadas quedan marcados como pendientes y no participan de la diferencia comercial hasta completar el dato.
+1. Entrá en Operarios y cargá zona de residencia. Las coordenadas son recomendables, no obligatorias.
+2. Entrá en Servicios y cargá zona y coordenadas.
+3. Abrí Optimizador.
+4. Seleccioná un servicio existente o simulá uno nuevo.
+5. Indicá días, horario y margen de traslado.
+6. Ejecutá el análisis.
+7. Revisá el ranking, los motivos y los descartes antes de confirmar una asignación.
 
-## Alcance del cálculo
+La herramienta no reemplaza la decisión operativa. No conoce tránsito en vivo, restricciones personales no registradas ni acuerdos laborales particulares.
 
-La proyección utiliza las asignaciones activas actuales. Si se modifica un cronograma durante el mes, la app recalcula el mes completo con la nueva configuración; no reconstruye automáticamente versiones históricas anteriores del cronograma.
+## 5. Puesta en marcha del Mapa
+
+La sección **Mapa** usa los mismos campos de ubicación incorporados para el Optimizador. No requiere una migración adicional.
+
+1. Cargá coordenadas en los servicios y en los operarios que quieras visualizar.
+2. Abrí **Mapa** y usá los filtros por tipo, zona o búsqueda.
+3. Seleccioná un punto para ver sus asignaciones y los vínculos geográficos con operarios o servicios relacionados.
+4. Los registros sin coordenadas aparecen en **Ubicaciones pendientes** y se pueden editar desde esa lista.
+
+El mapa base utiliza OpenStreetMap mediante Leaflet. Requiere conexión a internet para descargar las capas cartográficas, pero los datos operativos siguen almacenados únicamente en Supabase.

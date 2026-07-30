@@ -7,6 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body data-current-view="dashboard">
@@ -66,6 +67,8 @@
             <button class="nav-tab" data-view="workers">Operarios</button>
             <button class="nav-tab" data-view="services">Servicios</button>
             <button class="nav-tab" data-view="planner">Planner semanal</button>
+            <button class="nav-tab" data-view="map">Mapa</button>
+            <button class="nav-tab" data-view="optimizer">Optimizador</button>
             <button class="nav-tab" data-view="absences">Ausencias</button>
             <button class="nav-tab" data-view="materials">Materiales</button>
           </nav>
@@ -201,6 +204,232 @@
               <div class="planner-board-wrap">
                 <div class="planner-board" id="plannerBoard"></div>
               </div>
+            </article>
+          </section>
+
+
+          <section id="mapView" class="view hidden stack-lg">
+            <article class="card map-intro">
+              <div>
+                <span class="eyebrow">Geografía operativa</span>
+                <h3>Mapa de servicios y operarios</h3>
+                <p class="muted">Visualizá en una sola capa dónde están los servicios y las zonas de residencia cargadas para los operarios. Al seleccionar un punto, el mapa muestra sus vínculos operativos actuales.</p>
+              </div>
+              <div class="map-privacy-note">
+                <strong>Uso interno</strong>
+                <span>Para domicilios personales conviene cargar una coordenada aproximada del barrio, no la puerta exacta.</span>
+              </div>
+            </article>
+
+            <div id="mapKpiCards" class="cards-grid"></div>
+
+            <article class="card map-workspace-card">
+              <div class="map-toolbar">
+                <div class="field map-search-field">
+                  <label for="mapSearch">Buscar en el mapa</label>
+                  <input id="mapSearch" type="search" placeholder="Servicio, operario, zona o dirección" autocomplete="off" />
+                </div>
+                <div class="field">
+                  <label for="mapEntityFilter">Mostrar</label>
+                  <select id="mapEntityFilter">
+                    <option value="all">Servicios y operarios</option>
+                    <option value="services">Solo servicios</option>
+                    <option value="workers">Solo operarios</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="mapZoneFilter">Zona</label>
+                  <select id="mapZoneFilter">
+                    <option value="all">Todas las zonas</option>
+                  </select>
+                </div>
+                <div class="map-toolbar-actions">
+                  <button id="mapFitBtn" class="btn btn-secondary" type="button">Ver todos</button>
+                  <button id="mapClearSelectionBtn" class="btn btn-ghost" type="button">Limpiar selección</button>
+                </div>
+              </div>
+
+              <div class="map-layout">
+                <div class="map-canvas-shell">
+                  <div class="map-legend" aria-label="Referencias del mapa">
+                    <span><i class="map-legend-dot map-legend-service"></i> Servicio</span>
+                    <span><i class="map-legend-dot map-legend-worker"></i> Operario</span>
+                    <span><i class="map-legend-line"></i> Vínculo activo</span>
+                  </div>
+                  <div id="operationsMap" class="operations-map" aria-label="Mapa operativo interactivo"></div>
+                  <div id="mapEmptyOverlay" class="map-empty-overlay hidden">No hay ubicaciones que coincidan con los filtros.</div>
+                </div>
+
+                <aside class="map-side-column">
+                  <section id="mapSelectionPanel" class="card-lite map-selection-panel">
+                    <div class="empty-state">Seleccioná un servicio o un operario para ver su detalle y sus vínculos.</div>
+                  </section>
+
+                  <section class="card-lite">
+                    <div class="section-head">
+                      <div>
+                        <h4>Ubicaciones pendientes</h4>
+                        <span class="muted">Registros que todavía no pueden mostrarse.</span>
+                      </div>
+                    </div>
+                    <div id="mapMissingLocations" class="map-missing-list"></div>
+                  </section>
+                </aside>
+              </div>
+            </article>
+          </section>
+
+
+          <section id="optimizerView" class="view hidden stack-lg">
+            <article class="card optimizer-intro">
+              <div>
+                <span class="eyebrow">Planificación asistida</span>
+                <h3>Optimizador de asignaciones</h3>
+                <p class="muted">Analiza disponibilidad horaria, carga semanal, continuidad de recorridos y cercanía al domicilio para recomendar el operario más conveniente.</p>
+              </div>
+              <div class="optimizer-method-note">
+                <strong>Criterio operativo</strong>
+                <span>Los conflictos de horario son excluyentes. Las distancias son aproximadas y mejoran cuando operarios y servicios tienen coordenadas cargadas.</span>
+              </div>
+            </article>
+
+            <article class="card">
+              <div class="section-head with-action section-head-stack-mobile">
+                <div>
+                  <h3>Necesidad de cobertura</h3>
+                  <span class="muted">Podés analizar un servicio existente o simular uno nuevo sin guardarlo.</span>
+                </div>
+                <button id="optimizerCreateServiceBtn" class="btn btn-secondary" type="button">Preparar nuevo servicio</button>
+              </div>
+
+              <form id="optimizerForm" class="stack-md">
+                <div class="grid-2">
+                  <div class="field">
+                    <label for="optimizerExistingService">Servicio</label>
+                    <select id="optimizerExistingService">
+                      <option value="">Simular servicio nuevo</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="optimizerMonth">Mes de análisis</label>
+                    <input id="optimizerMonth" type="month" />
+                  </div>
+                </div>
+
+                <div class="grid-2">
+                  <div class="field">
+                    <label for="optimizerServiceName">Nombre de referencia</label>
+                    <input id="optimizerServiceName" placeholder="Ej. Nuevo servicio Villa Crespo" />
+                  </div>
+                  <div class="field">
+                    <label for="optimizerBilledMonthlyHours">Horas facturadas mensuales</label>
+                    <input id="optimizerBilledMonthlyHours" type="number" min="0" step="0.25" placeholder="Opcional para la simulación" />
+                  </div>
+                </div>
+
+                <div class="grid-2">
+                  <div class="field">
+                    <label for="optimizerAddress">Dirección</label>
+                    <input id="optimizerAddress" placeholder="Dirección del servicio" />
+                  </div>
+                  <div class="field">
+                    <label for="optimizerZone">Zona o barrio</label>
+                    <input id="optimizerZone" placeholder="Ej. Villa Crespo" />
+                  </div>
+                </div>
+
+                <div class="field">
+                  <label for="optimizerCoordinates">Coordenadas o enlace de Google Maps</label>
+                  <input id="optimizerCoordinates" placeholder="Ej. -34.5982, -58.4371 o un enlace con coordenadas" />
+                  <small class="field-help">No es obligatorio. Sin coordenadas se usa la zona como aproximación y la recomendación queda con menor precisión.</small>
+                </div>
+
+                <div class="field">
+                  <label>Días requeridos</label>
+                  <div class="optimizer-days-grid">
+                    <label class="day-check"><input class="optimizer-day" type="checkbox" value="1" /> Lunes</label>
+                    <label class="day-check"><input class="optimizer-day" type="checkbox" value="2" /> Martes</label>
+                    <label class="day-check"><input class="optimizer-day" type="checkbox" value="3" /> Miércoles</label>
+                    <label class="day-check"><input class="optimizer-day" type="checkbox" value="4" /> Jueves</label>
+                    <label class="day-check"><input class="optimizer-day" type="checkbox" value="5" /> Viernes</label>
+                    <label class="day-check"><input class="optimizer-day" type="checkbox" value="6" /> Sábado</label>
+                    <label class="day-check"><input class="optimizer-day" type="checkbox" value="0" /> Domingo</label>
+                  </div>
+                </div>
+
+                <div class="grid-2">
+                  <div class="field">
+                    <label for="optimizerStart">Hora de inicio</label>
+                    <input id="optimizerStart" type="time" required />
+                  </div>
+                  <div class="field">
+                    <label for="optimizerEnd">Hora de finalización</label>
+                    <input id="optimizerEnd" type="time" required />
+                  </div>
+                </div>
+
+                <div class="optimizer-settings-grid">
+                  <div class="field">
+                    <label for="optimizerTravelBuffer">Margen adicional de traslado</label>
+                    <select id="optimizerTravelBuffer">
+                      <option value="10">10 minutos</option>
+                      <option value="15" selected>15 minutos</option>
+                      <option value="20">20 minutos</option>
+                      <option value="30">30 minutos</option>
+                    </select>
+                  </div>
+                  <label class="optimizer-toggle">
+                    <input id="optimizerAllowOverTarget" type="checkbox" />
+                    <span>
+                      <strong>Incluir operarios que quedarían excedidos</strong>
+                      <small>Se mostrarán como alternativa condicionada, con penalización en el ranking.</small>
+                    </span>
+                  </label>
+                </div>
+
+                <div id="optimizerWorkloadPreview" class="optimizer-workload-preview">Seleccioná días y horarios para calcular la carga.</div>
+
+                <div class="modal-actions optimizer-form-actions">
+                  <button id="optimizerClearBtn" class="btn btn-ghost" type="button">Limpiar</button>
+                  <button class="btn btn-primary" type="submit">Analizar candidatos</button>
+                </div>
+              </form>
+            </article>
+
+            <div id="optimizerKpiCards" class="cards-grid"></div>
+
+            <article id="optimizerRecommendation" class="card optimizer-recommendation"></article>
+
+            <div class="split-grid optimizer-results-grid">
+              <article class="card">
+                <div class="section-head">
+                  <div>
+                    <h3>Candidatos recomendados</h3>
+                    <span class="muted">Ranking explicado, no una caja negra.</span>
+                  </div>
+                </div>
+                <div id="optimizerCandidates" class="optimizer-candidate-list"></div>
+              </article>
+
+              <article class="card">
+                <div class="section-head">
+                  <div>
+                    <h3>Descartados y riesgos</h3>
+                    <span class="muted">Conflictos horarios, traslados inviables o exceso de carga.</span>
+                  </div>
+                </div>
+                <div id="optimizerRejected" class="optimizer-rejected-list"></div>
+              </article>
+            </div>
+
+            <article class="card">
+              <div class="section-head">
+                <div>
+                  <h3>Calidad de datos geográficos</h3>
+                  <span class="muted">La precisión del optimizador depende de esta cobertura.</span>
+                </div>
+              </div>
+              <div id="optimizerDataQuality"></div>
             </article>
           </section>
 
@@ -458,6 +687,21 @@
         </div>
       </div>
       <div class="field">
+        <label for="workerHomeAddress">Domicilio de referencia</label>
+        <input id="workerHomeAddress" placeholder="Dirección aproximada para planificación de recorridos" />
+      </div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="workerHomeZone">Zona o barrio de residencia</label>
+          <input id="workerHomeZone" placeholder="Ej. Villa Crespo" />
+        </div>
+        <div class="field">
+          <label for="workerCoordinates">Coordenadas o enlace de Google Maps</label>
+          <input id="workerCoordinates" placeholder="-34.6037, -58.3816" />
+        </div>
+      </div>
+      <small class="field-help">El optimizador usa estos datos solo para calcular cercanía. Podés cargar una ubicación aproximada, sin guardar una dirección exacta.</small>
+      <div class="field">
         <label for="workerNotes">Observaciones</label>
         <textarea id="workerNotes" rows="3"></textarea>
       </div>
@@ -484,10 +728,17 @@
         <label for="serviceAddress">Cliente / dirección</label>
         <input id="serviceAddress" />
       </div>
-      <div class="field">
-        <label for="serviceZone">Zona</label>
-        <input id="serviceZone" />
+      <div class="grid-2">
+        <div class="field">
+          <label for="serviceZone">Zona</label>
+          <input id="serviceZone" />
+        </div>
+        <div class="field">
+          <label for="serviceCoordinates">Coordenadas o enlace de Google Maps</label>
+          <input id="serviceCoordinates" placeholder="-34.6037, -58.3816" />
+        </div>
       </div>
+      <small class="field-help">Las coordenadas permiten validar traslados entre servicios. Si quedan vacías, se utiliza la zona como aproximación.</small>
       <div class="field">
         <label for="serviceSupervisor">Supervisor a cargo</label>
         <input id="serviceSupervisor" placeholder="Ej. Andrés" />
@@ -927,6 +1178,7 @@
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
   <script src="./supabase-config.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script type="module" src="./app.js"></script>
 </body>
 </html>

@@ -27,6 +27,8 @@ const VIEW_IDS = {
   workers: 'workersView',
   services: 'servicesView',
   planner: 'plannerView',
+  map: 'mapView',
+  optimizer: 'optimizerView',
   absences: 'absencesView',
   materials: 'materialsView',
 };
@@ -87,6 +89,9 @@ const state = {
   materialConsumptions: [],
   currentView: 'dashboard',
   dashboardMonth: '',
+  optimizerResults: null,
+  mapSelection: null,
+  mapHasFitted: false,
   authMode: 'login',
   filters: {
     search: '',
@@ -116,6 +121,12 @@ const state = {
 
 const el = {};
 let supabase;
+let operationsMap = null;
+let mapMarkerLayer = null;
+let mapConnectionLayer = null;
+const mapMarkers = new Map();
+const DEFAULT_MAP_CENTER = [-34.6037, -58.3816];
+const DEFAULT_MAP_ZOOM = 11;
 
 function $(id) {
   return document.getElementById(id);
@@ -311,6 +322,157 @@ function calculateHours(startTime, endTime) {
   return ((eh * 60 + em) - (sh * 60 + sm)) / 60;
 }
 
+
+function timeToMinutes(timeValue) {
+  if (!timeValue) return null;
+  const [hours, minutes] = String(timeValue).slice(0, 5).split(':').map(Number);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  return (hours * 60) + minutes;
+}
+
+function intervalsOverlap(startA, endA, startB, endB) {
+  const aStart = timeToMinutes(startA);
+  const aEnd = timeToMinutes(endA);
+  const bStart = timeToMinutes(startB);
+  const bEnd = timeToMinutes(endB);
+  if ([aStart, aEnd, bStart, bEnd].some((value) => value == null)) return false;
+  return aStart < bEnd && bStart < aEnd;
+}
+
+function parseCoordinates(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+
+  let decoded = raw;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch (error) {
+    decoded = raw;
+  }
+
+  const patterns = [
+    /@(-?\d{1,2}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)/,
+    /!3d(-?\d{1,2}(?:\.\d+)?)!4d(-?\d{1,3}(?:\.\d+)?)/,
+    /[?&](?:q|query|ll)=(-?\d{1,2}(?:\.\d+)?)[,;\s]+(-?\d{1,3}(?:\.\d+)?)/,
+    /(-?\d{1,2}(?:\.\d+)?)[,;\s]+(-?\d{1,3}(?:\.\d+)?)/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = decoded.match(pattern);
+    if (!match) continue;
+    const latitude = Number(match[1]);
+    const longitude = Number(match[2]);
+    if (
+      Number.isFinite(latitude)
+      && Number.isFinite(longitude)
+      && latitude >= -90
+      && latitude <= 90
+      && longitude >= -180
+      && longitude <= 180
+    ) {
+      return { latitude, longitude };
+    }
+  }
+
+  return null;
+}
+
+function getEntityCoordinates(entity) {
+  if (!entity || entity.latitude == null || entity.longitude == null || entity.latitude === '' || entity.longitude === '') return null;
+  const latitude = Number(entity.latitude);
+  const longitude = Number(entity.longitude);
+  if (
+    !Number.isFinite(latitude)
+    || !Number.isFinite(longitude)
+    || latitude < -90
+    || latitude > 90
+    || longitude < -180
+    || longitude > 180
+  ) return null;
+  return { latitude, longitude };
+}
+
+function formatCoordinates(entity) {
+  const coordinates = getEntityCoordinates(entity);
+  if (!coordinates) return '';
+  return `${coordinates.latitude.toFixed(6)}, ${coordinates.longitude.toFixed(6)}`;
+}
+
+function haversineDistanceKm(origin, destination) {
+  if (!origin || !destination) return null;
+  const toRadians = (degrees) => (degrees * Math.PI) / 180;
+  const earthRadiusKm = 6371;
+  const latitudeDelta = toRadians(destination.latitude - origin.latitude);
+  const longitudeDelta = toRadians(destination.longitude - origin.longitude);
+  const latitudeA = toRadians(origin.latitude);
+  const latitudeB = toRadians(destination.latitude);
+
+  const haversine = (
+    Math.sin(latitudeDelta / 2) ** 2
+    + Math.cos(latitudeA) * Math.cos(latitudeB) * (Math.sin(longitudeDelta / 2) ** 2)
+  );
+  const centralAngle = 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+  return Number((earthRadiusKm * centralAngle).toFixed(2));
+}
+
+function estimateUrbanTravel(distanceKm) {
+  if (distanceKm == null || !Number.isFinite(Number(distanceKm))) return null;
+  const straightDistance = Math.max(0, Number(distanceKm));
+  const estimatedRoadDistance = straightDistance * 1.25;
+  const minutes = Math.ceil(((estimatedRoadDistance / 22) * 60) + 8);
+  return {
+    straightDistance: Number(straightDistance.toFixed(2)),
+    estimatedRoadDistance: Number(estimatedRoadDistance.toFixed(2)),
+    minutes: Math.max(8, minutes),
+  };
+}
+
+function normalizedZone(value) {
+  return normalizeSearchText(value || '');
+}
+
+function zonesMatch(zoneA, zoneB) {
+  const a = normalizedZone(zoneA);
+  const b = normalizedZone(zoneB);
+  if (!a || !b) return false;
+  return a === b || a.includes(b) || b.includes(a);
+}
+
+function getLocationComparison(origin, destination, originZone = '', destinationZone = '') {
+  const originCoordinates = getEntityCoordinates(origin);
+  const destinationCoordinates = getEntityCoordinates(destination);
+
+  if (originCoordinates && destinationCoordinates) {
+    const distanceKm = haversineDistanceKm(originCoordinates, destinationCoordinates);
+    const travel = estimateUrbanTravel(distanceKm);
+    return {
+      method: 'coordinates',
+      distanceKm,
+      estimatedMinutes: travel?.minutes ?? null,
+      roadDistanceKm: travel?.estimatedRoadDistance ?? null,
+      sameZone: zonesMatch(originZone, destinationZone),
+    };
+  }
+
+  if (zonesMatch(originZone, destinationZone)) {
+    return {
+      method: 'zone',
+      distanceKm: null,
+      estimatedMinutes: 20,
+      roadDistanceKm: null,
+      sameZone: true,
+    };
+  }
+
+  return {
+    method: 'unknown',
+    distanceKm: null,
+    estimatedMinutes: null,
+    roadDistanceKm: null,
+    sameZone: false,
+  };
+}
+
 function getWeekdayOccurrencesInMonth(monthKey) {
   const monthStart = getMonthStartDate(monthKey);
   const monthEnd = getMonthEndDate(monthKey);
@@ -404,6 +566,8 @@ function rebuildDerivedState() {
         service.supervisor_name || '',
         service.notes || '',
         service.billed_monthly_hours ?? '',
+        service.latitude ?? '',
+        service.longitude ?? '',
       ].join(' '))
     );
   });
@@ -963,6 +1127,8 @@ function getFilteredWorkersForAbsenceTracking() {
         worker.name || '',
         worker.notes || '',
         worker.hire_date || '',
+        worker.home_address || '',
+        worker.home_zone || '',
         ...getWorkerAssignments(worker.id).map((assignment) => {
           const service = getServiceById(assignment.service_id);
           return `${service?.name || ''} ${service?.zone || ''} ${service?.client_address || ''}`;
@@ -1561,6 +1727,8 @@ function matchesFilters(summary) {
   const searchSource = normalizeSearchText([
     summary.name,
     summary.notes || '',
+    summary.home_address || '',
+    summary.home_zone || '',
     ...summary.services.map(
       (service) => `${service.name} ${service.zone || ''} ${service.client_address || ''}`
     ),
@@ -1642,6 +1810,14 @@ function populateSelects() {
   const serviceOptions = state.services
     .map((service) => `<option value="${service.id}">${escapeHtml(service.name)}</option>`)
     .join('');
+
+  if (el.optimizerExistingService) {
+    const previousValue = el.optimizerExistingService.value;
+    el.optimizerExistingService.innerHTML = `<option value="">Simular servicio nuevo</option>${serviceOptions}`;
+    if ([...el.optimizerExistingService.options].some((option) => option.value === previousValue)) {
+      el.optimizerExistingService.value = previousValue;
+    }
+  }
 
   const assignmentWorker = $('assignmentWorker');
   const assignmentService = $('assignmentService');
@@ -2062,6 +2238,7 @@ function renderServices() {
               <span class="chip">${escapeHtml(service.frequency_type || 'fixed')}</span>
               <span class="chip">${escapeHtml(service.zone || 'Sin zona')}</span>
               ${service.supervisor_name ? `<span class="chip">Sup. ${escapeHtml(service.supervisor_name)}</span>` : ''}
+              <span class="chip">${getEntityCoordinates(service) ? 'Ubicación precisa' : 'Ubicación aproximada'}</span>
             </div>
           </header>
 
@@ -3632,6 +3809,1092 @@ function renderMaterialsConsumptionHistoryBoard() {
     `;
 }
 
+
+
+function getOptimizerSelectedDays() {
+  return [...document.querySelectorAll('.optimizer-day:checked')]
+    .map((input) => Number(input.value))
+    .sort((a, b) => {
+      const order = [1, 2, 3, 4, 5, 6, 0];
+      return order.indexOf(a) - order.indexOf(b);
+    });
+}
+
+function getOptimizerRequest() {
+  const selectedServiceId = el.optimizerExistingService?.value || '';
+  const selectedService = selectedServiceId ? getServiceById(selectedServiceId) : null;
+  const coordinateValue = el.optimizerCoordinates?.value || '';
+  const parsedCoordinates = parseCoordinates(coordinateValue);
+  const startTime = el.optimizerStart?.value || '';
+  const endTime = el.optimizerEnd?.value || '';
+  const days = getOptimizerSelectedDays();
+  const weeklyHours = Number((calculateHours(startTime, endTime) * days.length).toFixed(2));
+  const monthKey = el.optimizerMonth?.value || getSelectedDashboardMonth();
+  const occurrences = getWeekdayOccurrencesInMonth(monthKey);
+  const monthlyHours = Number(days.reduce((sum, day) => (
+    sum + (calculateHours(startTime, endTime) * (occurrences.get(day) || 0))
+  ), 0).toFixed(2));
+
+  return {
+    selectedServiceId,
+    selectedService,
+    name: el.optimizerServiceName?.value.trim() || selectedService?.name || 'Servicio simulado',
+    billedMonthlyHours: el.optimizerBilledMonthlyHours?.value === ''
+      ? (selectedService?.billed_monthly_hours == null ? null : Number(selectedService.billed_monthly_hours))
+      : Number(el.optimizerBilledMonthlyHours?.value),
+    client_address: el.optimizerAddress?.value.trim() || selectedService?.client_address || '',
+    zone: el.optimizerZone?.value.trim() || selectedService?.zone || '',
+    latitude: parsedCoordinates?.latitude ?? selectedService?.latitude ?? null,
+    longitude: parsedCoordinates?.longitude ?? selectedService?.longitude ?? null,
+    coordinatesRaw: coordinateValue,
+    days,
+    startTime,
+    endTime,
+    weeklyHours,
+    monthlyHours,
+    monthKey,
+    travelBuffer: Number(el.optimizerTravelBuffer?.value || 15),
+    allowOverTarget: Boolean(el.optimizerAllowOverTarget?.checked),
+  };
+}
+
+function updateOptimizerWorkloadPreview() {
+  if (!el.optimizerWorkloadPreview) return;
+  const request = getOptimizerRequest();
+
+  if (!request.days.length || !request.startTime || !request.endTime || request.weeklyHours <= 0) {
+    el.optimizerWorkloadPreview.innerHTML = 'Seleccioná días y horarios para calcular la carga.';
+    return;
+  }
+
+  const dayLabels = request.days
+    .map((dayValue) => DAYS.find((day) => day.value === dayValue)?.label || '')
+    .filter(Boolean)
+    .join(', ');
+
+  const billingComparison = request.billedMonthlyHours == null
+    ? 'Sin horas facturadas cargadas para contrastar'
+    : `${formatHours(request.billedMonthlyHours)} hs facturadas · ${request.monthlyHours > request.billedMonthlyHours ? 'el bloque supera' : request.monthlyHours < request.billedMonthlyHours ? 'el bloque queda por debajo' : 'el bloque coincide'} en ${formatHours(Math.abs(request.monthlyHours - request.billedMonthlyHours))} hs`;
+
+  el.optimizerWorkloadPreview.innerHTML = `
+    <strong>${formatHours(request.weeklyHours)} hs semanales</strong>
+    <span>${formatHours(request.monthlyHours)} hs proyectadas en ${escapeHtml(formatMonthLabel(request.monthKey))}</span>
+    <small>${escapeHtml(dayLabels)} · ${escapeHtml(request.startTime)}-${escapeHtml(request.endTime)} · ${escapeHtml(billingComparison)}</small>
+  `;
+}
+
+function getWorkerHomeLocation(worker) {
+  return {
+    latitude: worker?.latitude ?? null,
+    longitude: worker?.longitude ?? null,
+    zone: worker?.home_zone || '',
+    name: worker?.home_address || worker?.home_zone || 'Domicilio',
+  };
+}
+
+function buildOptimizerDayAnalysis(worker, request, dayValue) {
+  const assignments = getWorkerAssignments(worker.id)
+    .filter((assignment) => Number(assignment.day_of_week) === Number(dayValue))
+    .sort((a, b) => timeToMinutes(a.start_time) - timeToMinutes(b.start_time));
+  const dayMeta = DAYS.find((day) => day.value === Number(dayValue));
+  const conflicts = assignments.filter((assignment) => (
+    intervalsOverlap(assignment.start_time, assignment.end_time, request.startTime, request.endTime)
+  ));
+
+  if (conflicts.length) {
+    return {
+      dayValue,
+      dayLabel: dayMeta?.fullLabel || '',
+      feasible: false,
+      conflict: true,
+      reasons: conflicts.map((assignment) => {
+        const service = getServiceById(assignment.service_id);
+        return `${dayMeta?.label || ''}: coincide con ${service?.name || 'otro servicio'} de ${String(assignment.start_time).slice(0, 5)} a ${String(assignment.end_time).slice(0, 5)}`;
+      }),
+      warnings: [],
+      routeScores: [],
+      transitions: [],
+    };
+  }
+
+  const requestStartMinutes = timeToMinutes(request.startTime);
+  const requestEndMinutes = timeToMinutes(request.endTime);
+  const previousAssignment = assignments
+    .filter((assignment) => timeToMinutes(assignment.end_time) <= requestStartMinutes)
+    .sort((a, b) => timeToMinutes(b.end_time) - timeToMinutes(a.end_time))[0] || null;
+  const nextAssignment = assignments
+    .filter((assignment) => timeToMinutes(assignment.start_time) >= requestEndMinutes)
+    .sort((a, b) => timeToMinutes(a.start_time) - timeToMinutes(b.start_time))[0] || null;
+
+  const transitions = [];
+  const reasons = [];
+  const warnings = [];
+  const routeScores = [];
+  let feasible = true;
+
+  const newLocation = {
+    latitude: request.latitude,
+    longitude: request.longitude,
+    zone: request.zone,
+    name: request.name,
+  };
+
+  const evaluateTransition = ({ origin, destination, originZone, destinationZone, gapMinutes, label, direction }) => {
+    const comparison = getLocationComparison(origin, destination, originZone, destinationZone);
+    const requiredMinutes = comparison.estimatedMinutes == null
+      ? null
+      : comparison.estimatedMinutes + request.travelBuffer;
+    const transitionFeasible = requiredMinutes == null || gapMinutes >= requiredMinutes;
+
+    if (!transitionFeasible) feasible = false;
+
+    if (comparison.method === 'coordinates') {
+      routeScores.push(Math.max(2, 25 - Math.min(23, comparison.distanceKm * 1.45)));
+    } else if (comparison.sameZone) {
+      routeScores.push(18);
+    } else {
+      routeScores.push(8);
+      warnings.push(`${dayMeta?.label || ''}: no hay coordenadas suficientes para validar el traslado ${label.toLowerCase()}`);
+    }
+
+    transitions.push({
+      direction,
+      label,
+      comparison,
+      gapMinutes,
+      requiredMinutes,
+      feasible: transitionFeasible,
+    });
+
+    if (!transitionFeasible) {
+      reasons.push(`${dayMeta?.label || ''}: el traslado ${label.toLowerCase()} requiere aproximadamente ${requiredMinutes} min y solo hay ${gapMinutes} min disponibles`);
+    }
+  };
+
+  if (previousAssignment) {
+    const previousService = getServiceById(previousAssignment.service_id);
+    const gapMinutes = requestStartMinutes - timeToMinutes(previousAssignment.end_time);
+    evaluateTransition({
+      origin: previousService,
+      destination: newLocation,
+      originZone: previousService?.zone || '',
+      destinationZone: request.zone,
+      gapMinutes,
+      label: `desde ${previousService?.name || 'el servicio anterior'}`,
+      direction: 'before',
+    });
+  } else {
+    const home = getWorkerHomeLocation(worker);
+    const comparison = getLocationComparison(home, newLocation, home.zone, request.zone);
+    if (comparison.method === 'coordinates') {
+      routeScores.push(Math.max(2, 20 - Math.min(18, comparison.distanceKm * 1.1)));
+    } else if (comparison.sameZone) {
+      routeScores.push(16);
+    } else {
+      routeScores.push(7);
+      warnings.push(`${dayMeta?.label || ''}: no se pudo medir con precisión el recorrido desde el domicilio`);
+    }
+    transitions.push({
+      direction: 'home',
+      label: 'desde el domicilio',
+      comparison,
+      gapMinutes: null,
+      requiredMinutes: comparison.estimatedMinutes,
+      feasible: true,
+    });
+  }
+
+  if (nextAssignment) {
+    const nextService = getServiceById(nextAssignment.service_id);
+    const gapMinutes = timeToMinutes(nextAssignment.start_time) - requestEndMinutes;
+    evaluateTransition({
+      origin: newLocation,
+      destination: nextService,
+      originZone: request.zone,
+      destinationZone: nextService?.zone || '',
+      gapMinutes,
+      label: `hacia ${nextService?.name || 'el servicio siguiente'}`,
+      direction: 'after',
+    });
+  }
+
+  return {
+    dayValue,
+    dayLabel: dayMeta?.fullLabel || '',
+    feasible,
+    conflict: false,
+    reasons,
+    warnings: [...new Set(warnings)],
+    routeScores,
+    transitions,
+    previousAssignment,
+    nextAssignment,
+  };
+}
+
+function scoreOptimizerCandidate(worker, request) {
+  const assignments = getWorkerAssignments(worker.id);
+  const currentWeeklyHours = Number(assignments.reduce((sum, assignment) => (
+    sum + calculateHours(assignment.start_time, assignment.end_time)
+  ), 0).toFixed(2));
+  const targetHours = getTargetHours(worker);
+  const projectedWeeklyHours = Number((currentWeeklyHours + request.weeklyHours).toFixed(2));
+  const availableHours = targetHours == null ? null : Number((targetHours - currentWeeklyHours).toFixed(2));
+  const overBy = targetHours == null ? 0 : Number(Math.max(0, projectedWeeklyHours - targetHours).toFixed(2));
+  const dayAnalyses = request.days.map((dayValue) => buildOptimizerDayAnalysis(worker, request, dayValue));
+  const scheduleReasons = dayAnalyses.flatMap((analysis) => analysis.reasons);
+  const warnings = [...new Set(dayAnalyses.flatMap((analysis) => analysis.warnings))];
+  const hasScheduleIssue = dayAnalyses.some((analysis) => !analysis.feasible);
+  const exceedsTarget = targetHours != null && overBy > 0.01;
+  const rejectedForHours = exceedsTarget && !request.allowOverTarget;
+
+  let hoursScore = 18;
+  if (targetHours != null) {
+    if (!exceedsTarget) {
+      const remainingAfter = Math.max(0, targetHours - projectedWeeklyHours);
+      hoursScore = Math.max(14, 25 - ((remainingAfter / Math.max(targetHours, 1)) * 12));
+    } else {
+      hoursScore = Math.max(0, 12 - (overBy * 1.5));
+    }
+  }
+
+  const allRouteScores = dayAnalyses.flatMap((analysis) => analysis.routeScores);
+  const routeScore = allRouteScores.length
+    ? Math.min(25, allRouteScores.reduce((sum, value) => sum + value, 0) / allRouteScores.length)
+    : 7;
+
+  const workerHome = getWorkerHomeLocation(worker);
+  const newLocation = {
+    latitude: request.latitude,
+    longitude: request.longitude,
+    zone: request.zone,
+  };
+  const homeComparison = getLocationComparison(workerHome, newLocation, worker.home_zone || '', request.zone);
+  let homeScore = 4;
+  if (homeComparison.method === 'coordinates') {
+    if (homeComparison.distanceKm <= 5) homeScore = 10;
+    else if (homeComparison.distanceKm <= 10) homeScore = 8;
+    else if (homeComparison.distanceKm <= 20) homeScore = 5;
+    else homeScore = 2;
+  } else if (homeComparison.sameZone) {
+    homeScore = 7;
+  }
+
+  const scheduleScore = hasScheduleIssue ? 0 : 40;
+  const score = Number(Math.max(0, Math.min(100, scheduleScore + hoursScore + routeScore + homeScore)).toFixed(1));
+  const rejected = hasScheduleIssue || rejectedForHours;
+  const rejectionReasons = [...scheduleReasons];
+
+  if (rejectedForHours) {
+    rejectionReasons.push(`Quedaría ${formatHours(overBy)} hs por encima de su objetivo semanal`);
+  }
+
+  if (!getEntityCoordinates(worker)) {
+    warnings.push('Domicilio sin coordenadas: la cercanía desde su casa se estimó por zona o quedó sin medir');
+  }
+  if (!getEntityCoordinates(request)) {
+    warnings.push('Servicio sin coordenadas: las distancias se estimaron por zona');
+  }
+
+  let classification = 'Condicionado';
+  if (!rejected && score >= 82) classification = 'Muy recomendado';
+  else if (!rejected && score >= 68) classification = 'Recomendado';
+  else if (!rejected && score >= 52) classification = 'Viable';
+  else if (!rejected) classification = 'Alternativa débil';
+
+  return {
+    worker,
+    request,
+    currentWeeklyHours,
+    targetHours,
+    projectedWeeklyHours,
+    availableHours,
+    overBy,
+    dayAnalyses,
+    homeComparison,
+    scheduleScore,
+    hoursScore: Number(hoursScore.toFixed(1)),
+    routeScore: Number(routeScore.toFixed(1)),
+    homeScore: Number(homeScore.toFixed(1)),
+    score,
+    rejected,
+    rejectionReasons: [...new Set(rejectionReasons)],
+    warnings: [...new Set(warnings)],
+    classification,
+  };
+}
+
+function analyzeOptimizerRequest(request) {
+  const scored = state.workers.map((worker) => scoreOptimizerCandidate(worker, request));
+  const candidates = scored
+    .filter((candidate) => !candidate.rejected)
+    .sort((a, b) => b.score - a.score || a.overBy - b.overBy || String(a.worker.name || '').localeCompare(String(b.worker.name || ''), 'es'));
+  const rejected = scored
+    .filter((candidate) => candidate.rejected)
+    .sort((a, b) => b.score - a.score || String(a.worker.name || '').localeCompare(String(b.worker.name || ''), 'es'));
+
+  return {
+    request,
+    candidates,
+    rejected,
+    best: candidates[0] || null,
+    analyzedAt: new Date().toISOString(),
+  };
+}
+
+function formatOptimizerTransition(transition) {
+  const comparison = transition.comparison || {};
+  const parts = [transition.label];
+  if (comparison.distanceKm != null) parts.push(`${formatNumber(comparison.distanceKm)} km directos`);
+  if (comparison.estimatedMinutes != null) parts.push(`~${comparison.estimatedMinutes} min de viaje`);
+  if (transition.gapMinutes != null) parts.push(`${transition.gapMinutes} min disponibles`);
+  if (comparison.method === 'zone') parts.push('estimado por zona');
+  if (comparison.method === 'unknown') parts.push('distancia no validada');
+  return parts.join(' · ');
+}
+
+function renderOptimizerScoreBreakdown(candidate) {
+  return `
+    <div class="optimizer-score-breakdown">
+      <span>Horario <strong>${formatNumber(candidate.scheduleScore)}/40</strong></span>
+      <span>Carga <strong>${formatNumber(candidate.hoursScore)}/25</strong></span>
+      <span>Recorrido <strong>${formatNumber(candidate.routeScore)}/25</strong></span>
+      <span>Domicilio <strong>${formatNumber(candidate.homeScore)}/10</strong></span>
+    </div>
+  `;
+}
+
+function renderOptimizerCandidateCard(candidate, index) {
+  const worker = candidate.worker;
+  const targetLabel = candidate.targetHours == null ? 'Sin objetivo fijo' : `${formatHours(candidate.targetHours)} hs objetivo`;
+  const projectedDifference = candidate.targetHours == null
+    ? 'Seguro / por hora'
+    : candidate.overBy > 0
+      ? `${formatHours(candidate.overBy)} hs excedidas`
+      : `${formatHours(Math.max(0, candidate.targetHours - candidate.projectedWeeklyHours))} hs libres después`;
+  const canPrepareAssignment = Boolean(candidate.request.selectedServiceId);
+
+  return `
+    <article class="optimizer-candidate-card" data-optimizer-worker-id="${worker.id}">
+      <header class="optimizer-candidate-head">
+        <div class="optimizer-rank">${index + 1}</div>
+        <div class="optimizer-candidate-title">
+          <strong>${escapeHtml(worker.name)}</strong>
+          <span>${escapeHtml(TYPE_META[worker.worker_type]?.label || 'Operario')} · ${escapeHtml(candidate.classification)}</span>
+        </div>
+        <div class="optimizer-score">${formatNumber(candidate.score)}<small>/100</small></div>
+      </header>
+
+      <div class="optimizer-candidate-metrics">
+        <div><span>Actual</span><strong>${formatHours(candidate.currentWeeklyHours)} hs/sem</strong></div>
+        <div><span>Con el servicio</span><strong>${formatHours(candidate.projectedWeeklyHours)} hs/sem</strong></div>
+        <div><span>Objetivo</span><strong>${escapeHtml(targetLabel)}</strong></div>
+        <div><span>Resultado</span><strong>${escapeHtml(projectedDifference)}</strong></div>
+      </div>
+
+      ${renderOptimizerScoreBreakdown(candidate)}
+
+      <div class="optimizer-day-analysis">
+        ${candidate.dayAnalyses.map((analysis) => `
+          <div class="optimizer-day-row">
+            <strong>${escapeHtml(analysis.dayLabel)}</strong>
+            <div>
+              ${analysis.transitions.length
+                ? analysis.transitions.map((transition) => `<span>${escapeHtml(formatOptimizerTransition(transition))}</span>`).join('')
+                : '<span>Sin asignaciones cercanas en el día.</span>'}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+
+      ${candidate.warnings.length ? `
+        <div class="optimizer-warning-list">
+          ${candidate.warnings.map((warning) => `<span>${escapeHtml(warning)}</span>`).join('')}
+        </div>
+      ` : ''}
+
+      <div class="inline-actions optimizer-card-actions">
+        <button class="btn btn-secondary btn-sm" type="button" data-edit-worker="${worker.id}">Ver operario</button>
+        ${canPrepareAssignment
+          ? `<button class="btn btn-primary btn-sm" type="button" data-optimizer-use-candidate="${worker.id}">Preparar asignación</button>`
+          : '<span class="optimizer-action-hint">Guardá o seleccioná el servicio para preparar la asignación.</span>'}
+      </div>
+    </article>
+  `;
+}
+
+function renderOptimizerRejectedCard(candidate) {
+  return `
+    <article class="optimizer-rejected-card">
+      <div>
+        <strong>${escapeHtml(candidate.worker.name)}</strong>
+        <span>${escapeHtml(TYPE_META[candidate.worker.worker_type]?.label || 'Operario')}</span>
+      </div>
+      <ul>
+        ${candidate.rejectionReasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join('')}
+      </ul>
+      <button class="btn btn-secondary btn-sm" type="button" data-edit-worker="${candidate.worker.id}">Revisar operario</button>
+    </article>
+  `;
+}
+
+function renderOptimizerDataQuality() {
+  if (!el.optimizerDataQuality) return;
+  const workersMissingCoordinates = state.workers.filter((worker) => !getEntityCoordinates(worker));
+  const servicesMissingCoordinates = state.services.filter((service) => !getEntityCoordinates(service));
+  const workersMissingZone = state.workers.filter((worker) => !String(worker.home_zone || '').trim());
+  const servicesMissingZone = state.services.filter((service) => !String(service.zone || '').trim());
+
+  const workerCoverage = state.workers.length
+    ? Math.round(((state.workers.length - workersMissingCoordinates.length) / state.workers.length) * 100)
+    : 0;
+  const serviceCoverage = state.services.length
+    ? Math.round(((state.services.length - servicesMissingCoordinates.length) / state.services.length) * 100)
+    : 0;
+
+  el.optimizerDataQuality.innerHTML = `
+    <div class="optimizer-data-quality-grid">
+      <div class="optimizer-quality-metric">
+        <span>Operarios geolocalizados</span>
+        <strong>${workerCoverage}%</strong>
+        <small>${state.workers.length - workersMissingCoordinates.length} de ${state.workers.length}</small>
+      </div>
+      <div class="optimizer-quality-metric">
+        <span>Servicios geolocalizados</span>
+        <strong>${serviceCoverage}%</strong>
+        <small>${state.services.length - servicesMissingCoordinates.length} de ${state.services.length}</small>
+      </div>
+      <div class="optimizer-quality-metric">
+        <span>Operarios sin zona</span>
+        <strong>${workersMissingZone.length}</strong>
+        <small>Sin fallback geográfico</small>
+      </div>
+      <div class="optimizer-quality-metric">
+        <span>Servicios sin zona</span>
+        <strong>${servicesMissingZone.length}</strong>
+        <small>Sin fallback geográfico</small>
+      </div>
+    </div>
+
+    ${(workersMissingCoordinates.length || servicesMissingCoordinates.length) ? `
+      <div class="optimizer-missing-locations">
+        <div>
+          <h4>Registros prioritarios para completar</h4>
+          <p class="muted">No hace falta cargar direcciones exactas. Una coordenada aproximada o el centro del barrio alcanza para mejorar el ranking.</p>
+        </div>
+        <div class="optimizer-location-items">
+          ${workersMissingCoordinates.slice(0, 5).map((worker) => `
+            <button type="button" class="optimizer-location-item" data-edit-worker="${worker.id}">
+              <span>Operario</span><strong>${escapeHtml(worker.name)}</strong>
+            </button>
+          `).join('')}
+          ${servicesMissingCoordinates.slice(0, 5).map((service) => `
+            <button type="button" class="optimizer-location-item" data-edit-service="${service.id}">
+              <span>Servicio</span><strong>${escapeHtml(service.name)}</strong>
+            </button>
+          `).join('')}
+        </div>
+      </div>
+    ` : '<div class="empty-state">La cobertura geográfica está completa.</div>'}
+  `;
+}
+
+function renderOptimizer() {
+  updateOptimizerWorkloadPreview();
+  renderOptimizerDataQuality();
+
+  if (!state.optimizerResults) {
+    if (el.optimizerKpiCards) el.optimizerKpiCards.innerHTML = '';
+    if (el.optimizerRecommendation) {
+      el.optimizerRecommendation.innerHTML = `
+        <div class="empty-state">
+          Cargá los días, el horario y la ubicación del servicio. El optimizador explicará por qué recomienda o descarta a cada operario.
+        </div>
+      `;
+    }
+    if (el.optimizerCandidates) el.optimizerCandidates.innerHTML = '<div class="empty-state">Todavía no se ejecutó un análisis.</div>';
+    if (el.optimizerRejected) el.optimizerRejected.innerHTML = '<div class="empty-state">Todavía no se ejecutó un análisis.</div>';
+    return;
+  }
+
+  const results = state.optimizerResults;
+  const best = results.best;
+  const missingLocationCandidates = results.candidates.filter((candidate) => candidate.warnings.length).length;
+
+  el.optimizerKpiCards.innerHTML = `
+    <article class="card"><span class="kpi-label">Candidatos viables</span><strong class="kpi-value">${results.candidates.length}</strong><span class="kpi-foot">Sin conflicto excluyente</span></article>
+    <article class="card"><span class="kpi-label">Descartados</span><strong class="kpi-value">${results.rejected.length}</strong><span class="kpi-foot">Horario, traslado o carga</span></article>
+    <article class="card"><span class="kpi-label">Carga del bloque</span><strong class="kpi-value">${formatHours(results.request.weeklyHours)} hs</strong><span class="kpi-foot">Por semana</span></article>
+    <article class="card"><span class="kpi-label">Análisis con datos parciales</span><strong class="kpi-value">${missingLocationCandidates}</strong><span class="kpi-foot">Candidatos con alertas geográficas</span></article>
+  `;
+
+  el.optimizerRecommendation.innerHTML = best
+    ? `
+      <div class="optimizer-best-grid">
+        <div>
+          <span class="eyebrow">Recomendación principal</span>
+          <h3>${escapeHtml(best.worker.name)}</h3>
+          <p>${escapeHtml(best.classification)} con ${formatNumber(best.score)} puntos. Quedaría en ${formatHours(best.projectedWeeklyHours)} hs semanales${best.targetHours == null ? '' : ` sobre un objetivo de ${formatHours(best.targetHours)} hs`}.</p>
+        </div>
+        <div class="optimizer-best-score">${formatNumber(best.score)}<small>/100</small></div>
+      </div>
+      ${renderOptimizerScoreBreakdown(best)}
+      <p class="optimizer-decision-note">La recomendación pondera eficiencia operativa. Antes de confirmar, validá condiciones laborales, transporte real y cualquier restricción personal no registrada en la app.</p>
+    `
+    : `
+      <div class="optimizer-no-candidate">
+        <h3>No hay un candidato compatible con los criterios actuales</h3>
+        <p>Probá habilitar operarios excedidos, ajustar el margen de traslado o revisar la franja horaria. Forzar una asignación con conflicto solo trasladaría el problema al servicio siguiente.</p>
+      </div>
+    `;
+
+  el.optimizerCandidates.innerHTML = results.candidates.length
+    ? results.candidates.map(renderOptimizerCandidateCard).join('')
+    : '<div class="empty-state">No hay candidatos viables.</div>';
+
+  el.optimizerRejected.innerHTML = results.rejected.length
+    ? results.rejected.slice(0, 20).map(renderOptimizerRejectedCard).join('')
+    : '<div class="empty-state">Ningún operario fue descartado.</div>';
+}
+
+function validateOptimizerRequest(request) {
+  if (!request.days.length) return 'Seleccioná al menos un día.';
+  if (!request.startTime || !request.endTime) return 'Completá el horario de inicio y finalización.';
+  if (calculateHours(request.startTime, request.endTime) <= 0) return 'La hora de finalización debe ser posterior a la de inicio.';
+  if (!request.zone && request.latitude == null) return 'Cargá al menos una zona o coordenadas para poder evaluar cercanía.';
+  if (request.billedMonthlyHours != null && (!Number.isFinite(request.billedMonthlyHours) || request.billedMonthlyHours < 0)) return 'Las horas facturadas mensuales deben ser un número igual o mayor a 0.';
+  if (request.coordinatesRaw && !parseCoordinates(request.coordinatesRaw)) return 'No se pudieron interpretar las coordenadas o el enlace de Google Maps.';
+  return '';
+}
+
+function handleOptimizerSubmit(event) {
+  event.preventDefault();
+  if (!ensureDataReady('analizar candidatos')) return;
+  const request = getOptimizerRequest();
+  const validationError = validateOptimizerRequest(request);
+  if (validationError) {
+    alert(validationError);
+    return;
+  }
+  state.optimizerResults = analyzeOptimizerRequest(request);
+  renderOptimizer();
+  el.optimizerRecommendation?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function syncOptimizerFromService() {
+  const serviceId = el.optimizerExistingService?.value || '';
+  const service = serviceId ? getServiceById(serviceId) : null;
+
+  if (!service) {
+    if (el.optimizerServiceName) el.optimizerServiceName.value = '';
+    if (el.optimizerBilledMonthlyHours) el.optimizerBilledMonthlyHours.value = '';
+    if (el.optimizerAddress) el.optimizerAddress.value = '';
+    if (el.optimizerZone) el.optimizerZone.value = '';
+    if (el.optimizerCoordinates) el.optimizerCoordinates.value = '';
+    state.optimizerResults = null;
+    renderOptimizer();
+    return;
+  }
+
+  if (el.optimizerServiceName) el.optimizerServiceName.value = service.name || '';
+  if (el.optimizerBilledMonthlyHours) el.optimizerBilledMonthlyHours.value = service.billed_monthly_hours ?? '';
+  if (el.optimizerAddress) el.optimizerAddress.value = service.client_address || '';
+  if (el.optimizerZone) el.optimizerZone.value = service.zone || '';
+  if (el.optimizerCoordinates) el.optimizerCoordinates.value = formatCoordinates(service);
+
+  const assignments = getServiceAssignments(service.id);
+  if (assignments.length) {
+    const uniqueDays = new Set(assignments.map((assignment) => Number(assignment.day_of_week)));
+    document.querySelectorAll('.optimizer-day').forEach((input) => {
+      input.checked = uniqueDays.has(Number(input.value));
+    });
+    const firstAssignment = assignments[0];
+    if (el.optimizerStart) el.optimizerStart.value = String(firstAssignment.start_time || '').slice(0, 5);
+    if (el.optimizerEnd) el.optimizerEnd.value = String(firstAssignment.end_time || '').slice(0, 5);
+  }
+
+  state.optimizerResults = null;
+  renderOptimizer();
+}
+
+function clearOptimizerForm() {
+  el.optimizerForm?.reset();
+  if (el.optimizerMonth) el.optimizerMonth.value = getSelectedDashboardMonth();
+  if (el.optimizerTravelBuffer) el.optimizerTravelBuffer.value = '15';
+  state.optimizerResults = null;
+  renderOptimizer();
+}
+
+function prepareOptimizerServiceDialog() {
+  openServiceDialog();
+  const request = getOptimizerRequest();
+  if ($('serviceName')) $('serviceName').value = request.name === 'Servicio simulado' ? '' : request.name;
+  if ($('serviceBilledHours')) $('serviceBilledHours').value = request.billedMonthlyHours ?? '';
+  if ($('serviceAddress')) $('serviceAddress').value = request.client_address || '';
+  if ($('serviceZone')) $('serviceZone').value = request.zone || '';
+  if ($('serviceCoordinates')) $('serviceCoordinates').value = request.latitude != null && request.longitude != null
+    ? `${request.latitude}, ${request.longitude}`
+    : request.coordinatesRaw || '';
+}
+
+function prepareOptimizerAssignment(workerId) {
+  const results = state.optimizerResults;
+  if (!results?.request?.selectedServiceId) {
+    alert('Primero seleccioná o guardá el servicio.');
+    return;
+  }
+  openBulkAssignmentDialog();
+  if ($('bulkAssignmentWorker')) $('bulkAssignmentWorker').value = workerId;
+  if ($('bulkAssignmentService')) $('bulkAssignmentService').value = results.request.selectedServiceId;
+  if ($('bulkAssignmentStart')) $('bulkAssignmentStart').value = results.request.startTime;
+  if ($('bulkAssignmentEnd')) $('bulkAssignmentEnd').value = results.request.endTime;
+  document.querySelectorAll('.bulk-day').forEach((input) => {
+    input.checked = results.request.days.includes(Number(input.value));
+  });
+  if ($('bulkAssignmentNotes')) $('bulkAssignmentNotes').value = `Sugerido por Optimizador · Puntaje ${results.candidates.find((candidate) => candidate.worker.id === workerId)?.score || ''}`;
+}
+
+
+function getMapEntityKey(type, id) {
+  return `${type}:${id}`;
+}
+
+function getMapFilters() {
+  return {
+    search: normalizeSearchText(el.mapSearch?.value || ''),
+    type: el.mapEntityFilter?.value || 'all',
+    zone: el.mapZoneFilter?.value || 'all',
+  };
+}
+
+function getMapEntityZone(type, entity) {
+  return String(type === 'worker' ? entity.home_zone || '' : entity.zone || '').trim();
+}
+
+function getMapEntityAddress(type, entity) {
+  return String(type === 'worker' ? entity.home_address || '' : entity.client_address || '').trim();
+}
+
+function getMapEntitySearchText(type, entity) {
+  if (type === 'worker') {
+    const assignments = getWorkerAssignments(entity.id);
+    const serviceNames = assignments
+      .map((assignment) => getServiceById(assignment.service_id)?.name || '')
+      .filter(Boolean);
+    return normalizeSearchText([
+      entity.name,
+      entity.home_zone || '',
+      entity.home_address || '',
+      entity.notes || '',
+      ...serviceNames,
+    ].join(' '));
+  }
+
+  const assignments = getServiceAssignments(entity.id);
+  const workerNames = assignments
+    .map((assignment) => getWorkerById(assignment.worker_id)?.name || '')
+    .filter(Boolean);
+  return normalizeSearchText([
+    entity.name,
+    entity.zone || '',
+    entity.client_address || '',
+    entity.supervisor_name || '',
+    entity.notes || '',
+    ...workerNames,
+  ].join(' '));
+}
+
+function getAllMapEntities() {
+  return [
+    ...state.services.map((entity) => ({ type: 'service', entity, coordinates: getEntityCoordinates(entity) })),
+    ...state.workers.map((entity) => ({ type: 'worker', entity, coordinates: getEntityCoordinates(entity) })),
+  ];
+}
+
+function getFilteredMapEntities() {
+  const filters = getMapFilters();
+  return getAllMapEntities().filter((item) => {
+    if (!item.coordinates) return false;
+    if (filters.type === 'services' && item.type !== 'service') return false;
+    if (filters.type === 'workers' && item.type !== 'worker') return false;
+    const zone = normalizeSearchText(getMapEntityZone(item.type, item.entity));
+    if (filters.zone !== 'all' && zone !== normalizeSearchText(filters.zone)) return false;
+    if (filters.search && !matchesSearchText(getMapEntitySearchText(item.type, item.entity), filters.search)) return false;
+    return true;
+  });
+}
+
+function syncMapZoneFilter() {
+  if (!el.mapZoneFilter) return;
+  const previousValue = el.mapZoneFilter.value || 'all';
+  const zones = [...new Set(getAllMapEntities()
+    .map((item) => getMapEntityZone(item.type, item.entity))
+    .filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
+
+  el.mapZoneFilter.innerHTML = `
+    <option value="all">Todas las zonas</option>
+    ${zones.map((zone) => `<option value="${escapeHtml(zone)}">${escapeHtml(zone)}</option>`).join('')}
+  `;
+
+  if ([...el.mapZoneFilter.options].some((option) => option.value === previousValue)) {
+    el.mapZoneFilter.value = previousValue;
+  }
+}
+
+function ensureOperationsMap() {
+  if (operationsMap || !el.operationsMap) return operationsMap;
+  if (!window.L) {
+    el.operationsMap.innerHTML = '<div class="map-library-error">No se pudo cargar el mapa. Revisá la conexión a internet y volvé a actualizar.</div>';
+    return null;
+  }
+
+  operationsMap = window.L.map(el.operationsMap, {
+    zoomControl: true,
+    preferCanvas: true,
+  }).setView(DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM);
+
+  window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors',
+    crossOrigin: true,
+  }).addTo(operationsMap);
+
+  mapMarkerLayer = window.L.layerGroup().addTo(operationsMap);
+  mapConnectionLayer = window.L.layerGroup().addTo(operationsMap);
+  return operationsMap;
+}
+
+function createMapMarkerIcon(type, isSelected = false) {
+  const label = type === 'service' ? 'S' : 'O';
+  const title = type === 'service' ? 'Servicio' : 'Operario';
+  return window.L.divIcon({
+    className: 'map-marker-wrapper',
+    html: `<div class="map-marker map-marker-${type}${isSelected ? ' is-selected' : ''}" title="${title}"><span>${label}</span></div>`,
+    iconSize: [36, 44],
+    iconAnchor: [18, 42],
+    popupAnchor: [0, -38],
+  });
+}
+
+function formatAssignmentLine(assignment, counterpartName) {
+  const day = DAYS.find((item) => item.value === Number(assignment.day_of_week));
+  return `${day?.label || ''} ${String(assignment.start_time || '').slice(0, 5)}–${String(assignment.end_time || '').slice(0, 5)} · ${counterpartName}`;
+}
+
+function buildMapPopupHtml(type, entity) {
+  const zone = getMapEntityZone(type, entity) || 'Sin zona';
+  const address = getMapEntityAddress(type, entity) || 'Sin dirección cargada';
+  const coordinates = formatCoordinates(entity);
+
+  if (type === 'worker') {
+    const assignments = getWorkerAssignments(entity.id);
+    const serviceCount = new Set(assignments.map((assignment) => assignment.service_id)).size;
+    return `
+      <div class="map-popup-card">
+        <span class="map-popup-kind">Operario</span>
+        <strong>${escapeHtml(entity.name)}</strong>
+        <span>${escapeHtml(zone)}</span>
+        <span>${escapeHtml(address)}</span>
+        <small>${serviceCount} ${serviceCount === 1 ? 'servicio activo' : 'servicios activos'} · ${escapeHtml(coordinates)}</small>
+        <button type="button" class="map-popup-action" data-edit-worker="${entity.id}">Editar ubicación</button>
+      </div>
+    `;
+  }
+
+  const assignments = getServiceAssignments(entity.id);
+  const workerCount = new Set(assignments.map((assignment) => assignment.worker_id)).size;
+  return `
+    <div class="map-popup-card">
+      <span class="map-popup-kind">Servicio</span>
+      <strong>${escapeHtml(entity.name)}</strong>
+      <span>${escapeHtml(zone)}</span>
+      <span>${escapeHtml(address)}</span>
+      <small>${workerCount} ${workerCount === 1 ? 'operario asignado' : 'operarios asignados'} · ${escapeHtml(coordinates)}</small>
+      <button type="button" class="map-popup-action" data-edit-service="${entity.id}">Editar ubicación</button>
+    </div>
+  `;
+}
+
+function updateMapMarkerSelection() {
+  mapMarkers.forEach((record, key) => {
+    const isSelected = state.mapSelection && key === getMapEntityKey(state.mapSelection.type, state.mapSelection.id);
+    record.marker.setIcon(createMapMarkerIcon(record.type, Boolean(isSelected)));
+    if (isSelected) record.marker.setZIndexOffset(1000);
+    else record.marker.setZIndexOffset(0);
+  });
+}
+
+function renderMapConnections() {
+  if (!mapConnectionLayer) return;
+  mapConnectionLayer.clearLayers();
+  if (!state.mapSelection) return;
+
+  const { type, id } = state.mapSelection;
+  const origin = type === 'worker' ? getWorkerById(id) : getServiceById(id);
+  const originCoordinates = getEntityCoordinates(origin);
+  if (!originCoordinates) return;
+
+  const counterpartIds = new Set();
+  if (type === 'worker') {
+    getWorkerAssignments(id).forEach((assignment) => counterpartIds.add(assignment.service_id));
+  } else {
+    getServiceAssignments(id).forEach((assignment) => counterpartIds.add(assignment.worker_id));
+  }
+
+  counterpartIds.forEach((counterpartId) => {
+    const counterpart = type === 'worker' ? getServiceById(counterpartId) : getWorkerById(counterpartId);
+    const destination = getEntityCoordinates(counterpart);
+    if (!destination) return;
+    window.L.polyline(
+      [
+        [originCoordinates.latitude, originCoordinates.longitude],
+        [destination.latitude, destination.longitude],
+      ],
+      {
+        color: '#75f0c2',
+        weight: 2,
+        opacity: 0.7,
+        dashArray: '7 7',
+        interactive: false,
+      }
+    ).addTo(mapConnectionLayer);
+  });
+}
+
+function renderMapSelectionPanel() {
+  if (!el.mapSelectionPanel) return;
+  if (!state.mapSelection) {
+    el.mapSelectionPanel.innerHTML = '<div class="empty-state">Seleccioná un servicio o un operario para ver su detalle y sus vínculos.</div>';
+    return;
+  }
+
+  const { type, id } = state.mapSelection;
+  const entity = type === 'worker' ? getWorkerById(id) : getServiceById(id);
+  if (!entity) {
+    state.mapSelection = null;
+    renderMapSelectionPanel();
+    return;
+  }
+
+  const coordinates = getEntityCoordinates(entity);
+  const zone = getMapEntityZone(type, entity) || 'Sin zona';
+  const address = getMapEntityAddress(type, entity) || 'Sin dirección cargada';
+  const mapsUrl = coordinates
+    ? `https://www.google.com/maps/search/?api=1&query=${coordinates.latitude},${coordinates.longitude}`
+    : '';
+
+  if (type === 'worker') {
+    const assignments = getWorkerAssignments(entity.id)
+      .slice()
+      .sort((a, b) => Number(a.day_of_week) - Number(b.day_of_week) || String(a.start_time).localeCompare(String(b.start_time)));
+    el.mapSelectionPanel.innerHTML = `
+      <div class="map-selection-head">
+        <div>
+          <span class="map-selection-kind">Operario</span>
+          <h4>${escapeHtml(entity.name)}</h4>
+        </div>
+        <span class="map-selection-badge map-selection-badge-worker">Residencia</span>
+      </div>
+      <div class="map-detail-grid">
+        <div><span>Zona</span><strong>${escapeHtml(zone)}</strong></div>
+        <div><span>Dirección</span><strong>${escapeHtml(address)}</strong></div>
+        <div><span>Horas semanales</span><strong>${formatHours(assignments.reduce((sum, assignment) => sum + calculateHours(assignment.start_time, assignment.end_time), 0))} hs</strong></div>
+        <div><span>Objetivo</span><strong>${getTargetHours(entity) == null ? 'Por hora' : `${formatHours(getTargetHours(entity))} hs`}</strong></div>
+      </div>
+      <div class="map-linked-list">
+        <strong>Agenda vinculada</strong>
+        ${assignments.length ? assignments.map((assignment) => {
+          const service = getServiceById(assignment.service_id);
+          return `<button type="button" class="map-linked-item" data-map-select-service="${assignment.service_id}">${escapeHtml(formatAssignmentLine(assignment, service?.name || 'Servicio'))}</button>`;
+        }).join('') : '<span class="muted small">Sin asignaciones activas.</span>'}
+      </div>
+      <div class="inline-actions">
+        <button type="button" class="btn btn-secondary btn-sm" data-edit-worker="${entity.id}">Editar operario</button>
+        ${mapsUrl ? `<a class="btn btn-ghost btn-sm map-external-link" href="${mapsUrl}" target="_blank" rel="noopener noreferrer">Abrir en Google Maps</a>` : ''}
+      </div>
+    `;
+    return;
+  }
+
+  const summary = getServiceHoursSummary(entity);
+  const assignments = getServiceAssignments(entity.id)
+    .slice()
+    .sort((a, b) => Number(a.day_of_week) - Number(b.day_of_week) || String(a.start_time).localeCompare(String(b.start_time)));
+  el.mapSelectionPanel.innerHTML = `
+    <div class="map-selection-head">
+      <div>
+        <span class="map-selection-kind">Servicio</span>
+        <h4>${escapeHtml(entity.name)}</h4>
+      </div>
+      <span class="map-selection-badge map-selection-badge-service">Cliente</span>
+    </div>
+    <div class="map-detail-grid">
+      <div><span>Zona</span><strong>${escapeHtml(zone)}</strong></div>
+      <div><span>Dirección</span><strong>${escapeHtml(address)}</strong></div>
+      <div><span>Horas facturadas</span><strong>${summary.billedHours == null ? 'Pendiente' : `${formatHours(summary.billedHours)} hs`}</strong></div>
+      <div><span>Horas operativas</span><strong>${formatHours(summary.assignedHours)} hs</strong></div>
+    </div>
+    <div class="map-linked-list">
+      <strong>Cobertura vinculada</strong>
+      ${assignments.length ? assignments.map((assignment) => {
+        const worker = getWorkerById(assignment.worker_id);
+        return `<button type="button" class="map-linked-item" data-map-select-worker="${assignment.worker_id}">${escapeHtml(formatAssignmentLine(assignment, worker?.name || 'Operario'))}</button>`;
+      }).join('') : '<span class="muted small">Sin operarios asignados.</span>'}
+    </div>
+    <div class="inline-actions">
+      <button type="button" class="btn btn-secondary btn-sm" data-edit-service="${entity.id}">Editar servicio</button>
+      ${mapsUrl ? `<a class="btn btn-ghost btn-sm map-external-link" href="${mapsUrl}" target="_blank" rel="noopener noreferrer">Abrir en Google Maps</a>` : ''}
+    </div>
+  `;
+}
+
+function selectMapEntity(type, id, { center = false, openPopup = false } = {}) {
+  const entity = type === 'worker' ? getWorkerById(id) : getServiceById(id);
+  if (!entity) return;
+  state.mapSelection = { type, id };
+  updateMapMarkerSelection();
+  renderMapConnections();
+  renderMapSelectionPanel();
+
+  const record = mapMarkers.get(getMapEntityKey(type, id));
+  if (record && center && operationsMap) {
+    operationsMap.setView(record.marker.getLatLng(), Math.max(operationsMap.getZoom(), 14), { animate: true });
+  }
+  if (record && openPopup) record.marker.openPopup();
+}
+
+function clearMapSelection() {
+  state.mapSelection = null;
+  updateMapMarkerSelection();
+  renderMapConnections();
+  renderMapSelectionPanel();
+}
+
+function renderMapKpis() {
+  if (!el.mapKpiCards) return;
+  const mappedServices = state.services.filter((service) => getEntityCoordinates(service)).length;
+  const mappedWorkers = state.workers.filter((worker) => getEntityCoordinates(worker)).length;
+  const missingServices = state.services.length - mappedServices;
+  const missingWorkers = state.workers.length - mappedWorkers;
+  el.mapKpiCards.innerHTML = `
+    <article class="card"><span class="kpi-label">Servicios ubicados</span><strong class="kpi-value">${mappedServices}</strong><span class="kpi-foot">de ${state.services.length}</span></article>
+    <article class="card"><span class="kpi-label">Operarios ubicados</span><strong class="kpi-value">${mappedWorkers}</strong><span class="kpi-foot">de ${state.workers.length}</span></article>
+    <article class="card"><span class="kpi-label">Servicios pendientes</span><strong class="kpi-value">${missingServices}</strong><span class="kpi-foot">Sin coordenadas</span></article>
+    <article class="card"><span class="kpi-label">Operarios pendientes</span><strong class="kpi-value">${missingWorkers}</strong><span class="kpi-foot">Sin coordenadas</span></article>
+  `;
+}
+
+function renderMapMissingLocations() {
+  if (!el.mapMissingLocations) return;
+  const missingWorkers = state.workers.filter((worker) => !getEntityCoordinates(worker));
+  const missingServices = state.services.filter((service) => !getEntityCoordinates(service));
+  const items = [
+    ...missingServices.map((entity) => ({ type: 'service', entity })),
+    ...missingWorkers.map((entity) => ({ type: 'worker', entity })),
+  ];
+
+  if (!items.length) {
+    el.mapMissingLocations.innerHTML = '<div class="empty-state">Todas las ubicaciones están completas.</div>';
+    return;
+  }
+
+  el.mapMissingLocations.innerHTML = `
+    <div class="map-missing-summary">${items.length} registros pendientes</div>
+    ${items.slice(0, 12).map(({ type, entity }) => `
+      <button type="button" class="map-missing-item" ${type === 'worker' ? `data-edit-worker="${entity.id}"` : `data-edit-service="${entity.id}"`}>
+        <span>${type === 'worker' ? 'Operario' : 'Servicio'}</span>
+        <strong>${escapeHtml(entity.name)}</strong>
+        <small>${escapeHtml(getMapEntityZone(type, entity) || 'Sin zona')}</small>
+      </button>
+    `).join('')}
+    ${items.length > 12 ? `<span class="muted small">Se muestran 12 de ${items.length}. Usá la búsqueda global para completar el resto.</span>` : ''}
+  `;
+}
+
+function fitMapToVisibleMarkers() {
+  if (!operationsMap) return;
+  const latLngs = [...mapMarkers.values()].map((record) => record.marker.getLatLng());
+  if (!latLngs.length) {
+    operationsMap.setView(DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM);
+    return;
+  }
+  if (latLngs.length === 1) {
+    operationsMap.setView(latLngs[0], 15, { animate: true });
+    return;
+  }
+  operationsMap.fitBounds(window.L.latLngBounds(latLngs).pad(0.15), { animate: true, maxZoom: 15 });
+}
+
+function renderMap({ fit = false } = {}) {
+  renderMapKpis();
+  renderMapMissingLocations();
+  syncMapZoneFilter();
+  const map = ensureOperationsMap();
+  if (!map || !mapMarkerLayer) return;
+
+  mapMarkerLayer.clearLayers();
+  mapMarkers.clear();
+  if (mapConnectionLayer) mapConnectionLayer.clearLayers();
+
+  const visibleEntities = getFilteredMapEntities();
+  visibleEntities.forEach(({ type, entity, coordinates }) => {
+    const key = getMapEntityKey(type, entity.id);
+    const isSelected = state.mapSelection && key === getMapEntityKey(state.mapSelection.type, state.mapSelection.id);
+    const marker = window.L.marker([coordinates.latitude, coordinates.longitude], {
+      icon: createMapMarkerIcon(type, Boolean(isSelected)),
+      keyboard: true,
+      title: entity.name || '',
+      riseOnHover: true,
+    }).addTo(mapMarkerLayer);
+    marker.bindPopup(buildMapPopupHtml(type, entity), { maxWidth: 320 });
+    marker.bindTooltip(escapeHtml(entity.name || ''), { direction: 'top', offset: [0, -34], opacity: 0.92 });
+    marker.on('click', () => selectMapEntity(type, entity.id));
+    mapMarkers.set(key, { marker, type, entity });
+  });
+
+  if (state.mapSelection && !mapMarkers.has(getMapEntityKey(state.mapSelection.type, state.mapSelection.id))) {
+    state.mapSelection = null;
+  }
+
+  if (el.mapEmptyOverlay) el.mapEmptyOverlay.classList.toggle('hidden', visibleEntities.length > 0);
+  renderMapSelectionPanel();
+  renderMapConnections();
+
+  window.setTimeout(() => {
+    map.invalidateSize();
+    if (fit || !state.mapHasFitted) {
+      fitMapToVisibleMarkers();
+      state.mapHasFitted = true;
+    }
+  }, 80);
+}
+
+function revealMapEntity(type, id) {
+  const key = getMapEntityKey(type, id);
+  if (!mapMarkers.has(key)) {
+    if (el.mapSearch) el.mapSearch.value = '';
+    if (el.mapEntityFilter) el.mapEntityFilter.value = 'all';
+    if (el.mapZoneFilter) el.mapZoneFilter.value = 'all';
+    renderMap();
+  }
+  selectMapEntity(type, id, { center: true, openPopup: true });
+}
+
+function handleMapPanelClick(event) {
+  const workerButton = event.target.closest('[data-map-select-worker]');
+  if (workerButton) {
+    revealMapEntity('worker', workerButton.dataset.mapSelectWorker);
+    return;
+  }
+  const serviceButton = event.target.closest('[data-map-select-service]');
+  if (serviceButton) {
+    revealMapEntity('service', serviceButton.dataset.mapSelectService);
+    return;
+  }
+  handleDynamicClicks(event);
+}
+
 function renderMaterials() {
   renderMaterialsKpis();
   renderServiceMaterialsBoard();
@@ -3675,6 +4938,12 @@ function renderCurrentView() {
     }
     case 'planner':
       renderPlanner();
+      break;
+    case 'map':
+      renderMap();
+      break;
+    case 'optimizer':
+      renderOptimizer();
       break;
     case 'absences':
       renderAbsences();
@@ -3748,6 +5017,8 @@ function buildGlobalSearchGroups(query) {
       worker.name,
       TYPE_META[worker.worker_type]?.label || '',
       worker.notes || '',
+      worker.home_address || '',
+      worker.home_zone || '',
       ...serviceNames,
     ].join(' ');
 
@@ -4005,6 +5276,7 @@ async function loadAllData() {
   state.materials = materialsRes.error ? [] : (materialsRes.data || []);
   state.serviceMaterials = serviceMaterialsRes.error ? [] : (serviceMaterialsRes.data || []);
   state.materialConsumptions = materialConsumptionsRes.error ? [] : (materialConsumptionsRes.data || []);
+  state.optimizerResults = null;
 
   if (absencesRes.error) {
     console.warn('La tabla de ausencias todavía no está disponible o devolvió error.', absencesRes.error);
@@ -4289,6 +5561,9 @@ function openWorkerDialog(workerId = null) {
     $('workerType').value = worker.worker_type || 'full_time';
     $('workerTargetHours').value = worker.target_hours ?? '';
     $('workerHireDate').value = worker.hire_date || '';
+    $('workerHomeAddress').value = worker.home_address || '';
+    $('workerHomeZone').value = worker.home_zone || '';
+    $('workerCoordinates').value = formatCoordinates(worker);
     $('workerNotes').value = worker.notes || '';
   }
 
@@ -4311,6 +5586,7 @@ function openServiceDialog(serviceId = null) {
     $('serviceName').value = service.name || '';
     $('serviceAddress').value = service.client_address || '';
     $('serviceZone').value = service.zone || '';
+    $('serviceCoordinates').value = formatCoordinates(service);
     $('serviceSupervisor').value = service.supervisor_name || '';
     $('serviceBilledHours').value = service.billed_monthly_hours ?? '';
     $('serviceFrequency').value = service.frequency_type || 'fixed';
@@ -5164,6 +6440,9 @@ async function saveWorker(event) {
   const typeInput = $('workerType');
   const targetInput = $('workerTargetHours');
   const hireDateInput = $('workerHireDate');
+  const homeAddressInput = $('workerHomeAddress');
+  const homeZoneInput = $('workerHomeZone');
+  const coordinatesInput = $('workerCoordinates');
   const notesInput = $('workerNotes');
 
   if (!nameInput || !typeInput) {
@@ -5180,11 +6459,22 @@ async function saveWorker(event) {
   try {
     await ensureWriteSession();
 
+    const coordinatesRaw = coordinatesInput?.value.trim() || '';
+    const coordinates = coordinatesRaw ? parseCoordinates(coordinatesRaw) : null;
+    if (coordinatesRaw && !coordinates) {
+      alert('No se pudieron interpretar las coordenadas o el enlace de Google Maps del operario.');
+      return;
+    }
+
     const payload = {
       name: nameInput.value.trim(),
       worker_type: typeInput.value,
       target_hours: targetInput?.value ? Number(targetInput.value) : null,
       hire_date: hireDateInput?.value || null,
+      home_address: homeAddressInput?.value.trim() || null,
+      home_zone: homeZoneInput?.value.trim() || null,
+      latitude: coordinates?.latitude ?? null,
+      longitude: coordinates?.longitude ?? null,
       notes: notesInput?.value.trim() || null,
     };
 
@@ -5202,7 +6492,11 @@ async function saveWorker(event) {
 
     if (error) {
       console.error(error);
-      alert(error.message);
+      const errorMessage = String(error.message || '');
+      const missingLocationColumn = errorMessage.includes('home_address') || errorMessage.includes('home_zone') || errorMessage.includes('latitude') || errorMessage.includes('longitude');
+      alert(missingLocationColumn
+        ? 'Falta ejecutar sql/migration_add_optimizer_locations.sql. La migración solo agrega campos de ubicación y no modifica los datos existentes.'
+        : error.message);
       return;
     }
 
@@ -5227,6 +6521,7 @@ async function saveService(event) {
   const serviceName = $('serviceName');
   const serviceAddress = $('serviceAddress');
   const serviceZone = $('serviceZone');
+  const serviceCoordinates = $('serviceCoordinates');
   const serviceSupervisor = $('serviceSupervisor');
   const serviceBilledHours = $('serviceBilledHours');
   const serviceFrequency = $('serviceFrequency');
@@ -5253,10 +6548,19 @@ async function saveService(event) {
       return;
     }
 
+    const coordinatesRaw = serviceCoordinates?.value.trim() || '';
+    const coordinates = coordinatesRaw ? parseCoordinates(coordinatesRaw) : null;
+    if (coordinatesRaw && !coordinates) {
+      alert('No se pudieron interpretar las coordenadas o el enlace de Google Maps del servicio.');
+      return;
+    }
+
     const payload = {
       name: serviceName.value.trim(),
       client_address: serviceAddress ? serviceAddress.value.trim() || null : null,
       zone: serviceZone ? serviceZone.value.trim() || null : null,
+      latitude: coordinates?.latitude ?? null,
+      longitude: coordinates?.longitude ?? null,
       supervisor_name: serviceSupervisor ? serviceSupervisor.value.trim() || null : null,
       billed_monthly_hours: billedHours,
       frequency_type: serviceFrequency ? serviceFrequency.value : 'fixed',
@@ -5277,10 +6581,14 @@ async function saveService(event) {
 
     if (error) {
       console.error(error);
-      const missingBilledHoursColumn = String(error.message || '').includes('billed_monthly_hours');
-      alert(missingBilledHoursColumn
-        ? 'Falta ejecutar la migración de base de datos incluida en sql/migration_add_billed_monthly_hours.sql. La migración agrega una columna nueva y no borra ni modifica los datos existentes.'
-        : error.message);
+      const errorMessage = String(error.message || '');
+      const missingBilledHoursColumn = errorMessage.includes('billed_monthly_hours');
+      const missingLocationColumn = errorMessage.includes('latitude') || errorMessage.includes('longitude');
+      alert(missingLocationColumn
+        ? 'Falta ejecutar sql/migration_add_optimizer_locations.sql. La migración solo agrega campos de ubicación y no modifica los datos existentes.'
+        : missingBilledHoursColumn
+          ? 'Falta ejecutar la migración de base de datos incluida en sql/migration_add_billed_monthly_hours.sql. La migración agrega una columna nueva y no borra ni modifica los datos existentes.'
+          : error.message);
       return;
     }
 
@@ -5750,6 +7058,12 @@ function handleDynamicClicks(event) {
     return;
   }
 
+  const optimizerCandidateBtn = event.target.closest('[data-optimizer-use-candidate]');
+  if (optimizerCandidateBtn) {
+    prepareOptimizerAssignment(optimizerCandidateBtn.dataset.optimizerUseCandidate);
+    return;
+  }
+
   const assignmentBtn = event.target.closest('[data-edit-assignment]');
   if (assignmentBtn) {
     openAssignmentDialog(assignmentBtn.dataset.editAssignment);
@@ -5762,6 +7076,8 @@ function getCurrentViewTitle() {
     workers: 'Operarios',
     services: 'Servicios',
     planner: 'Planner semanal',
+    map: 'Mapa',
+    optimizer: 'Optimizador',
     absences: 'Ausencias',
     materials: 'Materiales',
   };
@@ -5855,11 +7171,14 @@ function buildWorkersExportData() {
       {
         name: 'Operarios',
         rows: [
-          ['Operario', 'Tipo', 'Fecha de ingreso', 'Mes de análisis', 'Horas objetivo semanales', 'Horas asignadas semanales', 'Horas operativas mensuales', 'Diferencia semanal', 'Estado', 'Servicios'],
+          ['Operario', 'Tipo', 'Fecha de ingreso', 'Domicilio de referencia', 'Zona de residencia', 'Coordenadas', 'Mes de análisis', 'Horas objetivo semanales', 'Horas asignadas semanales', 'Horas operativas mensuales', 'Diferencia semanal', 'Estado', 'Servicios'],
           ...summaries.map((worker) => [
             worker.name,
             TYPE_META[worker.worker_type].label,
             worker.hire_date ? formatDateLabel(worker.hire_date) : '',
+            worker.home_address || '',
+            worker.home_zone || '',
+            formatCoordinates(worker),
             formatMonthLabel(getSelectedDashboardMonth()),
             worker.targetHours == null ? 'SEGURO' : worker.targetHours,
             worker.totalHours,
@@ -5910,7 +7229,7 @@ function buildServicesExportData() {
       {
         name: 'Servicios',
         rows: [
-          ['Mes de análisis', 'Servicio', 'Dirección', 'Zona', 'Supervisor', 'Frecuencia', 'Horas facturadas mensuales', 'Horas operativas mensuales', 'Diferencia', 'Estado horas', 'Notas', 'Cobertura activa'],
+          ['Mes de análisis', 'Servicio', 'Dirección', 'Zona', 'Coordenadas', 'Supervisor', 'Frecuencia', 'Horas facturadas mensuales', 'Horas operativas mensuales', 'Diferencia', 'Estado horas', 'Notas', 'Cobertura activa'],
           ...services.map((service) => {
             const summary = getServiceHoursSummary(service, monthKey);
             return [
@@ -5918,6 +7237,7 @@ function buildServicesExportData() {
               service.name,
               service.client_address || '',
               service.zone || '',
+              formatCoordinates(service),
               service.supervisor_name || '',
               service.frequency_type || '',
               summary.billedHours == null ? 'Pendiente' : summary.billedHours,
@@ -5956,6 +7276,48 @@ function buildServicesExportData() {
             });
             return rows;
           }),
+        ],
+      },
+    ],
+  };
+}
+
+
+function buildMapExportData() {
+  const mapped = getAllMapEntities().filter((item) => item.coordinates);
+  const missing = getAllMapEntities().filter((item) => !item.coordinates);
+  return {
+    sheets: [
+      {
+        name: 'Ubicaciones',
+        rows: [
+          ['Tipo', 'Nombre', 'Zona', 'Dirección', 'Latitud', 'Longitud', 'Vínculos activos'],
+          ...mapped.map(({ type, entity, coordinates }) => {
+            const links = type === 'worker'
+              ? new Set(getWorkerAssignments(entity.id).map((assignment) => assignment.service_id)).size
+              : new Set(getServiceAssignments(entity.id).map((assignment) => assignment.worker_id)).size;
+            return [
+              type === 'worker' ? 'Operario' : 'Servicio',
+              entity.name,
+              getMapEntityZone(type, entity),
+              getMapEntityAddress(type, entity),
+              coordinates.latitude,
+              coordinates.longitude,
+              links,
+            ];
+          }),
+        ],
+      },
+      {
+        name: 'Sin coordenadas',
+        rows: [
+          ['Tipo', 'Nombre', 'Zona', 'Dirección'],
+          ...missing.map(({ type, entity }) => [
+            type === 'worker' ? 'Operario' : 'Servicio',
+            entity.name,
+            getMapEntityZone(type, entity),
+            getMapEntityAddress(type, entity),
+          ]),
         ],
       },
     ],
@@ -6303,6 +7665,66 @@ function buildMaterialsExportData() {
   };
 }
 
+
+
+function buildOptimizerExportData() {
+  const results = state.optimizerResults;
+  if (!results) {
+    return {
+      sheets: [{ name: 'Optimizador', rows: [['Estado'], ['No se ejecutó un análisis.']] }],
+    };
+  }
+
+  const request = results.request;
+  return {
+    sheets: [
+      {
+        name: 'Necesidad',
+        rows: [
+          ['Campo', 'Valor'],
+          ['Servicio', request.name],
+          ['Dirección', request.client_address || ''],
+          ['Zona', request.zone || ''],
+          ['Mes', formatMonthLabel(request.monthKey)],
+          ['Horas facturadas mensuales', request.billedMonthlyHours == null ? 'Sin cargar' : request.billedMonthlyHours],
+          ['Días', request.days.map((dayValue) => DAYS.find((day) => day.value === dayValue)?.fullLabel || '').join(', ')],
+          ['Horario', `${request.startTime}-${request.endTime}`],
+          ['Horas semanales', request.weeklyHours],
+          ['Horas mensuales proyectadas', request.monthlyHours],
+          ['Margen de traslado', `${request.travelBuffer} min`],
+        ],
+      },
+      {
+        name: 'Ranking',
+        rows: [
+          ['Posición', 'Operario', 'Clasificación', 'Puntaje', 'Horas actuales', 'Horas proyectadas', 'Objetivo', 'Exceso', 'Alertas'],
+          ...results.candidates.map((candidate, index) => [
+            index + 1,
+            candidate.worker.name,
+            candidate.classification,
+            candidate.score,
+            candidate.currentWeeklyHours,
+            candidate.projectedWeeklyHours,
+            candidate.targetHours == null ? 'Sin objetivo fijo' : candidate.targetHours,
+            candidate.overBy,
+            candidate.warnings.join(' | '),
+          ]),
+        ],
+      },
+      {
+        name: 'Descartados',
+        rows: [
+          ['Operario', 'Motivos'],
+          ...results.rejected.map((candidate) => [
+            candidate.worker.name,
+            candidate.rejectionReasons.join(' | '),
+          ]),
+        ],
+      },
+    ],
+  };
+}
+
 function buildCurrentExportData() {
   switch (state.currentView) {
     case 'workers':
@@ -6311,6 +7733,10 @@ function buildCurrentExportData() {
       return buildServicesExportData();
     case 'planner':
       return buildPlannerExportData();
+    case 'map':
+      return buildMapExportData();
+    case 'optimizer':
+      return buildOptimizerExportData();
     case 'absences':
       return buildAbsencesExportData();
     case 'materials':
@@ -6465,6 +7891,26 @@ function bindEvents() {
     }
     scheduleRenderCurrentView();
   });
+  el.optimizerForm?.addEventListener('submit', handleOptimizerSubmit);
+  el.optimizerExistingService?.addEventListener('change', syncOptimizerFromService);
+  el.optimizerMonth?.addEventListener('change', updateOptimizerWorkloadPreview);
+  el.optimizerStart?.addEventListener('input', updateOptimizerWorkloadPreview);
+  el.optimizerEnd?.addEventListener('input', updateOptimizerWorkloadPreview);
+  document.querySelectorAll('.optimizer-day').forEach((input) => input.addEventListener('change', updateOptimizerWorkloadPreview));
+  el.optimizerClearBtn?.addEventListener('click', clearOptimizerForm);
+  el.optimizerCreateServiceBtn?.addEventListener('click', prepareOptimizerServiceDialog);
+  el.optimizerCandidates?.addEventListener('click', handleDynamicClicks);
+  el.optimizerRejected?.addEventListener('click', handleDynamicClicks);
+  el.optimizerDataQuality?.addEventListener('click', handleDynamicClicks);
+  const debouncedMapRender = debounce(() => renderMap({ fit: true }), 180);
+  el.mapSearch?.addEventListener('input', debouncedMapRender);
+  el.mapEntityFilter?.addEventListener('change', () => renderMap({ fit: true }));
+  el.mapZoneFilter?.addEventListener('change', () => renderMap({ fit: true }));
+  el.mapFitBtn?.addEventListener('click', fitMapToVisibleMarkers);
+  el.mapClearSelectionBtn?.addEventListener('click', clearMapSelection);
+  el.operationsMap?.addEventListener('click', handleMapPanelClick);
+  el.mapSelectionPanel?.addEventListener('click', handleMapPanelClick);
+  el.mapMissingLocations?.addEventListener('click', handleMapPanelClick);
   el.printViewBtn?.addEventListener('click', printCurrentView);
   el.exportExcelBtn?.addEventListener('click', exportCurrentViewToExcel);
   el.exportPdfBtn?.addEventListener('click', exportCurrentViewToPdf);
@@ -6626,6 +8072,36 @@ function boot() {
       servicesGrid: $('servicesGrid'),
       servicesPagination: $('servicesPagination'),
       plannerBoard: $('plannerBoard'),
+      mapSearch: $('mapSearch'),
+      mapEntityFilter: $('mapEntityFilter'),
+      mapZoneFilter: $('mapZoneFilter'),
+      mapFitBtn: $('mapFitBtn'),
+      mapClearSelectionBtn: $('mapClearSelectionBtn'),
+      mapKpiCards: $('mapKpiCards'),
+      operationsMap: $('operationsMap'),
+      mapEmptyOverlay: $('mapEmptyOverlay'),
+      mapSelectionPanel: $('mapSelectionPanel'),
+      mapMissingLocations: $('mapMissingLocations'),
+      optimizerForm: $('optimizerForm'),
+      optimizerExistingService: $('optimizerExistingService'),
+      optimizerMonth: $('optimizerMonth'),
+      optimizerServiceName: $('optimizerServiceName'),
+      optimizerBilledMonthlyHours: $('optimizerBilledMonthlyHours'),
+      optimizerAddress: $('optimizerAddress'),
+      optimizerZone: $('optimizerZone'),
+      optimizerCoordinates: $('optimizerCoordinates'),
+      optimizerStart: $('optimizerStart'),
+      optimizerEnd: $('optimizerEnd'),
+      optimizerTravelBuffer: $('optimizerTravelBuffer'),
+      optimizerAllowOverTarget: $('optimizerAllowOverTarget'),
+      optimizerWorkloadPreview: $('optimizerWorkloadPreview'),
+      optimizerKpiCards: $('optimizerKpiCards'),
+      optimizerRecommendation: $('optimizerRecommendation'),
+      optimizerCandidates: $('optimizerCandidates'),
+      optimizerRejected: $('optimizerRejected'),
+      optimizerDataQuality: $('optimizerDataQuality'),
+      optimizerClearBtn: $('optimizerClearBtn'),
+      optimizerCreateServiceBtn: $('optimizerCreateServiceBtn'),
       absenceFilterMode: $('absenceFilterMode'),
       absenceApplyFilterBtn: $('absenceApplyFilterBtn'),
       absenceDateFilter: $('absenceDateFilter'),
@@ -6701,6 +8177,7 @@ function boot() {
     }
 
     initializeDashboardMonth();
+    if (el.optimizerMonth) el.optimizerMonth.value = state.dashboardMonth;
     setCurrentView('dashboard');
     setAuthMode('login');
     setDataReady(false);

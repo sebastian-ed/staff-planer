@@ -18,12 +18,20 @@ create table if not exists public.workers (
   worker_type text not null check (worker_type in ('full_time', 'part_time', 'insurance')),
   target_hours numeric(6,2),
   hire_date date,
+  home_address text,
+  home_zone text,
+  latitude numeric(9,6),
+  longitude numeric(9,6),
   notes text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
 alter table public.workers add column if not exists hire_date date;
+alter table public.workers add column if not exists home_address text;
+alter table public.workers add column if not exists home_zone text;
+alter table public.workers add column if not exists latitude numeric(9,6);
+alter table public.workers add column if not exists longitude numeric(9,6);
 
 -- Servicios
 create table if not exists public.services (
@@ -34,6 +42,8 @@ create table if not exists public.services (
   supervisor_name text,
   billed_weekly_hours numeric(8,2),
   billed_monthly_hours numeric(10,2),
+  latitude numeric(9,6),
+  longitude numeric(9,6),
   frequency_type text not null default 'fixed' check (frequency_type in ('fixed', 'variable', 'replacement')),
   notes text,
   created_at timestamptz not null default now(),
@@ -43,6 +53,8 @@ create table if not exists public.services (
 alter table public.services add column if not exists supervisor_name text;
 alter table public.services add column if not exists billed_weekly_hours numeric(8,2);
 alter table public.services add column if not exists billed_monthly_hours numeric(10,2);
+alter table public.services add column if not exists latitude numeric(9,6);
+alter table public.services add column if not exists longitude numeric(9,6);
 
 DO $$ BEGIN
   IF NOT EXISTS (
@@ -64,6 +76,46 @@ DO $$ BEGIN
     ALTER TABLE public.services
       ADD CONSTRAINT services_billed_monthly_hours_nonnegative
       CHECK (billed_monthly_hours IS NULL OR billed_monthly_hours >= 0);
+  END IF;
+END $$;
+
+
+
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'workers_location_coordinates_valid'
+      AND conrelid = 'public.workers'::regclass
+  ) THEN
+    ALTER TABLE public.workers
+      ADD CONSTRAINT workers_location_coordinates_valid
+      CHECK (
+        (latitude IS NULL AND longitude IS NULL)
+        OR (
+          latitude IS NOT NULL
+          AND longitude IS NOT NULL
+          AND latitude BETWEEN -90 AND 90
+          AND longitude BETWEEN -180 AND 180
+        )
+      );
+  END IF;
+END $$;
+
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'services_location_coordinates_valid'
+      AND conrelid = 'public.services'::regclass
+  ) THEN
+    ALTER TABLE public.services
+      ADD CONSTRAINT services_location_coordinates_valid
+      CHECK (
+        (latitude IS NULL AND longitude IS NULL)
+        OR (
+          latitude IS NOT NULL
+          AND longitude IS NOT NULL
+          AND latitude BETWEEN -90 AND 90
+          AND longitude BETWEEN -180 AND 180
+        )
+      );
   END IF;
 END $$;
 
