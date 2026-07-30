@@ -32,13 +32,6 @@ Reemplazá los archivos del repositorio por los incluidos en este ZIP y publicá
 
 La herramienta no reemplaza la decisión operativa. No conoce tránsito en vivo, restricciones personales no registradas ni acuerdos laborales particulares.
 
-## 5. Puesta en marcha del Mapa
+## Corrección visual de selectores
 
-La sección **Mapa** usa los mismos campos de ubicación incorporados para el Optimizador. No requiere una migración adicional.
-
-1. Cargá coordenadas en los servicios y en los operarios que quieras visualizar.
-2. Abrí **Mapa** y usá los filtros por tipo, zona o búsqueda.
-3. Seleccioná un punto para ver sus asignaciones y los vínculos geográficos con operarios o servicios relacionados.
-4. Los registros sin coordenadas aparecen en **Ubicaciones pendientes** y se pueden editar desde esa lista.
-
-El mapa base utiliza OpenStreetMap mediante Leaflet. Requiere conexión a internet para descargar las capas cartográficas, pero los datos operativos siguen almacenados únicamente en Supabase.
+Esta versión mejora el contraste de todos los menús desplegables, incluido el selector de margen de traslado del Optimizador. No requiere cambios en Supabase ni modifica datos existentes.
