@@ -1612,3 +1612,76 @@ select option:disabled {
     border-color: #d6d6d6 !important;
   }
 }
+
+/* Corrección visual: distancias del Optimizador de cercanía
+   Mantiene la funcionalidad y reorganiza solamente las tarjetas para evitar superposiciones. */
+.proximity-distance-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "proximity-content proximity-distance"
+    "proximity-content proximity-action";
+  column-gap: 10px;
+  row-gap: 7px;
+  align-items: start;
+}
+
+.proximity-distance-row:has(.proximity-rank) {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "proximity-rank proximity-content proximity-distance"
+    "proximity-rank proximity-content proximity-action";
+}
+
+.proximity-distance-row > div:not(.proximity-rank):not(.proximity-distance-value) {
+  grid-area: proximity-content;
+  min-width: 0;
+}
+
+.proximity-distance-row > div:not(.proximity-rank):not(.proximity-distance-value) strong {
+  display: block;
+  min-width: 0;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.proximity-distance-row .proximity-rank {
+  grid-area: proximity-rank;
+}
+
+.proximity-distance-row .proximity-distance-value {
+  grid-area: proximity-distance;
+  justify-self: end;
+  align-self: start;
+  margin: 0;
+  line-height: 1.25;
+}
+
+.proximity-distance-row > .btn {
+  grid-area: proximity-action;
+  justify-self: end;
+  align-self: end;
+  min-width: 62px;
+}
+
+@media (max-width: 680px) {
+  .proximity-distance-row,
+  .proximity-distance-row:has(.proximity-rank) {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      "proximity-rank proximity-content"
+      "proximity-distance proximity-action";
+  }
+
+  .proximity-distance-row:not(:has(.proximity-rank)) {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "proximity-content proximity-content"
+      "proximity-distance proximity-action";
+  }
+
+  .proximity-distance-row .proximity-distance-value {
+    justify-self: start;
+    align-self: center;
+  }
+}
