@@ -1685,3 +1685,16 @@ select option:disabled {
     align-self: center;
   }
 }
+
+
+/* Turnos nocturnos */
+.overnight-shift-note {
+  margin: -0.2rem 0 0.25rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid rgba(96, 165, 250, 0.28);
+  border-radius: 12px;
+  background: rgba(59, 130, 246, 0.09);
+  color: var(--muted, #aeb9d6);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}

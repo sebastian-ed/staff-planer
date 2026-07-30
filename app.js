@@ -317,13 +317,8 @@ function formatHours(value) {
   return Number(value).toFixed(2).replace('.00', '');
 }
 
-function calculateHours(startTime, endTime) {
-  if (!startTime || !endTime) return 0;
-  const [sh, sm] = startTime.split(':').map(Number);
-  const [eh, em] = endTime.split(':').map(Number);
-  return ((eh * 60 + em) - (sh * 60 + sm)) / 60;
-}
-
+const MINUTES_PER_DAY = 24 * 60;
+const MINUTES_PER_WEEK = 7 * MINUTES_PER_DAY;
 
 function timeToMinutes(timeValue) {
   if (!timeValue) return null;
@@ -332,13 +327,74 @@ function timeToMinutes(timeValue) {
   return (hours * 60) + minutes;
 }
 
+function calculateShiftMinutes(startTime, endTime) {
+  const startMinutes = timeToMinutes(startTime);
+  const endMinutes = timeToMinutes(endTime);
+  if (startMinutes == null || endMinutes == null || startMinutes === endMinutes) return 0;
+  return endMinutes > startMinutes
+    ? endMinutes - startMinutes
+    : (MINUTES_PER_DAY - startMinutes) + endMinutes;
+}
+
+function calculateHours(startTime, endTime) {
+  return calculateShiftMinutes(startTime, endTime) / 60;
+}
+
+function isOvernightShift(startTime, endTime) {
+  const startMinutes = timeToMinutes(startTime);
+  const endMinutes = timeToMinutes(endTime);
+  return startMinutes != null && endMinutes != null && endMinutes < startMinutes;
+}
+
+function formatShiftRange(startTime, endTime, separator = '–') {
+  if (!startTime || !endTime) return 'Horario sin informar';
+  const start = String(startTime).slice(0, 5);
+  const end = String(endTime).slice(0, 5);
+  return `${start}${separator}${end}${isOvernightShift(startTime, endTime) ? ' (+1 día)' : ''}`;
+}
+
+function getNextDayValue(dayValue) {
+  return (Number(dayValue) + 1) % 7;
+}
+
+function getDayLabel(dayValue, full = false) {
+  const day = DAYS.find((item) => Number(item.value) === Number(dayValue));
+  return full ? (day?.fullLabel || '') : (day?.label || '');
+}
+
+function buildOvernightConfirmation(dayValues, startTime, endTime) {
+  if (!isOvernightShift(startTime, endTime)) return '';
+  const days = (Array.isArray(dayValues) ? dayValues : [dayValues])
+    .map((dayValue) => `${getDayLabel(dayValue, true)} → ${getDayLabel(getNextDayValue(dayValue), true)}`)
+    .filter(Boolean)
+    .join(', ');
+  return `Turno nocturno detectado: ${formatShiftRange(startTime, endTime)}.\n\nEl turno comenzará en el día seleccionado y finalizará al día siguiente${days ? ` (${days})` : ''}. Se computarán ${formatHours(calculateHours(startTime, endTime))} horas por jornada.\n\n¿Querés guardarlo?`;
+}
+
+function getWeeklyShiftInterval(dayOfWeek, startTime, endTime, weekOffset = 0) {
+  const startMinutes = timeToMinutes(startTime);
+  const durationMinutes = calculateShiftMinutes(startTime, endTime);
+  if (startMinutes == null || durationMinutes <= 0) return null;
+  const start = ((weekOffset * 7) + Number(dayOfWeek)) * MINUTES_PER_DAY + startMinutes;
+  return { start, end: start + durationMinutes };
+}
+
+function weeklyIntervalsOverlap(dayA, startA, endA, dayB, startB, endB) {
+  const intervalA = getWeeklyShiftInterval(dayA, startA, endA, 0);
+  if (!intervalA) return false;
+  return [-1, 0, 1].some((weekOffset) => {
+    const intervalB = getWeeklyShiftInterval(dayB, startB, endB, weekOffset);
+    return intervalB && intervalA.start < intervalB.end && intervalB.start < intervalA.end;
+  });
+}
+
 function intervalsOverlap(startA, endA, startB, endB) {
   const aStart = timeToMinutes(startA);
-  const aEnd = timeToMinutes(endA);
   const bStart = timeToMinutes(startB);
-  const bEnd = timeToMinutes(endB);
-  if ([aStart, aEnd, bStart, bEnd].some((value) => value == null)) return false;
-  return aStart < bEnd && bStart < aEnd;
+  const aDuration = calculateShiftMinutes(startA, endA);
+  const bDuration = calculateShiftMinutes(startB, endB);
+  if (aStart == null || bStart == null || aDuration <= 0 || bDuration <= 0) return false;
+  return aStart < (bStart + bDuration) && bStart < (aStart + aDuration);
 }
 
 function parseCoordinates(value) {
@@ -491,13 +547,43 @@ function getWeekdayOccurrencesInMonth(monthKey) {
   return occurrences;
 }
 
+function calculateMonthlyRecurringShiftHours(dayValues, startTime, endTime, monthKey = getSelectedDashboardMonth()) {
+  const monthStart = getMonthStartDate(monthKey);
+  if (!monthStart) return 0;
+  const monthEndExclusive = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 1);
+  const durationMinutes = calculateShiftMinutes(startTime, endTime);
+  const selectedDays = new Set((dayValues || []).map(Number));
+  if (!selectedDays.size || durationMinutes <= 0) return 0;
+
+  let totalMilliseconds = 0;
+  const cursor = new Date(monthStart);
+  cursor.setDate(cursor.getDate() - 1); // Incluye la parte nocturna iniciada el último día del mes anterior.
+
+  while (cursor < monthEndExclusive) {
+    if (selectedDays.has(cursor.getDay())) {
+      const shiftStart = new Date(cursor);
+      const [startHour, startMinute] = String(startTime).slice(0, 5).split(':').map(Number);
+      shiftStart.setHours(startHour, startMinute, 0, 0);
+      const shiftEnd = new Date(shiftStart.getTime() + (durationMinutes * 60 * 1000));
+      const clippedStart = shiftStart < monthStart ? monthStart : shiftStart;
+      const clippedEnd = shiftEnd > monthEndExclusive ? monthEndExclusive : shiftEnd;
+      if (clippedEnd > clippedStart) totalMilliseconds += clippedEnd - clippedStart;
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return Number((totalMilliseconds / (60 * 60 * 1000)).toFixed(2));
+}
+
 function calculateMonthlyAssignmentHours(assignments, monthKey = getSelectedDashboardMonth()) {
-  const weekdayOccurrences = getWeekdayOccurrencesInMonth(monthKey);
-  const total = (assignments || []).reduce((sum, assignment) => {
-    const weeklyShiftHours = calculateHours(assignment.start_time, assignment.end_time);
-    const occurrences = weekdayOccurrences.get(Number(assignment.day_of_week)) || 0;
-    return sum + (weeklyShiftHours * occurrences);
-  }, 0);
+  const total = (assignments || []).reduce((sum, assignment) => (
+    sum + calculateMonthlyRecurringShiftHours(
+      [Number(assignment.day_of_week)],
+      assignment.start_time,
+      assignment.end_time,
+      monthKey
+    )
+  ), 0);
 
   return Number(total.toFixed(2));
 }
@@ -2203,7 +2289,7 @@ function renderWorkerAvailability(summaries) {
                                 const service = getServiceById(item.service_id);
                                 return `
                                   <div class="slot-card">
-                                    <strong>${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}</strong>
+                                    <strong>${formatShiftRange(item.start_time, item.end_time)}</strong>
                                     <span>${escapeHtml(service?.name || 'Servicio')}</span>
                                   </div>
                                 `;
@@ -2289,7 +2375,7 @@ function renderServices() {
                                 return `
                                   <div class="slot-card">
                                     <strong>${escapeHtml(worker?.name || 'Sin asignar')}</strong>
-                                    <span>${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}</span>
+                                    <span>${formatShiftRange(item.start_time, item.end_time)}</span>
                                   </div>
                                 `;
                               })
@@ -2334,7 +2420,7 @@ function renderPlanner() {
                     <article class="planner-card" data-planner-worker-id="${item.worker_id}" data-assignment-id="${item.id}">
                       <h4>${escapeHtml(service?.name || 'Servicio')}</h4>
                       <p>${escapeHtml(worker?.name || 'Operario')}</p>
-                      <small>${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}</small>
+                      <small>${formatShiftRange(item.start_time, item.end_time)}</small>
                       <div class="inline-actions planner-actions">
                         <button class="btn btn-secondary btn-sm" type="button" data-edit-assignment="${item.id}">Editar</button>
                       </div>
@@ -2872,7 +2958,7 @@ function renderAbsenceScheduleBoard(period = getAbsenceActivePeriod()) {
                 <div class="absence-card-meta">
                   <span class="chip">${formatDateLabel(occurrence.occurrence_date)}</span>
                   <span class="chip">${DAYS.find((day) => day.value === occurrence.day_of_week)?.fullLabel || ''}</span>
-                  <span class="chip">${occurrence.start_time.slice(0, 5)}-${occurrence.end_time.slice(0, 5)}</span>
+                  <span class="chip">${formatShiftRange(occurrence.start_time, occurrence.end_time)}</span>
                   ${service?.supervisor_name ? `<span class="chip">Sup. ${escapeHtml(service.supervisor_name)}</span>` : ''}
                   ${absence ? renderAbsenceStatusPill(absence.coverage_status) : ''}
                   ${tardiness ? `<span class="status-pill status-balanced">Tardanza ${escapeHtml(formatMinutes(tardinessMinutes))}</span>` : ''}
@@ -2924,7 +3010,7 @@ function renderAbsenceHistoryBoard(period = getAbsenceActivePeriod()) {
                 </div>
                 <div class="absence-card-meta">
                   <span class="chip">${formatDateLabel(absence.absence_date)}</span>
-                  ${absence.scheduled_start_time && absence.scheduled_end_time ? `<span class="chip">${absence.scheduled_start_time.slice(0, 5)}-${absence.scheduled_end_time.slice(0, 5)}</span>` : ''}
+                  ${absence.scheduled_start_time && absence.scheduled_end_time ? `<span class="chip">${formatShiftRange(absence.scheduled_start_time, absence.scheduled_end_time)}</span>` : ''}
                   ${renderAbsenceStatusPill(absence.coverage_status)}
                 </div>
               </div>
@@ -2936,7 +3022,7 @@ function renderAbsenceHistoryBoard(period = getAbsenceActivePeriod()) {
                       <strong>${escapeHtml(coverageWorker?.name || 'Cobertura informada')}</strong>
                       <p>
                         ${absence.coverage_date ? `Fecha: ${formatDateLabel(absence.coverage_date)} · ` : ''}
-                        ${absence.coverage_start_time && absence.coverage_end_time ? `Horario: ${absence.coverage_start_time.slice(0, 5)}-${absence.coverage_end_time.slice(0, 5)}` : 'Horario sin informar'}
+                        ${absence.coverage_start_time && absence.coverage_end_time ? `Horario: ${formatShiftRange(absence.coverage_start_time, absence.coverage_end_time)}` : 'Horario sin informar'}
                         ${coveredHours != null ? ` · ${formatHours(coveredHours)} hs` : ''}
                       </p>
                     </div>
@@ -3059,7 +3145,7 @@ function renderAbsenceMonthlyBoard(period = getAbsenceActivePeriod()) {
                   <strong>${escapeHtml(coverageWorker?.name || (absence.coverage_status === 'uncovered' ? 'Sin cobertura' : 'Cobertura informada'))}</strong>
                   <p>
                     ${absence.coverage_date ? `Fecha: ${formatDateLabel(absence.coverage_date)} · ` : ''}
-                    ${absence.coverage_start_time && absence.coverage_end_time ? `Horario: ${absence.coverage_start_time.slice(0, 5)}-${absence.coverage_end_time.slice(0, 5)}` : (absence.coverage_status === 'uncovered' ? 'Servicio descubierto' : 'Horario sin informar')}
+                    ${absence.coverage_start_time && absence.coverage_end_time ? `Horario: ${formatShiftRange(absence.coverage_start_time, absence.coverage_end_time)}` : (absence.coverage_status === 'uncovered' ? 'Servicio descubierto' : 'Horario sin informar')}
                     ${coveredHours != null ? ` · ${formatHours(coveredHours)} hs` : ''}
                   </p>
                 </div>
@@ -3275,7 +3361,7 @@ function renderAbsenceEmployeeHistoryBoard(period = getAbsenceActivePeriod()) {
                         <div>
                           <strong>${escapeHtml(service?.name || 'Servicio')}</strong>
                           <div class="muted small">
-                            ${absence.scheduled_start_time && absence.scheduled_end_time ? `${absence.scheduled_start_time.slice(0, 5)}-${absence.scheduled_end_time.slice(0, 5)}` : 'Horario sin informar'}
+                            ${absence.scheduled_start_time && absence.scheduled_end_time ? `${formatShiftRange(absence.scheduled_start_time, absence.scheduled_end_time)}` : 'Horario sin informar'}
                             ${absence.absence_type ? ` · ${escapeHtml(formatAbsenceTypeLabel(absence.absence_type))}` : ''}
                           </div>
                         </div>
@@ -3838,10 +3924,7 @@ function getOptimizerRequest() {
   const days = getOptimizerSelectedDays();
   const weeklyHours = Number((calculateHours(startTime, endTime) * days.length).toFixed(2));
   const monthKey = el.optimizerMonth?.value || getSelectedDashboardMonth();
-  const occurrences = getWeekdayOccurrencesInMonth(monthKey);
-  const monthlyHours = Number(days.reduce((sum, day) => (
-    sum + (calculateHours(startTime, endTime) * (occurrences.get(day) || 0))
-  ), 0).toFixed(2));
+  const monthlyHours = calculateMonthlyRecurringShiftHours(days, startTime, endTime, monthKey);
 
   return {
     selectedServiceId,
@@ -3887,7 +3970,7 @@ function updateOptimizerWorkloadPreview() {
   el.optimizerWorkloadPreview.innerHTML = `
     <strong>${formatHours(request.weeklyHours)} hs semanales</strong>
     <span>${formatHours(request.monthlyHours)} hs proyectadas en ${escapeHtml(formatMonthLabel(request.monthKey))}</span>
-    <small>${escapeHtml(dayLabels)} · ${escapeHtml(request.startTime)}-${escapeHtml(request.endTime)} · ${escapeHtml(billingComparison)}</small>
+    <small>${escapeHtml(dayLabels)} · ${escapeHtml(formatShiftRange(request.startTime, request.endTime))} · ${escapeHtml(billingComparison)}</small>
   `;
 }
 
@@ -3901,12 +3984,17 @@ function getWorkerHomeLocation(worker) {
 }
 
 function buildOptimizerDayAnalysis(worker, request, dayValue) {
-  const assignments = getWorkerAssignments(worker.id)
-    .filter((assignment) => Number(assignment.day_of_week) === Number(dayValue))
-    .sort((a, b) => timeToMinutes(a.start_time) - timeToMinutes(b.start_time));
   const dayMeta = DAYS.find((day) => day.value === Number(dayValue));
-  const conflicts = assignments.filter((assignment) => (
-    intervalsOverlap(assignment.start_time, assignment.end_time, request.startTime, request.endTime)
+  const requestInterval = getWeeklyShiftInterval(dayValue, request.startTime, request.endTime, 0);
+  const allAssignments = getWorkerAssignments(worker.id);
+
+  const conflicts = allAssignments.filter((assignment) => weeklyIntervalsOverlap(
+    dayValue,
+    request.startTime,
+    request.endTime,
+    Number(assignment.day_of_week),
+    assignment.start_time,
+    assignment.end_time
   ));
 
   if (conflicts.length) {
@@ -3917,7 +4005,7 @@ function buildOptimizerDayAnalysis(worker, request, dayValue) {
       conflict: true,
       reasons: conflicts.map((assignment) => {
         const service = getServiceById(assignment.service_id);
-        return `${dayMeta?.label || ''}: coincide con ${service?.name || 'otro servicio'} de ${String(assignment.start_time).slice(0, 5)} a ${String(assignment.end_time).slice(0, 5)}`;
+        return `${dayMeta?.label || ''}: coincide con ${service?.name || 'otro servicio'} (${getDayLabel(assignment.day_of_week, true)} ${formatShiftRange(assignment.start_time, assignment.end_time)})`;
       }),
       warnings: [],
       routeScores: [],
@@ -3925,14 +4013,25 @@ function buildOptimizerDayAnalysis(worker, request, dayValue) {
     };
   }
 
-  const requestStartMinutes = timeToMinutes(request.startTime);
-  const requestEndMinutes = timeToMinutes(request.endTime);
-  const previousAssignment = assignments
-    .filter((assignment) => timeToMinutes(assignment.end_time) <= requestStartMinutes)
-    .sort((a, b) => timeToMinutes(b.end_time) - timeToMinutes(a.end_time))[0] || null;
-  const nextAssignment = assignments
-    .filter((assignment) => timeToMinutes(assignment.start_time) >= requestEndMinutes)
-    .sort((a, b) => timeToMinutes(a.start_time) - timeToMinutes(b.start_time))[0] || null;
+  const expandedAssignments = allAssignments.flatMap((assignment) => [-1, 0, 1].map((weekOffset) => {
+    const interval = getWeeklyShiftInterval(
+      Number(assignment.day_of_week),
+      assignment.start_time,
+      assignment.end_time,
+      weekOffset
+    );
+    return interval ? { assignment, ...interval } : null;
+  }).filter(Boolean));
+
+  const maxDirectTransitionGap = 8 * 60;
+  const previousSlot = expandedAssignments
+    .filter((slot) => slot.end <= requestInterval.start && (requestInterval.start - slot.end) <= maxDirectTransitionGap)
+    .sort((a, b) => b.end - a.end)[0] || null;
+  const nextSlot = expandedAssignments
+    .filter((slot) => slot.start >= requestInterval.end && (slot.start - requestInterval.end) <= maxDirectTransitionGap)
+    .sort((a, b) => a.start - b.start)[0] || null;
+  const previousAssignment = previousSlot?.assignment || null;
+  const nextAssignment = nextSlot?.assignment || null;
 
   const transitions = [];
   const reasons = [];
@@ -3981,7 +4080,7 @@ function buildOptimizerDayAnalysis(worker, request, dayValue) {
 
   if (previousAssignment) {
     const previousService = getServiceById(previousAssignment.service_id);
-    const gapMinutes = requestStartMinutes - timeToMinutes(previousAssignment.end_time);
+    const gapMinutes = requestInterval.start - previousSlot.end;
     evaluateTransition({
       origin: previousService,
       destination: newLocation,
@@ -4014,7 +4113,7 @@ function buildOptimizerDayAnalysis(worker, request, dayValue) {
 
   if (nextAssignment) {
     const nextService = getServiceById(nextAssignment.service_id);
-    const gapMinutes = timeToMinutes(nextAssignment.start_time) - requestEndMinutes;
+    const gapMinutes = nextSlot.start - requestInterval.end;
     evaluateTransition({
       origin: newLocation,
       destination: nextService,
@@ -4368,7 +4467,7 @@ function renderOptimizer() {
 function validateOptimizerRequest(request) {
   if (!request.days.length) return 'Seleccioná al menos un día.';
   if (!request.startTime || !request.endTime) return 'Completá el horario de inicio y finalización.';
-  if (calculateHours(request.startTime, request.endTime) <= 0) return 'La hora de finalización debe ser posterior a la de inicio.';
+  if (calculateHours(request.startTime, request.endTime) <= 0) return 'La hora de inicio y la hora de finalización no pueden ser iguales.';
   if (!request.zone && request.latitude == null) return 'Cargá al menos una zona o coordenadas para poder evaluar cercanía.';
   if (request.billedMonthlyHours != null && (!Number.isFinite(request.billedMonthlyHours) || request.billedMonthlyHours < 0)) return 'Las horas facturadas mensuales deben ser un número igual o mayor a 0.';
   if (request.coordinatesRaw && !parseCoordinates(request.coordinatesRaw)) return 'No se pudieron interpretar las coordenadas o el enlace de Google Maps.';
@@ -5106,7 +5205,7 @@ function createMapMarkerIcon(type, isSelected = false) {
 
 function formatAssignmentLine(assignment, counterpartName) {
   const day = DAYS.find((item) => item.value === Number(assignment.day_of_week));
-  return `${day?.label || ''} ${String(assignment.start_time || '').slice(0, 5)}–${String(assignment.end_time || '').slice(0, 5)} · ${counterpartName}`;
+  return `${day?.label || ''} ${formatShiftRange(assignment.start_time, assignment.end_time)} · ${counterpartName}`;
 }
 
 function buildMapPopupHtml(type, entity) {
@@ -5586,7 +5685,7 @@ function buildGlobalSearchGroups(query) {
       id: assignment.id,
       query: `${service?.name || ''} ${worker?.name || ''}`.trim(),
       title,
-      subtitle: `${day?.fullLabel || ''} · ${assignment.start_time.slice(0, 5)}-${assignment.end_time.slice(0, 5)}`,
+      subtitle: `${day?.fullLabel || ''} · ${formatShiftRange(assignment.start_time, assignment.end_time)}`,
       score: getSearchScore(title, searchText, term),
     };
   }, 4));
@@ -7153,6 +7252,19 @@ async function saveAssignment(event) {
     return;
   }
 
+  if (!workerInput.value || !serviceInput.value || !startInput.value || !endInput.value) {
+    alert('Completá operario, servicio, día y horario.');
+    return;
+  }
+
+  if (calculateShiftMinutes(startInput.value, endInput.value) <= 0) {
+    alert('La hora de inicio y la hora de finalización no pueden ser iguales.');
+    return;
+  }
+
+  const overnightMessage = buildOvernightConfirmation(Number(dayInput.value), startInput.value, endInput.value);
+  if (overnightMessage && !confirm(overnightMessage)) return;
+
   const submitBtn = el.assignmentForm?.querySelector('button[type="submit"]');
   if (submitBtn) {
     submitBtn.disabled = true;
@@ -7186,7 +7298,10 @@ async function saveAssignment(event) {
 
     if (error) {
       console.error(error);
-      alert(error.message);
+      const errorMessage = String(error.message || '');
+      alert(errorMessage.includes('valid_shift')
+        ? 'La base de datos todavía bloquea los turnos nocturnos. Ejecutá sql/migration_allow_overnight_shifts.sql en Supabase y volvé a intentar. La migración no borra ni modifica los horarios existentes.'
+        : error.message);
       return;
     }
 
@@ -7232,6 +7347,14 @@ async function saveBulkAssignments(event) {
     return;
   }
 
+  if (calculateShiftMinutes(startInput.value, endInput.value) <= 0) {
+    alert('La hora de inicio y la hora de finalización no pueden ser iguales.');
+    return;
+  }
+
+  const overnightMessage = buildOvernightConfirmation(selectedDays, startInput.value, endInput.value);
+  if (overnightMessage && !confirm(overnightMessage)) return;
+
   const submitBtn = el.bulkAssignmentForm?.querySelector('button[type="submit"]');
   if (submitBtn) {
     submitBtn.disabled = true;
@@ -7261,7 +7384,10 @@ async function saveBulkAssignments(event) {
 
     if (error) {
       console.error(error);
-      alert(error.message);
+      const errorMessage = String(error.message || '');
+      alert(errorMessage.includes('valid_shift')
+        ? 'La base de datos todavía bloquea los turnos nocturnos. Ejecutá sql/migration_allow_overnight_shifts.sql en Supabase y volvé a intentar. La migración no borra ni modifica los horarios existentes.'
+        : error.message);
       return;
     }
 
@@ -7314,12 +7440,12 @@ async function saveAbsence(event) {
   }
 
   if (coverageStart && coverageEnd && calculateHours(coverageStart, coverageEnd) <= 0) {
-    alert('El horario de cobertura no es válido.');
+    alert('El horario de cobertura no es válido: inicio y fin no pueden ser iguales.');
     return;
   }
 
   if (scheduledStart && scheduledEnd && calculateHours(scheduledStart, scheduledEnd) <= 0) {
-    alert('El horario asignado no es válido.');
+    alert('El horario asignado no es válido: inicio y fin no pueden ser iguales.');
     return;
   }
 
@@ -7756,7 +7882,7 @@ function buildWorkersExportData() {
                 rows.push([
                   worker.name,
                   day.fullLabel,
-                  `${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}`,
+                  `${formatShiftRange(item.start_time, item.end_time)}`,
                   service?.name || '',
                 ]);
               });
@@ -7820,7 +7946,7 @@ function buildServicesExportData() {
                   day.fullLabel,
                   worker?.name || '',
                   service.supervisor_name || '',
-                  `${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}`,
+                  `${formatShiftRange(item.start_time, item.end_time)}`,
                 ]);
               });
             });
@@ -7897,7 +8023,7 @@ function buildPlannerExportData() {
               service?.name || '',
               worker?.name || '',
               service?.supervisor_name || '',
-              `${item.start_time.slice(0, 5)}-${item.end_time.slice(0, 5)}`,
+              `${formatShiftRange(item.start_time, item.end_time)}`,
               item.notes || '',
             ];
           }),
@@ -7926,7 +8052,7 @@ function buildAbsencesExportData() {
       service?.name || '',
       worker?.name || '',
       worker?.hire_date ? formatDateLabel(worker.hire_date) : '',
-      `${occurrence.start_time.slice(0, 5)}-${occurrence.end_time.slice(0, 5)}`,
+      `${formatShiftRange(occurrence.start_time, occurrence.end_time)}`,
       absence ? 'Sí' : 'No',
       absence ? formatAbsenceTypeLabel(absence.absence_type) : '',
       absence ? absence.coverage_status : '',
@@ -7949,13 +8075,13 @@ function buildAbsencesExportData() {
       formatAbsenceTypeLabel(absence.absence_type),
       service?.name || '',
       absence.scheduled_start_time && absence.scheduled_end_time
-        ? `${absence.scheduled_start_time.slice(0, 5)}-${absence.scheduled_end_time.slice(0, 5)}`
+        ? `${formatShiftRange(absence.scheduled_start_time, absence.scheduled_end_time)}`
         : '',
       absence.coverage_status,
       coverageWorker?.name || '',
       absence.coverage_date ? formatDateLabel(absence.coverage_date) : '',
       absence.coverage_start_time && absence.coverage_end_time
-        ? `${absence.coverage_start_time.slice(0, 5)}-${absence.coverage_end_time.slice(0, 5)}`
+        ? `${formatShiftRange(absence.coverage_start_time, absence.coverage_end_time)}`
         : '',
       coveredHours == null ? '' : coveredHours,
       stats?.absenceCount ?? '',
@@ -8238,7 +8364,7 @@ function buildOptimizerExportData() {
           ['Mes', formatMonthLabel(request.monthKey)],
           ['Horas facturadas mensuales', request.billedMonthlyHours == null ? 'Sin cargar' : request.billedMonthlyHours],
           ['Días', request.days.map((dayValue) => DAYS.find((day) => day.value === dayValue)?.fullLabel || '').join(', ')],
-          ['Horario', `${request.startTime}-${request.endTime}`],
+          ['Horario', `${formatShiftRange(request.startTime, request.endTime)}`],
           ['Horas semanales', request.weeklyHours],
           ['Horas mensuales proyectadas', request.monthlyHours],
           ['Margen de traslado', `${request.travelBuffer} min`],

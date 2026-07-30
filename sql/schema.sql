@@ -116,7 +116,7 @@ create table if not exists public.assignments (
   is_active boolean not null default true,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  constraint valid_shift check (end_time > start_time)
+  constraint valid_shift check (end_time <> start_time)
 );
 
 create or replace function public.set_updated_at()

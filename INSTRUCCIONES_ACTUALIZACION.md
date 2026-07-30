@@ -47,3 +47,14 @@ El mapa base utiliza OpenStreetMap mediante Leaflet. Requiere conexión a intern
 ## Nueva sección: Optimizador de cercanía
 
 Esta actualización no requiere ejecutar SQL. Reutiliza los campos de ubicación ya incorporados por `sql/migration_add_optimizer_locations.sql`. No borra ni modifica servicios, operarios, frecuencias, horarios o asignaciones existentes. La sección es analítica: no ejecuta cambios automáticamente.
+
+
+## Habilitar turnos nocturnos
+
+1. Abrí Supabase → **SQL Editor**.
+2. Ejecutá `sql/migration_allow_overnight_shifts.sql`.
+3. Publicá los archivos de esta carpeta en GitHub Pages.
+
+La migración únicamente reemplaza la validación que exigía que la hora de fin fuera mayor a la de inicio. No borra ni modifica operarios, servicios, frecuencias, asignaciones ni horarios existentes.
+
+Convención: el día seleccionado es el día en que comienza el turno. Por ejemplo, **lunes 22:00–06:00** termina el martes a las 06:00.

@@ -188,3 +188,8 @@ La sección **Optimizador de cercanía** compara las coordenadas del domicilio d
 - registros sin coordenadas que limitan la precisión.
 
 Esta primera etapa analiza únicamente distancia. No modifica asignaciones ni valida horarios, carga semanal, requisitos del cliente o continuidad. Para confirmar una propuesta, debe revisarse luego en el Optimizador de asignaciones. No requiere una migración SQL adicional.
+
+
+## Turnos nocturnos
+
+La app admite jornadas que cruzan la medianoche. Cuando la hora de finalización es anterior a la hora de inicio, se interpreta que el turno termina al día siguiente y se muestra la marca `(+1 día)`. Para bases ya creadas, ejecutar `sql/migration_allow_overnight_shifts.sql`.
