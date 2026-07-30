@@ -7,6 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body data-current-view="dashboard">
@@ -66,6 +67,7 @@
             <button class="nav-tab" data-view="workers">Operarios</button>
             <button class="nav-tab" data-view="services">Servicios</button>
             <button class="nav-tab" data-view="planner">Planner semanal</button>
+            <button class="nav-tab" data-view="map">Mapa</button>
             <button class="nav-tab" data-view="optimizer">Optimizador</button>
             <button class="nav-tab" data-view="absences">Ausencias</button>
             <button class="nav-tab" data-view="materials">Materiales</button>
@@ -201,6 +203,78 @@
               </div>
               <div class="planner-board-wrap">
                 <div class="planner-board" id="plannerBoard"></div>
+              </div>
+            </article>
+          </section>
+
+
+          <section id="mapView" class="view hidden stack-lg">
+            <article class="card map-intro">
+              <div>
+                <span class="eyebrow">Geografía operativa</span>
+                <h3>Mapa de servicios y operarios</h3>
+                <p class="muted">Visualizá en una sola capa dónde están los servicios y las zonas de residencia cargadas para los operarios. Al seleccionar un punto, el mapa muestra sus vínculos operativos actuales.</p>
+              </div>
+              <div class="map-privacy-note">
+                <strong>Uso interno</strong>
+                <span>Para domicilios personales conviene cargar una coordenada aproximada del barrio, no la puerta exacta.</span>
+              </div>
+            </article>
+
+            <div id="mapKpiCards" class="cards-grid"></div>
+
+            <article class="card map-workspace-card">
+              <div class="map-toolbar">
+                <div class="field map-search-field">
+                  <label for="mapSearch">Buscar en el mapa</label>
+                  <input id="mapSearch" type="search" placeholder="Servicio, operario, zona o dirección" autocomplete="off" />
+                </div>
+                <div class="field">
+                  <label for="mapEntityFilter">Mostrar</label>
+                  <select id="mapEntityFilter">
+                    <option value="all">Servicios y operarios</option>
+                    <option value="services">Solo servicios</option>
+                    <option value="workers">Solo operarios</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="mapZoneFilter">Zona</label>
+                  <select id="mapZoneFilter">
+                    <option value="all">Todas las zonas</option>
+                  </select>
+                </div>
+                <div class="map-toolbar-actions">
+                  <button id="mapFitBtn" class="btn btn-secondary" type="button">Ver todos</button>
+                  <button id="mapClearSelectionBtn" class="btn btn-ghost" type="button">Limpiar selección</button>
+                </div>
+              </div>
+
+              <div class="map-layout">
+                <div class="map-canvas-shell">
+                  <div class="map-legend" aria-label="Referencias del mapa">
+                    <span><i class="map-legend-dot map-legend-service"></i> Servicio</span>
+                    <span><i class="map-legend-dot map-legend-worker"></i> Operario</span>
+                    <span><i class="map-legend-line"></i> Vínculo activo</span>
+                  </div>
+                  <div id="operationsMap" class="operations-map" aria-label="Mapa operativo interactivo"></div>
+                  <div id="mapEmptyOverlay" class="map-empty-overlay hidden">No hay ubicaciones que coincidan con los filtros.</div>
+                </div>
+
+                <aside class="map-side-column">
+                  <section id="mapSelectionPanel" class="card-lite map-selection-panel">
+                    <div class="empty-state">Seleccioná un servicio o un operario para ver su detalle y sus vínculos.</div>
+                  </section>
+
+                  <section class="card-lite">
+                    <div class="section-head">
+                      <div>
+                        <h4>Ubicaciones pendientes</h4>
+                        <span class="muted">Registros que todavía no pueden mostrarse.</span>
+                      </div>
+                    </div>
+                    <div id="mapMissingLocations" class="map-missing-list"></div>
+                  </section>
+                </aside>
               </div>
             </article>
           </section>
@@ -1104,6 +1178,7 @@
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
   <script src="./supabase-config.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script type="module" src="./app.js"></script>
 </body>
 </html>

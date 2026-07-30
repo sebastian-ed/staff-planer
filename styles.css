@@ -1385,7 +1385,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
   .map-detail-grid { grid-template-columns: 1fr; }
 }
 
-/* Mejora de contraste de los selectores nativos (Chrome/Windows y otros navegadores). */
+/* Contraste de los selectores nativos: ajuste visual únicamente. */
 select {
   color-scheme: dark;
   background-color: #182243;
@@ -1393,8 +1393,9 @@ select {
   border-color: rgba(255, 255, 255, 0.14);
 }
 
-select:hover {
-  border-color: rgba(91, 140, 255, 0.58);
+select:hover,
+select:focus {
+  border-color: rgba(91, 140, 255, 0.72);
 }
 
 select option,
