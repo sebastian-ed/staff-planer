@@ -7,6 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body data-current-view="dashboard">
@@ -65,8 +66,11 @@
             <button class="nav-tab active" data-view="dashboard">Dashboard</button>
             <button class="nav-tab" data-view="workers">Operarios</button>
             <button class="nav-tab" data-view="services">Servicios</button>
+            <button class="nav-tab" data-view="billing">Facturación mensual</button>
             <button class="nav-tab" data-view="planner">Planner semanal</button>
+            <button class="nav-tab" data-view="map">Mapa</button>
             <button class="nav-tab" data-view="optimizer">Optimizador</button>
+            <button class="nav-tab" data-view="proximity">Optimizador de cercanía</button>
             <button class="nav-tab" data-view="absences">Ausencias</button>
             <button class="nav-tab" data-view="materials">Materiales</button>
           </nav>
@@ -105,7 +109,7 @@
             <article class="card dashboard-period-bar">
               <div>
                 <h3>Control mensual de horas</h3>
-                <p class="muted">Compara las horas mensuales facturadas con las horas operativas mensuales proyectadas desde el cronograma semanal activo.</p>
+                <p class="muted">Compara la facturación mensual proyectada y ajustada con las horas operativas mensuales calculadas desde el cronograma semanal activo.</p>
               </div>
               <div class="field dashboard-month-field">
                 <label for="dashboardMonthFilter">Mes de análisis</label>
@@ -187,6 +191,39 @@
             </article>
           </section>
 
+
+          <section id="billingView" class="view hidden stack-lg">
+            <article class="card billing-intro">
+              <div>
+                <span class="eyebrow">Proyección y cierre</span>
+                <h3>Facturación mensual por servicio</h3>
+                <p class="muted">Calcula lo que se espera facturar según la cobertura contractual del mes y permite registrar descuentos o adicionales cuando la prestación real cambia.</p>
+              </div>
+              <div class="billing-method-note">
+                <strong>Regla clave</strong>
+                <span>La proyección depende de los puestos y franjas vendidos al cliente, no de qué operario los cubre. Una ausencia solo descuenta si el servicio quedó efectivamente sin cobertura.</span>
+              </div>
+            </article>
+
+            <article id="billingSchemaNotice" class="card billing-schema-notice hidden"></article>
+
+            <article class="card">
+              <div class="billing-toolbar">
+                <div class="field billing-month-field">
+                  <label for="billingMonthFilter">Mes de análisis</label>
+                  <input id="billingMonthFilter" type="month" />
+                </div>
+                <div class="inline-actions billing-toolbar-actions">
+                  <button id="addBillingRuleBtn" class="btn btn-secondary" type="button">Configurar cobertura</button>
+                  <button id="addBillingAdjustmentBtn" class="btn btn-primary" type="button">Registrar novedad</button>
+                </div>
+              </div>
+            </article>
+
+            <div id="billingKpiCards" class="cards-grid"></div>
+            <div id="billingServicesBoard" class="billing-services-board"></div>
+          </section>
+
           <section id="plannerView" class="view hidden stack-lg">
             <article class="card">
               <div class="section-head with-action section-head-stack-mobile">
@@ -201,6 +238,78 @@
               </div>
               <div class="planner-board-wrap">
                 <div class="planner-board" id="plannerBoard"></div>
+              </div>
+            </article>
+          </section>
+
+
+          <section id="mapView" class="view hidden stack-lg">
+            <article class="card map-intro">
+              <div>
+                <span class="eyebrow">Geografía operativa</span>
+                <h3>Mapa de servicios y operarios</h3>
+                <p class="muted">Visualizá en una sola capa dónde están los servicios y las zonas de residencia cargadas para los operarios. Al seleccionar un punto, el mapa muestra sus vínculos operativos actuales.</p>
+              </div>
+              <div class="map-privacy-note">
+                <strong>Uso interno</strong>
+                <span>Para domicilios personales conviene cargar una coordenada aproximada del barrio, no la puerta exacta.</span>
+              </div>
+            </article>
+
+            <div id="mapKpiCards" class="cards-grid"></div>
+
+            <article class="card map-workspace-card">
+              <div class="map-toolbar">
+                <div class="field map-search-field">
+                  <label for="mapSearch">Buscar en el mapa</label>
+                  <input id="mapSearch" type="search" placeholder="Servicio, operario, zona o dirección" autocomplete="off" />
+                </div>
+                <div class="field">
+                  <label for="mapEntityFilter">Mostrar</label>
+                  <select id="mapEntityFilter">
+                    <option value="all">Servicios y operarios</option>
+                    <option value="services">Solo servicios</option>
+                    <option value="workers">Solo operarios</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="mapZoneFilter">Zona</label>
+                  <select id="mapZoneFilter">
+                    <option value="all">Todas las zonas</option>
+                  </select>
+                </div>
+                <div class="map-toolbar-actions">
+                  <button id="mapFitBtn" class="btn btn-secondary" type="button">Ver todos</button>
+                  <button id="mapClearSelectionBtn" class="btn btn-ghost" type="button">Limpiar selección</button>
+                </div>
+              </div>
+
+              <div class="map-layout">
+                <div class="map-canvas-shell">
+                  <div class="map-legend" aria-label="Referencias del mapa">
+                    <span><i class="map-legend-dot map-legend-service"></i> Servicio</span>
+                    <span><i class="map-legend-dot map-legend-worker"></i> Operario</span>
+                    <span><i class="map-legend-line"></i> Vínculo activo</span>
+                  </div>
+                  <div id="operationsMap" class="operations-map" aria-label="Mapa operativo interactivo"></div>
+                  <div id="mapEmptyOverlay" class="map-empty-overlay hidden">No hay ubicaciones que coincidan con los filtros.</div>
+                </div>
+
+                <aside class="map-side-column">
+                  <section id="mapSelectionPanel" class="card-lite map-selection-panel">
+                    <div class="empty-state">Seleccioná un servicio o un operario para ver su detalle y sus vínculos.</div>
+                  </section>
+
+                  <section class="card-lite">
+                    <div class="section-head">
+                      <div>
+                        <h4>Ubicaciones pendientes</h4>
+                        <span class="muted">Registros que todavía no pueden mostrarse.</span>
+                      </div>
+                    </div>
+                    <div id="mapMissingLocations" class="map-missing-list"></div>
+                  </section>
+                </aside>
               </div>
             </article>
           </section>
@@ -356,6 +465,103 @@
                 </div>
               </div>
               <div id="optimizerDataQuality"></div>
+            </article>
+          </section>
+
+
+
+          <section id="proximityView" class="view hidden stack-lg">
+            <article class="card optimizer-intro proximity-intro">
+              <div>
+                <span class="eyebrow">Eficiencia territorial</span>
+                <h3>Optimizador de cercanía</h3>
+                <p class="muted">Compara el domicilio de cada operario con todos los servicios y detecta oportunidades de reubicación o intercambio para reducir traslados.</p>
+              </div>
+              <div class="optimizer-method-note proximity-method-note">
+                <strong>Primera etapa: solo distancia</strong>
+                <span>Este análisis no valida horarios ni carga de horas. Las propuestas deben revisarse antes de modificar una asignación.</span>
+              </div>
+            </article>
+
+            <article class="card">
+              <div class="section-head with-action section-head-stack-mobile">
+                <div>
+                  <h3>Parámetros del análisis</h3>
+                  <span class="muted">Elegí un operario para profundizar o analizá toda la dotación.</span>
+                </div>
+                <button id="proximityAnalyzeBtn" class="btn btn-primary" type="button">Analizar cercanía</button>
+              </div>
+
+              <div class="proximity-controls">
+                <div class="field">
+                  <label for="proximityWorkerFilter">Operario</label>
+                  <select id="proximityWorkerFilter">
+                    <option value="all">Todos los operarios</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="proximityMinimumSaving">Ahorro mínimo para sugerir</label>
+                  <select id="proximityMinimumSaving">
+                    <option value="1">1 km directo</option>
+                    <option value="2" selected>2 km directos</option>
+                    <option value="3">3 km directos</option>
+                    <option value="5">5 km directos</option>
+                  </select>
+                </div>
+                <label class="optimizer-toggle proximity-toggle">
+                  <input id="proximityBothImprove" type="checkbox" checked />
+                  <span>
+                    <strong>En intercambios, mejorar a ambos operarios</strong>
+                    <small>Evita propuestas que reduzcan el total a costa de empeorar claramente el viaje de una persona.</small>
+                  </span>
+                </label>
+              </div>
+            </article>
+
+            <div id="proximityKpiCards" class="cards-grid"></div>
+
+            <article id="proximitySummary" class="card proximity-summary"></article>
+
+            <div class="split-grid proximity-main-grid">
+              <article class="card">
+                <div class="section-head">
+                  <div>
+                    <h3>Análisis por operario</h3>
+                    <span class="muted">Servicios actuales y alternativas más cercanas al domicilio.</span>
+                  </div>
+                </div>
+                <div id="proximityWorkerAnalysis" class="proximity-worker-analysis"></div>
+              </article>
+
+              <article class="card">
+                <div class="section-head">
+                  <div>
+                    <h3>Reubicaciones sugeridas</h3>
+                    <span class="muted">Alternativas cercanas, aunque hoy puedan estar ocupadas.</span>
+                  </div>
+                </div>
+                <div id="proximityRelocations" class="proximity-suggestion-list"></div>
+              </article>
+            </div>
+
+            <article class="card">
+              <div class="section-head">
+                <div>
+                  <h3>Intercambios sugeridos</h3>
+                  <span class="muted">Cambios entre dos operarios que reducen la distancia conjunta.</span>
+                </div>
+              </div>
+              <div id="proximitySwaps" class="proximity-swap-grid"></div>
+            </article>
+
+            <article class="card">
+              <div class="section-head">
+                <div>
+                  <h3>Calidad de los datos</h3>
+                  <span class="muted">Las comparaciones exactas requieren coordenadas tanto del domicilio como del servicio.</span>
+                </div>
+              </div>
+              <div id="proximityDataQuality"></div>
             </article>
           </section>
 
@@ -670,9 +876,9 @@
         <input id="serviceSupervisor" placeholder="Ej. Andrés" />
       </div>
       <div class="field">
-        <label for="serviceBilledHours">Horas totales facturadas por mes</label>
+        <label for="serviceBilledHours">Referencia mensual manual</label>
         <input id="serviceBilledHours" type="number" min="0" step="0.25" inputmode="decimal" placeholder="Ej. 176" />
-        <small class="field-help">Es el total mensual vendido al cliente. No modifica horarios, frecuencias ni asignaciones existentes.</small>
+        <small class="field-help">Se usa como respaldo mientras el servicio no tenga una cobertura facturable configurada. Al crear reglas por días, horarios y puestos, la proyección mensual se calcula automáticamente.</small>
       </div>
       <div class="field">
         <label for="serviceFrequency">Frecuencia</label>
@@ -731,6 +937,7 @@
           <input id="assignmentEnd" type="time" required />
         </div>
       </div>
+      <p class="overnight-shift-note">Si la hora de finalización es anterior a la de inicio, la app interpretará que el turno termina al día siguiente. Ejemplo: 22:00–06:00 = 8 horas.</p>
       <div class="field">
         <label for="assignmentNotes">Notas</label>
         <textarea id="assignmentNotes" rows="3"></textarea>
@@ -770,6 +977,7 @@
           <input id="bulkAssignmentEnd" type="time" required />
         </div>
       </div>
+      <p class="overnight-shift-note">En turnos nocturnos, cada día seleccionado corresponde al día de inicio. La finalización se registra al día siguiente.</p>
 
       <div class="field">
         <label>Días</label>
@@ -956,6 +1164,126 @@
   </dialog>
 
 
+
+  <dialog id="billingRuleDialog" class="modal">
+    <form id="billingRuleForm" class="modal-card stack-md">
+      <div class="section-head with-action">
+        <h3 id="billingRuleDialogTitle">Configurar cobertura facturable</h3>
+        <button class="icon-btn" type="button" data-close="billingRuleDialog">✕</button>
+      </div>
+      <input id="billingRuleId" type="hidden" />
+      <div class="field">
+        <label for="billingRuleService">Servicio</label>
+        <select id="billingRuleService" required></select>
+      </div>
+      <div class="field">
+        <label for="billingRuleName">Nombre del bloque</label>
+        <input id="billingRuleName" placeholder="Ej. Cobertura principal / Turno noche" />
+      </div>
+      <div class="field">
+        <label>Días facturables</label>
+        <div class="days-check-grid billing-days-grid">
+          <label><input class="billing-rule-day" type="checkbox" value="1" /> Lunes</label>
+          <label><input class="billing-rule-day" type="checkbox" value="2" /> Martes</label>
+          <label><input class="billing-rule-day" type="checkbox" value="3" /> Miércoles</label>
+          <label><input class="billing-rule-day" type="checkbox" value="4" /> Jueves</label>
+          <label><input class="billing-rule-day" type="checkbox" value="5" /> Viernes</label>
+          <label><input class="billing-rule-day" type="checkbox" value="6" /> Sábado</label>
+          <label><input class="billing-rule-day" type="checkbox" value="0" /> Domingo</label>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="billingRuleStart">Hora de inicio</label>
+          <input id="billingRuleStart" type="time" required />
+        </div>
+        <div class="field">
+          <label for="billingRuleEnd">Hora de finalización</label>
+          <input id="billingRuleEnd" type="time" required />
+        </div>
+      </div>
+      <div class="field">
+        <label for="billingRulePositions">Operarios o puestos simultáneos facturables</label>
+        <input id="billingRulePositions" type="number" min="1" step="1" value="1" required />
+        <small class="field-help">Ejemplo: una cobertura 24/7 con tres personas presentes al mismo tiempo se configura con 3 puestos.</small>
+      </div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="billingRuleValidFrom">Vigente desde</label>
+          <input id="billingRuleValidFrom" type="date" />
+        </div>
+        <div class="field">
+          <label for="billingRuleValidUntil">Vigente hasta</label>
+          <input id="billingRuleValidUntil" type="date" />
+        </div>
+      </div>
+      <small class="field-help">Las fechas son opcionales. Sirven para servicios que comienzan o terminan a mitad de mes y para conservar el historial cuando cambia un contrato.</small>
+      <div class="field">
+        <label for="billingRuleNotes">Observaciones</label>
+        <textarea id="billingRuleNotes" rows="3"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" type="button" data-close="billingRuleDialog">Cancelar</button>
+        <button class="btn btn-primary" type="submit">Guardar cobertura</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="billingAdjustmentDialog" class="modal">
+    <form id="billingAdjustmentForm" class="modal-card stack-md">
+      <div class="section-head with-action">
+        <h3>Registrar novedad de facturación</h3>
+        <button class="icon-btn" type="button" data-close="billingAdjustmentDialog">✕</button>
+      </div>
+      <input id="billingAdjustmentId" type="hidden" />
+      <div class="field">
+        <label for="billingAdjustmentService">Servicio</label>
+        <select id="billingAdjustmentService" required></select>
+      </div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="billingAdjustmentDate">Fecha</label>
+          <input id="billingAdjustmentDate" type="date" required />
+        </div>
+        <div class="field">
+          <label for="billingAdjustmentType">Tipo de novedad</label>
+          <select id="billingAdjustmentType">
+            <option value="uncovered">Horas sin cobertura</option>
+            <option value="client_closure">Cierre o suspensión del cliente</option>
+            <option value="extra">Horas adicionales aprobadas</option>
+            <option value="manual">Ajuste manual</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="billingAdjustmentImpact">Impacto</label>
+          <select id="billingAdjustmentImpact">
+            <option value="subtract">Descontar horas</option>
+            <option value="add">Sumar horas</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="billingAdjustmentHours">Cantidad de horas</label>
+          <input id="billingAdjustmentHours" type="number" min="0.25" step="0.25" required />
+        </div>
+      </div>
+      <div class="field">
+        <label for="billingAdjustmentReason">Motivo</label>
+        <input id="billingAdjustmentReason" placeholder="Ej. Operario enfermo sin reemplazo" required />
+      </div>
+      <div class="field">
+        <label for="billingAdjustmentNotes">Observaciones</label>
+        <textarea id="billingAdjustmentNotes" rows="3"></textarea>
+      </div>
+      <small class="field-help">No registres una ausencia como descuento si otro operario cubrió el turno completo: en ese caso el cliente recibió la prestación y la facturación no cambia.</small>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" type="button" data-close="billingAdjustmentDialog">Cancelar</button>
+        <button class="btn btn-primary" type="submit">Guardar novedad</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="materialCatalogDialog" class="modal">
     <form id="materialCatalogForm" class="modal-card stack-md">
       <div class="section-head with-action">
@@ -1104,6 +1432,7 @@
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
   <script src="./supabase-config.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script type="module" src="./app.js"></script>
 </body>
 </html>
