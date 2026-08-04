@@ -237,3 +237,13 @@ La vista muestra por separado las horas faltantes y las horas excedidas de los o
 - Al cierre del mes se puede usar **Editar facturación final** para cargar el total realmente facturado. La aplicación registra únicamente la diferencia necesaria, sin cambiar horarios, asignaciones ni datos históricos.
 - También se mantiene **Registrar novedad** para descuentos o adicionales puntuales durante el mes.
 - Esta actualización no requiere ejecutar SQL nuevo.
+
+## Corrección: jornadas objetivo de operarios por hora
+
+El objetivo mensual ahora se determina por la cantidad de horas objetivo semanales, aunque el operario figure como `Seguro / por hora`:
+
+- 44 hs: patrón de 8 hs de lunes a viernes y 4 hs el sábado.
+- 24 hs: patrón de 4 hs de lunes a sábado.
+- Objetivos personalizados: ajuste proporcional sobre el patrón correspondiente.
+
+Esto elimina resultados fraccionarios incorrectos generados por repartir una jornada de 44 hs en seis partes iguales. No requiere cambios en Supabase.

@@ -303,18 +303,30 @@ function getScheduledHoursForWorkerTypeOnDate(workerType, date) {
 function getWorkerTargetHoursForDate(worker, date) {
   if (!worker || !(date instanceof Date) || Number.isNaN(date.getTime())) return 0;
 
-  const weeklyTarget = getTargetHours(worker);
-  if (weeklyTarget == null) return null;
+  const weeklyTarget = Number(getTargetHours(worker));
+  if (!Number.isFinite(weeklyTarget)) return null;
 
-  const defaultWeeklyTarget = TYPE_META[worker.worker_type]?.defaultHours;
-  const baseHours = getScheduledHoursForWorkerTypeOnDate(worker.worker_type, date);
+  // La distribución mensual debe depender de la jornada objetivo, no solo de la
+  // etiqueta contractual. Esto evita que un operario "Seguro / por hora" con
+  // objetivo de 44 hs se reparta como 44/6 y genere valores como 190,67 hs.
+  let scheduleType = worker.worker_type;
 
-  if (defaultWeeklyTarget && defaultWeeklyTarget > 0) {
-    return baseHours * (Number(weeklyTarget) / Number(defaultWeeklyTarget));
+  if (Math.abs(weeklyTarget - 44) < 0.01) {
+    scheduleType = 'full_time';
+  } else if (Math.abs(weeklyTarget - 24) < 0.01) {
+    scheduleType = 'part_time';
+  } else if (scheduleType === 'insurance') {
+    scheduleType = weeklyTarget > 24 ? 'full_time' : 'part_time';
   }
 
-  const weekday = date.getDay();
-  return weekday >= 1 && weekday <= 6 ? Number(weeklyTarget) / 6 : 0;
+  const referenceWeeklyTarget = TYPE_META[scheduleType]?.defaultHours;
+  const baseHours = getScheduledHoursForWorkerTypeOnDate(scheduleType, date);
+
+  if (referenceWeeklyTarget && referenceWeeklyTarget > 0) {
+    return baseHours * (weeklyTarget / Number(referenceWeeklyTarget));
+  }
+
+  return 0;
 }
 
 function calculateMonthlyTargetHours(worker, monthKey) {
@@ -2363,7 +2375,7 @@ function renderWorkforceMonthlyBalance(summaries = null) {
       </div>
 
       <div class="hours-balance-note">
-        La jornada mensual no se calcula multiplicando siempre por cuatro. La app cuenta los lunes, martes, miércoles y demás días reales de ${escapeHtml(monthLabel)}. Para una jornada completa usa como patrón 8 hs de lunes a viernes y 4 hs el sábado; para media jornada, 4 hs de lunes a sábado. Si el objetivo semanal fue personalizado, el patrón se ajusta proporcionalmente.
+        La jornada mensual no se calcula multiplicando siempre por cuatro. La app cuenta los lunes, martes, miércoles y demás días reales de ${escapeHtml(monthLabel)}. Todo operario con objetivo de 44 hs usa el patrón de 8 hs de lunes a viernes y 4 hs el sábado; todo operario con objetivo de 24 hs usa 4 hs de lunes a sábado, independientemente de que figure como jornada completa, media jornada o seguro/por hora. Si el objetivo semanal fue personalizado, se ajusta proporcionalmente al patrón más cercano.
       </div>
 
       ${balance.serviceBalance.pending.length

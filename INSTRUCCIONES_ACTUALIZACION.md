@@ -90,3 +90,16 @@ No se eliminan ni modifican operarios, servicios, horarios, asignaciones o regla
 La proyección y la facturación ajustada de cada servicio toman por defecto las horas operativas del mes. Al finalizar el período, el botón **Editar facturación final** permite reemplazar el total estimado por las horas efectivamente facturadas.
 
 No requiere migraciones SQL adicionales. Reemplazá los archivos de la aplicación conservando tu `supabase-config.js` actual.
+
+## Corrección del objetivo mensual por calendario
+
+Esta versión corrige el cálculo de operarios identificados como **Seguro / por hora** que tienen una jornada objetivo cargada.
+
+- Objetivo de 44 hs semanales: se proyecta como 8 hs de lunes a viernes y 4 hs el sábado.
+- Objetivo de 24 hs semanales: se proyecta como 4 hs de lunes a sábado.
+- La etiqueta del tipo de operario ya no provoca una división uniforme por seis días.
+- Se sigue utilizando el calendario real del mes seleccionado.
+
+Ejemplo para agosto de 2026: un objetivo de 44 hs da **188 hs mensuales**, no 190,67 hs. Con 136 hs asignadas, el faltante correcto es **52 hs**.
+
+No requiere ejecutar SQL y no modifica datos. Solo reemplazá los archivos de la aplicación conservando tu `supabase-config.js` actual.
