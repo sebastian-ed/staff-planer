@@ -1,3 +1,12 @@
+# Actualización: proyección mensual de facturación
+
+1. En Supabase, abrir **SQL Editor**.
+2. Ejecutar `sql/migration_add_billing_forecast.sql`.
+3. Reemplazar los archivos de la aplicación en GitHub.
+4. Mantener el archivo `supabase-config.js` propio si contiene las credenciales actuales.
+
+La migración solo agrega dos tablas nuevas. No elimina ni modifica servicios, operarios, horarios, asignaciones, ausencias, materiales o ubicaciones existentes.
+
 # Actualización del Staff Planner
 
 ## 1. Respaldo
@@ -58,3 +67,19 @@ Esta actualización no requiere ejecutar SQL. Reutiliza los campos de ubicación
 La migración únicamente reemplaza la validación que exigía que la hora de fin fuera mayor a la de inicio. No borra ni modifica operarios, servicios, frecuencias, asignaciones ni horarios existentes.
 
 Convención: el día seleccionado es el día en que comienza el turno. Por ejemplo, **lunes 22:00–06:00** termina el martes a las 06:00.
+
+
+## Actualización: balance objetivo vs asignado vs facturable
+
+Esta versión no requiere ejecutar una migración SQL adicional. Utiliza el campo existente `workers.target_hours` y las reglas de facturación ya incorporadas.
+
+Cambios principales:
+
+- objetivo mensual por operario calculado con el calendario real;
+- comparación mensual entre objetivo y horas asignadas;
+- total de horas objetivo de toda la dotación;
+- comparación entre horas de nómina y horas facturables estimadas;
+- ranking de operarios con horas faltantes o excedidas;
+- exportaciones actualizadas.
+
+No se eliminan ni modifican operarios, servicios, horarios, asignaciones o reglas de facturación existentes.

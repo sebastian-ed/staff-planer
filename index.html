@@ -66,6 +66,7 @@
             <button class="nav-tab active" data-view="dashboard">Dashboard</button>
             <button class="nav-tab" data-view="workers">Operarios</button>
             <button class="nav-tab" data-view="services">Servicios</button>
+            <button class="nav-tab" data-view="billing">Facturación mensual</button>
             <button class="nav-tab" data-view="planner">Planner semanal</button>
             <button class="nav-tab" data-view="map">Mapa</button>
             <button class="nav-tab" data-view="optimizer">Optimizador</button>
@@ -91,7 +92,7 @@
               </select>
             </div>
             <div class="field">
-              <label for="statusFilter">Estado semanal</label>
+              <label for="statusFilter">Estado mensual</label>
               <select id="statusFilter">
                 <option value="all">Todos</option>
                 <option value="available">Le faltan horas</option>
@@ -108,7 +109,7 @@
             <article class="card dashboard-period-bar">
               <div>
                 <h3>Control mensual de horas</h3>
-                <p class="muted">Compara las horas mensuales facturadas con las horas operativas mensuales proyectadas desde el cronograma semanal activo.</p>
+                <p class="muted">Compara las horas objetivo de la dotación, las horas efectivamente asignadas y las horas proyectadas de facturación según el calendario real del mes.</p>
               </div>
               <div class="field dashboard-month-field">
                 <label for="dashboardMonthFilter">Mes de análisis</label>
@@ -116,12 +117,13 @@
               </div>
             </article>
             <div class="cards-grid" id="kpiCards"></div>
+            <article id="workforceMonthlyBalance" class="card"></article>
             <article id="serviceHoursBalance" class="card"></article>
             <div class="split-grid">
               <article class="card">
                 <div class="section-head">
                   <h3>Operarios críticos</h3>
-                  <span class="muted">Déficit o exceso de horas</span>
+                  <span class="muted">Desvíos mensuales según la jornada objetivo</span>
                 </div>
                 <div id="criticalWorkers"></div>
               </article>
@@ -140,9 +142,15 @@
               <div class="section-head with-action section-head-stack-mobile">
                 <div>
                   <h3>Operarios</h3>
-                  <span class="muted">Alta, edición y control de carga semanal</span>
+                  <span class="muted">Control semanal y balance mensual según la jornada objetivo</span>
                 </div>
-                <button id="addWorkerBtn" class="btn btn-primary" type="button">Nuevo operario</button>
+                <div class="inline-actions workers-header-actions">
+                  <div class="field workers-month-field">
+                    <label for="workersMonthFilter">Mes de análisis</label>
+                    <input id="workersMonthFilter" type="month" />
+                  </div>
+                  <button id="addWorkerBtn" class="btn btn-primary" type="button">Nuevo operario</button>
+                </div>
               </div>
               <div class="table-wrap">
                 <table>
@@ -152,11 +160,12 @@
                       <th>Tipo</th>
                       <th>Antigüedad</th>
                       <th>Período de prueba</th>
-                      <th>Horas objetivo</th>
-                      <th>Horas asignadas semanales</th>
-                      <th>Horas del mes</th>
-                      <th>Diferencia</th>
-                      <th>Estado</th>
+                      <th>Objetivo semanal</th>
+                      <th>Asignadas semanales</th>
+                      <th>Objetivo del mes</th>
+                      <th>Asignadas del mes</th>
+                      <th>Diferencia mensual</th>
+                      <th>Estado mensual</th>
                       <th>Servicios</th>
                       <th>Acciones</th>
                     </tr>
@@ -188,6 +197,39 @@
               <div class="service-cards" id="servicesGrid"></div>
               <div id="servicesPagination" class="pagination-shell"></div>
             </article>
+          </section>
+
+
+          <section id="billingView" class="view hidden stack-lg">
+            <article class="card billing-intro">
+              <div>
+                <span class="eyebrow">Proyección y cierre</span>
+                <h3>Facturación mensual por servicio</h3>
+                <p class="muted">Calcula lo que se espera facturar según la cobertura contractual del mes y permite registrar descuentos o adicionales cuando la prestación real cambia.</p>
+              </div>
+              <div class="billing-method-note">
+                <strong>Regla clave</strong>
+                <span>La proyección depende de los puestos y franjas vendidos al cliente, no de qué operario los cubre. Una ausencia solo descuenta si el servicio quedó efectivamente sin cobertura.</span>
+              </div>
+            </article>
+
+            <article id="billingSchemaNotice" class="card billing-schema-notice hidden"></article>
+
+            <article class="card">
+              <div class="billing-toolbar">
+                <div class="field billing-month-field">
+                  <label for="billingMonthFilter">Mes de análisis</label>
+                  <input id="billingMonthFilter" type="month" />
+                </div>
+                <div class="inline-actions billing-toolbar-actions">
+                  <button id="addBillingRuleBtn" class="btn btn-secondary" type="button">Configurar cobertura</button>
+                  <button id="addBillingAdjustmentBtn" class="btn btn-primary" type="button">Registrar novedad</button>
+                </div>
+              </div>
+            </article>
+
+            <div id="billingKpiCards" class="cards-grid"></div>
+            <div id="billingServicesBoard" class="billing-services-board"></div>
           </section>
 
           <section id="plannerView" class="view hidden stack-lg">
@@ -842,9 +884,9 @@
         <input id="serviceSupervisor" placeholder="Ej. Andrés" />
       </div>
       <div class="field">
-        <label for="serviceBilledHours">Horas totales facturadas por mes</label>
+        <label for="serviceBilledHours">Referencia mensual manual</label>
         <input id="serviceBilledHours" type="number" min="0" step="0.25" inputmode="decimal" placeholder="Ej. 176" />
-        <small class="field-help">Es el total mensual vendido al cliente. No modifica horarios, frecuencias ni asignaciones existentes.</small>
+        <small class="field-help">Se usa como respaldo mientras el servicio no tenga una cobertura facturable configurada. Al crear reglas por días, horarios y puestos, la proyección mensual se calcula automáticamente.</small>
       </div>
       <div class="field">
         <label for="serviceFrequency">Frecuencia</label>
@@ -1129,6 +1171,126 @@
     </form>
   </dialog>
 
+
+
+  <dialog id="billingRuleDialog" class="modal">
+    <form id="billingRuleForm" class="modal-card stack-md">
+      <div class="section-head with-action">
+        <h3 id="billingRuleDialogTitle">Configurar cobertura facturable</h3>
+        <button class="icon-btn" type="button" data-close="billingRuleDialog">✕</button>
+      </div>
+      <input id="billingRuleId" type="hidden" />
+      <div class="field">
+        <label for="billingRuleService">Servicio</label>
+        <select id="billingRuleService" required></select>
+      </div>
+      <div class="field">
+        <label for="billingRuleName">Nombre del bloque</label>
+        <input id="billingRuleName" placeholder="Ej. Cobertura principal / Turno noche" />
+      </div>
+      <div class="field">
+        <label>Días facturables</label>
+        <div class="days-check-grid billing-days-grid">
+          <label><input class="billing-rule-day" type="checkbox" value="1" /> Lunes</label>
+          <label><input class="billing-rule-day" type="checkbox" value="2" /> Martes</label>
+          <label><input class="billing-rule-day" type="checkbox" value="3" /> Miércoles</label>
+          <label><input class="billing-rule-day" type="checkbox" value="4" /> Jueves</label>
+          <label><input class="billing-rule-day" type="checkbox" value="5" /> Viernes</label>
+          <label><input class="billing-rule-day" type="checkbox" value="6" /> Sábado</label>
+          <label><input class="billing-rule-day" type="checkbox" value="0" /> Domingo</label>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="billingRuleStart">Hora de inicio</label>
+          <input id="billingRuleStart" type="time" required />
+        </div>
+        <div class="field">
+          <label for="billingRuleEnd">Hora de finalización</label>
+          <input id="billingRuleEnd" type="time" required />
+        </div>
+      </div>
+      <div class="field">
+        <label for="billingRulePositions">Operarios o puestos simultáneos facturables</label>
+        <input id="billingRulePositions" type="number" min="1" step="1" value="1" required />
+        <small class="field-help">Ejemplo: una cobertura 24/7 con tres personas presentes al mismo tiempo se configura con 3 puestos.</small>
+      </div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="billingRuleValidFrom">Vigente desde</label>
+          <input id="billingRuleValidFrom" type="date" />
+        </div>
+        <div class="field">
+          <label for="billingRuleValidUntil">Vigente hasta</label>
+          <input id="billingRuleValidUntil" type="date" />
+        </div>
+      </div>
+      <small class="field-help">Las fechas son opcionales. Sirven para servicios que comienzan o terminan a mitad de mes y para conservar el historial cuando cambia un contrato.</small>
+      <div class="field">
+        <label for="billingRuleNotes">Observaciones</label>
+        <textarea id="billingRuleNotes" rows="3"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" type="button" data-close="billingRuleDialog">Cancelar</button>
+        <button class="btn btn-primary" type="submit">Guardar cobertura</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="billingAdjustmentDialog" class="modal">
+    <form id="billingAdjustmentForm" class="modal-card stack-md">
+      <div class="section-head with-action">
+        <h3>Registrar novedad de facturación</h3>
+        <button class="icon-btn" type="button" data-close="billingAdjustmentDialog">✕</button>
+      </div>
+      <input id="billingAdjustmentId" type="hidden" />
+      <div class="field">
+        <label for="billingAdjustmentService">Servicio</label>
+        <select id="billingAdjustmentService" required></select>
+      </div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="billingAdjustmentDate">Fecha</label>
+          <input id="billingAdjustmentDate" type="date" required />
+        </div>
+        <div class="field">
+          <label for="billingAdjustmentType">Tipo de novedad</label>
+          <select id="billingAdjustmentType">
+            <option value="uncovered">Horas sin cobertura</option>
+            <option value="client_closure">Cierre o suspensión del cliente</option>
+            <option value="extra">Horas adicionales aprobadas</option>
+            <option value="manual">Ajuste manual</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="billingAdjustmentImpact">Impacto</label>
+          <select id="billingAdjustmentImpact">
+            <option value="subtract">Descontar horas</option>
+            <option value="add">Sumar horas</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="billingAdjustmentHours">Cantidad de horas</label>
+          <input id="billingAdjustmentHours" type="number" min="0.25" step="0.25" required />
+        </div>
+      </div>
+      <div class="field">
+        <label for="billingAdjustmentReason">Motivo</label>
+        <input id="billingAdjustmentReason" placeholder="Ej. Operario enfermo sin reemplazo" required />
+      </div>
+      <div class="field">
+        <label for="billingAdjustmentNotes">Observaciones</label>
+        <textarea id="billingAdjustmentNotes" rows="3"></textarea>
+      </div>
+      <small class="field-help">No registres una ausencia como descuento si otro operario cubrió el turno completo: en ese caso el cliente recibió la prestación y la facturación no cambia.</small>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" type="button" data-close="billingAdjustmentDialog">Cancelar</button>
+        <button class="btn btn-primary" type="submit">Guardar novedad</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="materialCatalogDialog" class="modal">
     <form id="materialCatalogForm" class="modal-card stack-md">

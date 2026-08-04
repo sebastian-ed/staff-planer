@@ -193,3 +193,38 @@ Esta primera etapa analiza únicamente distancia. No modifica asignaciones ni va
 ## Turnos nocturnos
 
 La app admite jornadas que cruzan la medianoche. Cuando la hora de finalización es anterior a la hora de inicio, se interpreta que el turno termina al día siguiente y se muestra la marca `(+1 día)`. Para bases ya creadas, ejecutar `sql/migration_allow_overnight_shifts.sql`.
+
+
+## Proyección mensual de facturación
+
+La sección **Facturación mensual** separa tres conceptos:
+
+- **Proyección contractual:** horas esperadas según días, franjas y cantidad de puestos simultáneos vendidos.
+- **Novedades:** descuentos por horas realmente no prestadas o adicionales aprobados.
+- **Horas operativas:** horas proyectadas desde las asignaciones activas de los operarios.
+
+Para habilitarla, ejecutar `sql/migration_add_billing_forecast.sql` en Supabase. La migración es aditiva y no borra ni modifica datos existentes.
+
+Los servicios que todavía no tengan reglas continúan usando `billed_monthly_hours` como referencia manual de respaldo.
+
+### Ejemplos para agosto de 2026
+
+- Lunes a viernes de 08:00 a 12:00, 1 puesto: **84 horas proyectadas** (21 días hábiles × 4 horas).
+- Lunes a domingo de 00:00 a 00:00 no es válido porque inicio y fin no pueden coincidir. Para una cobertura 24 horas se deben crear, por ejemplo, tres bloques: 00:00–08:00, 08:00–16:00 y 16:00–00:00.
+- Cobertura 24/7 con 1 puesto: **744 horas** en agosto de 2026.
+- Cobertura 24/7 con 3 puestos simultáneos: **2.232 horas** en agosto de 2026.
+
+La cantidad de operarios contratados no define por sí sola las horas facturables. Lo que las define es la cantidad de puestos simultáneos vendidos y sus franjas de cobertura.
+
+
+## Balance mensual de dotación
+
+El Dashboard compara tres capas distintas para el mes seleccionado:
+
+1. **Horas objetivo de la dotación:** se calculan desde la jornada semanal de cada operario y los días reales del calendario. No se usa un multiplicador fijo de cuatro semanas.
+2. **Horas efectivamente asignadas:** se proyectan desde los horarios semanales activos de cada operario sobre el mes seleccionado.
+3. **Horas facturables estimadas:** se obtienen desde las reglas de cobertura contractual y las novedades de facturación.
+
+Para jornada completa se utiliza como patrón 8 horas de lunes a viernes y 4 horas el sábado. Para media jornada, 4 horas de lunes a sábado. Los objetivos semanales personalizados se distribuyen proporcionalmente sobre ese patrón. El personal sin objetivo fijo se incorpora a la referencia de nómina con sus horas efectivamente asignadas.
+
+La vista muestra por separado las horas faltantes y las horas excedidas de los operarios, porque compensarlas en un único saldo ocultaría desvíos individuales.

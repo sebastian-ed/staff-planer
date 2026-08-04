@@ -26,6 +26,7 @@ const VIEW_IDS = {
   dashboard: 'dashboardView',
   workers: 'workersView',
   services: 'servicesView',
+  billing: 'billingView',
   planner: 'plannerView',
   map: 'mapView',
   optimizer: 'optimizerView',
@@ -82,6 +83,10 @@ const state = {
   user: null,
   workers: [],
   services: [],
+  billingRules: [],
+  billingAdjustments: [],
+  billingSchemaReady: true,
+  billingMonth: '',
   assignments: [],
   absences: [],
   tardinesses: [],
@@ -230,6 +235,9 @@ function initializeDashboardMonth() {
   if (el.dashboardMonthFilter) {
     el.dashboardMonthFilter.value = state.dashboardMonth;
   }
+  if (el.workersMonthFilter) {
+    el.workersMonthFilter.value = state.dashboardMonth;
+  }
 }
 
 function formatMonthLabel(monthKey) {
@@ -289,10 +297,30 @@ function getScheduledHoursForWorkerTypeOnDate(workerType, date) {
   return 0;
 }
 
+function getWorkerTargetHoursForDate(worker, date) {
+  if (!worker || !(date instanceof Date) || Number.isNaN(date.getTime())) return 0;
+
+  const weeklyTarget = getTargetHours(worker);
+  if (weeklyTarget == null) return null;
+
+  const defaultWeeklyTarget = TYPE_META[worker.worker_type]?.defaultHours;
+  const baseHours = getScheduledHoursForWorkerTypeOnDate(worker.worker_type, date);
+
+  if (defaultWeeklyTarget && defaultWeeklyTarget > 0) {
+    return baseHours * (Number(weeklyTarget) / Number(defaultWeeklyTarget));
+  }
+
+  const weekday = date.getDay();
+  return weekday >= 1 && weekday <= 6 ? Number(weeklyTarget) / 6 : 0;
+}
+
 function calculateMonthlyTargetHours(worker, monthKey) {
   const monthStart = getMonthStartDate(monthKey);
   const monthEnd = getMonthEndDate(monthKey);
-  if (!monthStart || !monthEnd || !worker) return 0;
+  if (!monthStart || !monthEnd || !worker) return null;
+
+  const weeklyTarget = getTargetHours(worker);
+  if (weeklyTarget == null) return null;
 
   const hireDate = parseDateKeyToLocalDate(worker.hire_date);
   if (hireDate && hireDate > monthEnd) return 0;
@@ -305,7 +333,7 @@ function calculateMonthlyTargetHours(worker, monthKey) {
   const cursor = new Date(effectiveStart);
 
   while (cursor <= monthEnd) {
-    totalHours += getScheduledHoursForWorkerTypeOnDate(worker.worker_type, cursor);
+    totalHours += Number(getWorkerTargetHoursForDate(worker, cursor) || 0);
     cursor.setDate(cursor.getDate() + 1);
   }
 
@@ -586,6 +614,107 @@ function calculateMonthlyAssignmentHours(assignments, monthKey = getSelectedDash
   ), 0);
 
   return Number(total.toFixed(2));
+}
+
+
+function getSelectedBillingMonth() {
+  const fallback = state.billingMonth || getSelectedDashboardMonth() || getCurrentMonthKey();
+  if (!el.billingMonthFilter) return fallback;
+  if (!/^\d{4}-\d{2}$/.test(el.billingMonthFilter.value || '')) {
+    el.billingMonthFilter.value = fallback;
+  }
+  state.billingMonth = el.billingMonthFilter.value || fallback;
+  return state.billingMonth;
+}
+
+function getServiceBillingRules(serviceId) {
+  return state.billingRules
+    .filter((rule) => rule.service_id === serviceId && rule.is_active !== false)
+    .sort((a, b) => String(a.start_time || '').localeCompare(String(b.start_time || '')));
+}
+
+function getServiceBillingAdjustments(serviceId, monthKey = getSelectedBillingMonth()) {
+  return state.billingAdjustments
+    .filter((item) => item.service_id === serviceId && getMonthKey(item.adjustment_date) === monthKey)
+    .sort((a, b) => String(b.adjustment_date || '').localeCompare(String(a.adjustment_date || '')));
+}
+
+function calculateBillingRuleHours(rule, monthKey) {
+  const monthStart = getMonthStartDate(monthKey);
+  if (!monthStart || !rule) return 0;
+  const monthEndExclusive = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 1);
+  const durationMinutes = calculateShiftMinutes(rule.start_time, rule.end_time);
+  const selectedDays = new Set((rule.days_of_week || []).map(Number));
+  const positions = Math.max(1, Number(rule.positions || 1));
+  if (!selectedDays.size || durationMinutes <= 0) return 0;
+
+  const validFrom = parseDateKeyToLocalDate(rule.valid_from);
+  const validUntil = parseDateKeyToLocalDate(rule.valid_until);
+  let totalMilliseconds = 0;
+  const cursor = new Date(monthStart);
+  cursor.setDate(cursor.getDate() - 1);
+
+  while (cursor < monthEndExclusive) {
+    const shiftDateKey = toDateKey(cursor);
+    const startsWithinValidity = (!validFrom || cursor >= validFrom) && (!validUntil || cursor <= validUntil);
+    if (selectedDays.has(cursor.getDay()) && startsWithinValidity && shiftDateKey) {
+      const shiftStart = new Date(cursor);
+      const [startHour, startMinute] = String(rule.start_time).slice(0, 5).split(':').map(Number);
+      shiftStart.setHours(startHour, startMinute, 0, 0);
+      const shiftEnd = new Date(shiftStart.getTime() + (durationMinutes * 60 * 1000));
+      const clippedStart = shiftStart < monthStart ? monthStart : shiftStart;
+      const clippedEnd = shiftEnd > monthEndExclusive ? monthEndExclusive : shiftEnd;
+      if (clippedEnd > clippedStart) totalMilliseconds += (clippedEnd - clippedStart) * positions;
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return Number((totalMilliseconds / (60 * 60 * 1000)).toFixed(2));
+}
+
+function getServiceBillingForecast(service, monthKey = getSelectedDashboardMonth()) {
+  if (!service) {
+    return { projectedHours: null, adjustmentHours: 0, adjustedHours: null, source: 'pending', rules: [], adjustments: [] };
+  }
+
+  const rules = getServiceBillingRules(service.id);
+  const adjustments = getServiceBillingAdjustments(service.id, monthKey);
+  const adjustmentHours = Number(adjustments.reduce((sum, item) => sum + Number(item.hours_delta || 0), 0).toFixed(2));
+
+  let projectedHours = null;
+  let source = 'pending';
+  if (rules.length) {
+    projectedHours = Number(rules.reduce((sum, rule) => sum + calculateBillingRuleHours(rule, monthKey), 0).toFixed(2));
+    source = 'rules';
+  } else if (service.billed_monthly_hours != null && service.billed_monthly_hours !== '') {
+    const manual = Number(service.billed_monthly_hours);
+    if (Number.isFinite(manual)) {
+      projectedHours = manual;
+      source = 'manual';
+    }
+  }
+
+  const adjustedHours = projectedHours == null
+    ? null
+    : Number(Math.max(0, projectedHours + adjustmentHours).toFixed(2));
+
+  return { projectedHours, adjustmentHours, adjustedHours, source, rules, adjustments };
+}
+
+function formatBillingSource(source) {
+  if (source === 'rules') return 'Calculado por cobertura';
+  if (source === 'manual') return 'Referencia manual';
+  return 'Sin configuración';
+}
+
+function formatBillingDays(days) {
+  const order = [1, 2, 3, 4, 5, 6, 0];
+  return (days || [])
+    .map(Number)
+    .sort((a, b) => order.indexOf(a) - order.indexOf(b))
+    .map((value) => getDayLabel(value))
+    .filter(Boolean)
+    .join(', ');
 }
 
 function calculateMinutesLate(scheduledStart, actualArrival) {
@@ -1467,16 +1596,15 @@ function getServiceAssignments(serviceId) {
   return state.derived.assignmentsByServiceId.get(serviceId) || [];
 }
 
-function getServiceBilledHours(service) {
-  if (!service || service.billed_monthly_hours == null || service.billed_monthly_hours === '') return null;
-  const value = Number(service.billed_monthly_hours);
-  return Number.isFinite(value) ? value : null;
+function getServiceBilledHours(service, monthKey = getSelectedDashboardMonth()) {
+  return getServiceBillingForecast(service, monthKey).adjustedHours;
 }
 
 function getServiceHoursSummary(service, monthKey = getSelectedDashboardMonth()) {
   const assignments = getServiceAssignments(service.id);
   const assignedHours = calculateMonthlyAssignmentHours(assignments, monthKey);
-  const billedHours = getServiceBilledHours(service);
+  const billingForecast = getServiceBillingForecast(service, monthKey);
+  const billedHours = billingForecast.adjustedHours;
   const difference = billedHours == null
     ? null
     : Number((assignedHours - billedHours).toFixed(2));
@@ -1492,6 +1620,9 @@ function getServiceHoursSummary(service, monthKey = getSelectedDashboardMonth())
     ...service,
     monthKey,
     assignments,
+    billingForecast,
+    projectedBilledHours: billingForecast.projectedHours,
+    billingAdjustmentsHours: billingForecast.adjustmentHours,
     billedHours,
     assignedHours,
     difference,
@@ -1768,7 +1899,9 @@ function calculateMonthConsumptionForServiceMaterial(serviceMaterialId, monthKey
     .reduce((sum, consumption) => sum + Number(consumption.quantity || 0), 0);
 }
 
-function getWorkerSummaries() {
+function getWorkerSummaries({ applyFilters = true } = {}) {
+  const monthKey = getSelectedDashboardMonth();
+
   return state.workers
     .map((worker) => {
       const assignments = getWorkerAssignments(worker.id);
@@ -1778,14 +1911,19 @@ function getWorkerSummaries() {
       );
 
       const targetHours = getTargetHours(worker);
-      const monthlyHours = calculateMonthlyAssignmentHours(assignments, getSelectedDashboardMonth());
-      const difference =
-        targetHours == null ? null : Number((targetHours - totalHours).toFixed(2));
+      const monthlyHours = calculateMonthlyAssignmentHours(assignments, monthKey);
+      const monthlyTargetHours = calculateMonthlyTargetHours(worker, monthKey);
+      const weeklyDifference = targetHours == null
+        ? null
+        : Number((targetHours - totalHours).toFixed(2));
+      const monthlyDifference = monthlyTargetHours == null
+        ? null
+        : Number((monthlyTargetHours - monthlyHours).toFixed(2));
 
       let status = 'balanced';
-      if (difference == null) status = 'insurance';
-      else if (difference > 0) status = 'available';
-      else if (difference < 0) status = 'over';
+      if (monthlyDifference == null) status = 'insurance';
+      else if (monthlyDifference > 0.01) status = 'available';
+      else if (monthlyDifference < -0.01) status = 'over';
 
       const services = [...new Set(assignments.map((assignment) => assignment.service_id))]
         .map((serviceId) => getServiceById(serviceId))
@@ -1799,14 +1937,72 @@ function getWorkerSummaries() {
         totalHours: Number(totalHours.toFixed(2)),
         monthlyHours,
         targetHours,
-        difference,
+        weeklyDifference,
+        monthlyTargetHours,
+        monthlyDifference,
+        difference: monthlyDifference,
         services,
         status,
         lifecycleInfo,
       };
     })
-    .filter(matchesFilters)
+    .filter((summary) => !applyFilters || matchesFilters(summary))
     .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es', { sensitivity: 'base' }));
+}
+
+function getWorkforceMonthlyBalance(monthKey = getSelectedDashboardMonth(), summaries = null) {
+  const workers = summaries || getWorkerSummaries({ applyFilters: false });
+  const fixedWorkers = workers.filter((worker) => worker.monthlyTargetHours != null);
+  const hourlyWorkers = workers.filter((worker) => worker.monthlyTargetHours == null);
+  const serviceBalance = getOverallServiceHoursBalance(monthKey);
+
+  const totalTargetHours = Number(fixedWorkers.reduce(
+    (sum, worker) => sum + Number(worker.monthlyTargetHours || 0),
+    0
+  ).toFixed(2));
+  const totalAssignedFixedHours = Number(fixedWorkers.reduce(
+    (sum, worker) => sum + Number(worker.monthlyHours || 0),
+    0
+  ).toFixed(2));
+  const hourlyAssignedHours = Number(hourlyWorkers.reduce(
+    (sum, worker) => sum + Number(worker.monthlyHours || 0),
+    0
+  ).toFixed(2));
+  const totalAssignedHours = Number(workers.reduce(
+    (sum, worker) => sum + Number(worker.monthlyHours || 0),
+    0
+  ).toFixed(2));
+  const payrollReferenceHours = Number((totalTargetHours + hourlyAssignedHours).toFixed(2));
+  const assignmentDifference = Number((totalAssignedFixedHours - totalTargetHours).toFixed(2));
+  const commercialDifference = Number((serviceBalance.totalBilledHours - payrollReferenceHours).toFixed(2));
+  const totalMissingHours = Number(fixedWorkers.reduce(
+    (sum, worker) => sum + Math.max(0, Number(worker.monthlyDifference || 0)),
+    0
+  ).toFixed(2));
+  const totalExcessHours = Number(fixedWorkers.reduce(
+    (sum, worker) => sum + Math.max(0, -Number(worker.monthlyDifference || 0)),
+    0
+  ).toFixed(2));
+
+  return {
+    monthKey,
+    workers,
+    fixedWorkers,
+    hourlyWorkers,
+    serviceBalance,
+    totalTargetHours,
+    totalAssignedFixedHours,
+    hourlyAssignedHours,
+    totalAssignedHours,
+    payrollReferenceHours,
+    assignmentDifference,
+    commercialDifference,
+    totalMissingHours,
+    totalExcessHours,
+    missingWorkers: fixedWorkers.filter((worker) => Number(worker.monthlyDifference || 0) > 0.01),
+    excessWorkers: fixedWorkers.filter((worker) => Number(worker.monthlyDifference || 0) < -0.01),
+    balancedWorkers: fixedWorkers.filter((worker) => Math.abs(Number(worker.monthlyDifference || 0)) <= 0.01),
+  };
 }
 
 function matchesFilters(summary) {
@@ -1867,7 +2063,7 @@ function renderDifferencePill(worker) {
 
 function renderServiceHoursPill(serviceSummary) {
   if (serviceSummary.billedHours == null) {
-    return '<span class="status-pill status-hours-pending">Falta cargar facturación</span>';
+    return '<span class="status-pill status-hours-pending">Falta configurar proyección</span>';
   }
 
   if (serviceSummary.difference < 0) {
@@ -1929,6 +2125,11 @@ function populateSelects() {
   const materialConsumptionService = $('materialConsumptionService');
   const materialCatalogOptionsList = $('materialCatalogOptionsList');
 
+  const billingRuleService = $('billingRuleService');
+  const billingAdjustmentService = $('billingAdjustmentService');
+  if (billingRuleService) billingRuleService.innerHTML = `<option value="">Seleccionar servicio</option>${serviceOptions}`;
+  if (billingAdjustmentService) billingAdjustmentService.innerHTML = `<option value="">Seleccionar servicio</option>${serviceOptions}`;
+
   if (assignmentWorker) assignmentWorker.innerHTML = workerOptions;
   if (assignmentService) assignmentService.innerHTML = serviceOptions;
   if (bulkAssignmentWorker) bulkAssignmentWorker.innerHTML = workerOptions;
@@ -1989,24 +2190,25 @@ function populateSelects() {
   updateMaterialConsumptionOptions();
 }
 
-function renderKpis(summaries) {
+function renderKpis(summaries, allWorkerSummaries = summaries) {
   const balance = getOverallServiceHoursBalance();
+  const workforceBalance = getWorkforceMonthlyBalance(balance.monthKey, allWorkerSummaries);
   const monthLabel = formatMonthLabel(balance.monthKey);
   const unassignedWorkers = summaries.filter((worker) => worker.services.length === 0).length;
   const uncoveredServices = getUncoveredServices().length;
 
-  let balanceValue = '0';
-  let balanceFoot = `Horas alineadas en ${monthLabel}`;
-  if (balance.difference < 0) {
-    balanceValue = `-${formatHours(Math.abs(balance.difference))}`;
-    balanceFoot = 'Horas facturadas pendientes de cobertura operativa';
-  } else if (balance.difference > 0) {
-    balanceValue = `+${formatHours(balance.difference)}`;
-    balanceFoot = 'Horas operativas por encima de lo facturado';
+  let commercialValue = '0';
+  let commercialFoot = `Horas vendidas y objetivo alineados en ${monthLabel}`;
+  if (workforceBalance.commercialDifference < 0) {
+    commercialValue = `-${formatHours(Math.abs(workforceBalance.commercialDifference))}`;
+    commercialFoot = 'Horas objetivo de nómina por encima de las facturables';
+  } else if (workforceBalance.commercialDifference > 0) {
+    commercialValue = `+${formatHours(workforceBalance.commercialDifference)}`;
+    commercialFoot = 'Horas facturables por encima de la jornada objetivo';
   }
 
   if (balance.pending.length) {
-    balanceFoot = `Parcial · ${balance.pending.length} servicio${balance.pending.length === 1 ? '' : 's'} sin carga mensual`;
+    commercialFoot = `Parcial · ${balance.pending.length} servicio${balance.pending.length === 1 ? '' : 's'} sin proyección`;
   }
 
   const cards = [
@@ -2016,21 +2218,26 @@ function renderKpis(summaries) {
       foot: `${unassignedWorkers} sin servicio asignado`,
     },
     {
-      label: 'Horas facturadas del mes',
+      label: 'Objetivo mensual de dotación',
+      value: formatHours(workforceBalance.payrollReferenceHours),
+      foot: `${formatHours(workforceBalance.totalTargetHours)} hs de jornada fija${workforceBalance.hourlyWorkers.length ? ` + ${formatHours(workforceBalance.hourlyAssignedHours)} hs por hora` : ''}`,
+    },
+    {
+      label: 'Facturación estimada del mes',
       value: formatHours(balance.totalBilledHours),
       foot: balance.pending.length
         ? `${balance.configured.length} servicios cargados · ${balance.pending.length} pendientes`
         : `${balance.configured.length} servicios cargados · ${monthLabel}`,
     },
     {
-      label: 'Horas operativas del mes',
-      value: formatHours(balance.totalAssignedHours),
-      foot: `Calculadas según los días reales de ${monthLabel}`,
+      label: 'Horas asignadas del mes',
+      value: formatHours(workforceBalance.totalAssignedHours),
+      foot: `Según el cronograma y los días reales de ${monthLabel}`,
     },
     {
-      label: 'Balance mensual',
-      value: balanceValue,
-      foot: balanceFoot,
+      label: 'Saldo facturación vs dotación',
+      value: commercialValue,
+      foot: commercialFoot,
     },
     {
       label: 'Servicios sin cobertura',
@@ -2050,6 +2257,115 @@ function renderKpis(summaries) {
       `
     )
     .join('');
+}
+
+function renderWorkforceMonthlyBalance(summaries = null) {
+  if (!el.workforceMonthlyBalance) return;
+
+  const balance = getWorkforceMonthlyBalance(getSelectedDashboardMonth(), summaries);
+  const monthLabel = formatMonthLabel(balance.monthKey);
+  const deviations = [...balance.missingWorkers, ...balance.excessWorkers]
+    .sort((a, b) => Math.abs(Number(b.monthlyDifference || 0)) - Math.abs(Number(a.monthlyDifference || 0)))
+    .slice(0, 12);
+
+  let assignmentLabel = 'Asignación equilibrada';
+  let assignmentClass = 'status-balanced';
+  if (balance.assignmentDifference < -0.01) {
+    assignmentLabel = `Faltan asignar ${formatHours(Math.abs(balance.assignmentDifference))} hs`;
+    assignmentClass = 'status-hours-missing';
+  } else if (balance.assignmentDifference > 0.01) {
+    assignmentLabel = `Exceso asignado: ${formatHours(balance.assignmentDifference)} hs`;
+    assignmentClass = 'status-hours-over';
+  }
+
+  let commercialLabel = 'Facturación y dotación alineadas';
+  let commercialClass = 'status-balanced';
+  if (balance.commercialDifference < -0.01) {
+    commercialLabel = `${formatHours(Math.abs(balance.commercialDifference))} hs de dotación por encima de lo facturable`;
+    commercialClass = 'status-hours-missing';
+  } else if (balance.commercialDifference > 0.01) {
+    commercialLabel = `${formatHours(balance.commercialDifference)} hs facturables por encima de la dotación`;
+    commercialClass = 'status-hours-pending';
+  }
+
+  el.workforceMonthlyBalance.innerHTML = `
+    <div class="workforce-balance-card">
+      <div class="section-head workforce-balance-head">
+        <div>
+          <h3>Balance mensual de dotación · ${escapeHtml(monthLabel)}</h3>
+          <span class="muted">Compara jornada objetivo, horas efectivamente asignadas y horas estimadas de facturación.</span>
+        </div>
+        <div class="workforce-balance-statuses">
+          <span class="status-pill ${assignmentClass}">${assignmentLabel}</span>
+          <span class="status-pill ${commercialClass}">${commercialLabel}</span>
+        </div>
+      </div>
+
+      <div class="workforce-balance-summary">
+        <div class="hours-balance-metric">
+          <span>Objetivo mensual de jornadas fijas</span>
+          <strong>${formatHours(balance.totalTargetHours)} hs</strong>
+          <small>${balance.fixedWorkers.length} operario${balance.fixedWorkers.length === 1 ? '' : 's'} con objetivo semanal</small>
+        </div>
+        <div class="hours-balance-metric">
+          <span>Personal por hora / seguro</span>
+          <strong>${formatHours(balance.hourlyAssignedHours)} hs</strong>
+          <small>${balance.hourlyWorkers.length} operario${balance.hourlyWorkers.length === 1 ? '' : 's'} sin objetivo fijo</small>
+        </div>
+        <div class="hours-balance-metric">
+          <span>Referencia total de horas a pagar</span>
+          <strong>${formatHours(balance.payrollReferenceHours)} hs</strong>
+          <small>Objetivo fijo más horas asignadas al personal por hora</small>
+        </div>
+        <div class="hours-balance-metric">
+          <span>Horas efectivamente asignadas</span>
+          <strong>${formatHours(balance.totalAssignedHours)} hs</strong>
+          <small>Cronograma activo proyectado al calendario real</small>
+        </div>
+        <div class="hours-balance-metric">
+          <span>Horas facturables estimadas</span>
+          <strong>${formatHours(balance.serviceBalance.totalBilledHours)} hs</strong>
+          <small>Proyección contractual más novedades registradas</small>
+        </div>
+        <div class="hours-balance-metric">
+          <span>Desvíos individuales acumulados</span>
+          <strong>${formatHours(balance.totalMissingHours)} hs faltantes · ${formatHours(balance.totalExcessHours)} hs extra</strong>
+          <small>Se muestran por separado para evitar que un exceso oculte un déficit</small>
+        </div>
+      </div>
+
+      <div class="hours-balance-note">
+        La jornada mensual no se calcula multiplicando siempre por cuatro. La app cuenta los lunes, martes, miércoles y demás días reales de ${escapeHtml(monthLabel)}. Para una jornada completa usa como patrón 8 hs de lunes a viernes y 4 hs el sábado; para media jornada, 4 hs de lunes a sábado. Si el objetivo semanal fue personalizado, el patrón se ajusta proporcionalmente.
+      </div>
+
+      ${balance.serviceBalance.pending.length
+        ? `<div class="hours-balance-note">El saldo comercial es parcial: ${balance.serviceBalance.pending.length} servicio${balance.serviceBalance.pending.length === 1 ? '' : 's'} todavía no tiene proyección de facturación configurada.</div>`
+        : ''}
+
+      <div>
+        <div class="section-head">
+          <div>
+            <h4>Operarios con desvíos mensuales</h4>
+            <span class="muted">Rojo: horas por asignar. Verde: horas asignadas por encima de la jornada objetivo.</span>
+          </div>
+          <span class="muted">${balance.missingWorkers.length} con déficit · ${balance.excessWorkers.length} con exceso · ${balance.balancedWorkers.length} equilibrados</span>
+        </div>
+        <div class="hours-balance-list">
+          ${deviations.length
+            ? deviations.map((worker) => `
+                <div class="hours-balance-row workforce-worker-row">
+                  <div>
+                    <strong>${escapeHtml(worker.name)}</strong>
+                    <p>Objetivo mes: ${formatHours(worker.monthlyTargetHours)} hs · Asignadas: ${formatHours(worker.monthlyHours)} hs · Objetivo semanal: ${formatHours(worker.targetHours)} hs</p>
+                  </div>
+                  ${renderDifferencePill(worker)}
+                </div>
+              `).join('')
+            : '<div class="empty-state">Todos los operarios con jornada fija están equilibrados para el mes seleccionado.</div>'}
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function renderServiceHoursBalance() {
@@ -2077,7 +2393,7 @@ function renderServiceHoursBalance() {
       <div class="section-head">
         <div>
           <h3>Balance mensual · ${escapeHtml(monthLabel)}</h3>
-          <span class="muted">Horas mensuales facturadas contra horas mensuales asignadas</span>
+          <span class="muted">Facturación mensual proyectada y ajustada contra horas operativas asignadas</span>
         </div>
         <span class="status-pill ${differenceClass}">${differenceLabel}</span>
       </div>
@@ -2133,7 +2449,7 @@ function renderServiceHoursBalance() {
 function renderCriticalWorkers(summaries) {
   const critical = summaries
     .filter((worker) => worker.status === 'available' || worker.status === 'over')
-    .sort((a, b) => Math.abs(b.difference || 0) - Math.abs(a.difference || 0))
+    .sort((a, b) => Math.abs(b.monthlyDifference || 0) - Math.abs(a.monthlyDifference || 0))
     .slice(0, 8);
 
   el.criticalWorkers.innerHTML = critical.length
@@ -2145,7 +2461,7 @@ function renderCriticalWorkers(summaries) {
               <article class="mini-card">
                 <div>
                   <strong>${escapeHtml(worker.name)}</strong>
-                  <div class="muted">${TYPE_META[worker.worker_type].label}</div>
+                  <div class="muted">${TYPE_META[worker.worker_type].label} · Objetivo ${formatHours(worker.monthlyTargetHours)} hs · Asignadas ${formatHours(worker.monthlyHours)} hs</div>
                 </div>
                 <div>${renderDifferencePill(worker)}</div>
               </article>
@@ -2224,12 +2540,16 @@ function renderWorkersTable(summaries) {
             </div>
           </td>
           <td>${worker.targetHours == null ? 'SEGURO' : formatHours(worker.targetHours)}</td>
-          <td>${formatHours(worker.totalHours)}</td>
+          <td>
+            <strong>${formatHours(worker.totalHours)} hs</strong>
+            ${worker.weeklyDifference == null ? '' : `<div class="muted">${worker.weeklyDifference > 0 ? `Faltan ${formatHours(worker.weeklyDifference)}` : worker.weeklyDifference < 0 ? `Sobran ${formatHours(Math.abs(worker.weeklyDifference))}` : 'En objetivo'}</div>`}
+          </td>
+          <td>${worker.monthlyTargetHours == null ? 'POR HORA' : `<strong>${formatHours(worker.monthlyTargetHours)} hs</strong><div class="muted">${escapeHtml(formatMonthLabel(getSelectedDashboardMonth()))}</div>`}</td>
           <td>
             <strong>${formatHours(worker.monthlyHours)} hs</strong>
-            <div class="muted">${escapeHtml(formatMonthLabel(getSelectedDashboardMonth()))}</div>
+            <div class="muted">Cronograma proyectado</div>
           </td>
-          <td>${worker.difference == null ? 'SEGURO' : formatHours(worker.difference)}</td>
+          <td>${worker.monthlyDifference == null ? 'POR HORA' : worker.monthlyDifference > 0.01 ? `Faltan ${formatHours(worker.monthlyDifference)} hs` : worker.monthlyDifference < -0.01 ? `Sobran ${formatHours(Math.abs(worker.monthlyDifference))} hs` : '0 hs'}</td>
           <td>${renderDifferencePill(worker)}</td>
           <td>
             ${
@@ -2264,7 +2584,7 @@ function renderWorkerAvailability(summaries) {
           <header class="availability-header">
             <div>
               <h3>${escapeHtml(worker.name)}</h3>
-              <p>${TYPE_META[worker.worker_type].label} · ${escapeHtml(lifecycleInfo.tenureText)} · ${formatHours(worker.monthlyHours)} hs en ${escapeHtml(formatMonthLabel(getSelectedDashboardMonth()))}</p>
+              <p>${TYPE_META[worker.worker_type].label} · ${escapeHtml(lifecycleInfo.tenureText)} · Objetivo mes: ${worker.monthlyTargetHours == null ? 'por hora' : `${formatHours(worker.monthlyTargetHours)} hs`} · Asignadas: ${formatHours(worker.monthlyHours)} hs</p>
               <div class="worker-availability-meta">
                 ${renderProbationBadge(lifecycleInfo)}
                 <span class="muted worker-probation-detail">${escapeHtml(lifecycleInfo.probationDetailText)}</span>
@@ -2310,6 +2630,299 @@ function renderWorkerAvailability(summaries) {
 }
 
 
+
+function getBillingAdjustmentTypeLabel(type) {
+  const labels = {
+    uncovered: 'Horas sin cobertura',
+    client_closure: 'Cierre o suspensión del cliente',
+    extra: 'Horas adicionales',
+    manual: 'Ajuste manual',
+  };
+  return labels[type] || 'Ajuste';
+}
+
+function renderBilling() {
+  const monthKey = getSelectedBillingMonth();
+  const monthLabel = formatMonthLabel(monthKey);
+
+  if (el.billingSchemaNotice) {
+    el.billingSchemaNotice.classList.toggle('hidden', state.billingSchemaReady);
+    el.billingSchemaNotice.innerHTML = state.billingSchemaReady ? '' : `
+      <strong>Falta habilitar la proyección automática</strong>
+      <p>Ejecutá <code>sql/migration_add_billing_forecast.sql</code> en Supabase. La migración es aditiva y no modifica los servicios, operarios, horarios o asignaciones existentes.</p>
+    `;
+  }
+
+  const summaries = state.services
+    .map((service) => getServiceHoursSummary(service, monthKey))
+    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es', { sensitivity: 'base' }));
+
+  const configured = summaries.filter((item) => item.projectedBilledHours != null);
+  const projectedTotal = Number(configured.reduce((sum, item) => sum + Number(item.projectedBilledHours || 0), 0).toFixed(2));
+  const adjustmentsTotal = Number(configured.reduce((sum, item) => sum + Number(item.billingAdjustmentsHours || 0), 0).toFixed(2));
+  const adjustedTotal = Number(configured.reduce((sum, item) => sum + Number(item.billedHours || 0), 0).toFixed(2));
+  const operativeTotal = Number(summaries.reduce((sum, item) => sum + Number(item.assignedHours || 0), 0).toFixed(2));
+  const comparableOperative = Number(configured.reduce((sum, item) => sum + Number(item.assignedHours || 0), 0).toFixed(2));
+  const difference = Number((comparableOperative - adjustedTotal).toFixed(2));
+
+  if (el.billingKpiCards) {
+    const cards = [
+      { label: 'Proyección contractual', value: `${formatHours(projectedTotal)} hs`, foot: monthLabel },
+      { label: 'Ajustes registrados', value: `${adjustmentsTotal > 0 ? '+' : ''}${formatHours(adjustmentsTotal)} hs`, foot: 'Descuentos y adicionales del mes' },
+      { label: 'Facturación ajustada', value: `${formatHours(adjustedTotal)} hs`, foot: 'Proyección más novedades cargadas' },
+      { label: 'Horas operativas', value: `${formatHours(operativeTotal)} hs`, foot: 'Cronograma activo proyectado al mes' },
+      { label: 'Balance comparable', value: `${difference > 0 ? '+' : ''}${formatHours(difference)} hs`, foot: difference > 0 ? 'Más horas operativas que facturables' : difference < 0 ? 'Cobertura operativa por debajo de lo facturable' : 'Horas alineadas' },
+    ];
+    el.billingKpiCards.innerHTML = cards.map((card) => `
+      <article class="kpi-card card-lite">
+        <span class="kpi-label">${escapeHtml(card.label)}</span>
+        <strong class="kpi-value">${escapeHtml(card.value)}</strong>
+        <small class="kpi-foot">${escapeHtml(card.foot)}</small>
+      </article>
+    `).join('');
+  }
+
+  if (!el.billingServicesBoard) return;
+  if (!summaries.length) {
+    el.billingServicesBoard.innerHTML = '<div class="empty-state">No hay servicios cargados.</div>';
+    return;
+  }
+
+  el.billingServicesBoard.innerHTML = summaries.map((summary) => {
+    const forecast = summary.billingForecast;
+    const rulesHtml = forecast.rules.length
+      ? forecast.rules.map((rule) => {
+          const validity = rule.valid_from || rule.valid_until
+            ? `${rule.valid_from ? `desde ${formatDateLabel(rule.valid_from)}` : 'sin inicio'} · ${rule.valid_until ? `hasta ${formatDateLabel(rule.valid_until)}` : 'sin fin'}`
+            : 'Vigencia permanente';
+          return `
+            <div class="billing-rule-row">
+              <div>
+                <strong>${escapeHtml(rule.rule_name || 'Bloque facturable')}</strong>
+                <small>${escapeHtml(formatBillingDays(rule.days_of_week))} · ${escapeHtml(formatShiftRange(rule.start_time, rule.end_time))} · ${formatNumber(rule.positions)} puesto${Number(rule.positions) === 1 ? '' : 's'} · ${escapeHtml(validity)}</small>
+              </div>
+              <div class="inline-actions">
+                <button class="btn btn-secondary btn-sm" type="button" data-edit-billing-rule="${rule.id}">Editar</button>
+                <button class="btn btn-ghost btn-sm" type="button" data-delete-billing-rule="${rule.id}">Eliminar</button>
+              </div>
+            </div>
+          `;
+        }).join('')
+      : `<div class="billing-empty">Sin reglas. Se utiliza ${summary.projectedBilledHours == null ? 'ninguna referencia' : 'la referencia manual del servicio'}.</div>`;
+
+    const adjustmentsHtml = forecast.adjustments.length
+      ? forecast.adjustments.map((item) => `
+          <div class="billing-adjustment-row">
+            <div>
+              <strong>${escapeHtml(item.reason || getBillingAdjustmentTypeLabel(item.adjustment_type))}</strong>
+              <small>${escapeHtml(formatDateLabel(item.adjustment_date))} · ${escapeHtml(getBillingAdjustmentTypeLabel(item.adjustment_type))}${item.notes ? ` · ${escapeHtml(item.notes)}` : ''}</small>
+            </div>
+            <div class="inline-actions">
+              <strong class="billing-adjustment-value ${Number(item.hours_delta) < 0 ? 'negative' : 'positive'}">${Number(item.hours_delta) > 0 ? '+' : ''}${formatHours(item.hours_delta)} hs</strong>
+              <button class="btn btn-ghost btn-sm" type="button" data-delete-billing-adjustment="${item.id}">Eliminar</button>
+            </div>
+          </div>
+        `).join('')
+      : '<div class="billing-empty">Sin novedades registradas para este mes.</div>';
+
+    return `
+      <article class="billing-service-card" data-billing-service-id="${summary.id}">
+        <header class="billing-service-head">
+          <div>
+            <h3>${escapeHtml(summary.name)}</h3>
+            <p>${escapeHtml(summary.zone || 'Sin zona')} · ${escapeHtml(summary.client_address || 'Sin dirección')}</p>
+          </div>
+          <div class="inline-actions">
+            <button class="btn btn-secondary btn-sm" type="button" data-add-billing-rule-service="${summary.id}">Agregar cobertura</button>
+            <button class="btn btn-primary btn-sm" type="button" data-add-billing-adjustment-service="${summary.id}">Agregar novedad</button>
+          </div>
+        </header>
+        <div class="billing-metrics">
+          <div class="billing-metric"><span>Fuente</span><strong>${escapeHtml(formatBillingSource(forecast.source))}</strong></div>
+          <div class="billing-metric"><span>Proyección base</span><strong>${summary.projectedBilledHours == null ? 'Pendiente' : `${formatHours(summary.projectedBilledHours)} hs`}</strong></div>
+          <div class="billing-metric"><span>Ajustes</span><strong>${summary.billingAdjustmentsHours > 0 ? '+' : ''}${formatHours(summary.billingAdjustmentsHours)} hs</strong></div>
+          <div class="billing-metric"><span>Facturación ajustada</span><strong>${summary.billedHours == null ? 'Pendiente' : `${formatHours(summary.billedHours)} hs`}</strong></div>
+          <div class="billing-metric"><span>Operativas / diferencia</span><strong>${formatHours(summary.assignedHours)} hs · ${summary.difference == null ? '—' : `${summary.difference > 0 ? '+' : ''}${formatHours(summary.difference)} hs`}</strong></div>
+        </div>
+        <div class="billing-detail-grid">
+          <section class="billing-detail-panel">
+            <h4>Cobertura facturable</h4>
+            <div class="billing-rule-list">${rulesHtml}</div>
+          </section>
+          <section class="billing-detail-panel">
+            <h4>Novedades de ${escapeHtml(monthLabel)}</h4>
+            <div class="billing-adjustment-list">${adjustmentsHtml}</div>
+          </section>
+        </div>
+      </article>
+    `;
+  }).join('');
+}
+
+function openBillingRuleDialog(serviceId = '', ruleId = '') {
+  if (!ensureDataReady('configurar la facturación')) return;
+  if (!state.billingSchemaReady) {
+    alert('Primero ejecutá sql/migration_add_billing_forecast.sql en Supabase.');
+    return;
+  }
+  const rule = ruleId ? state.billingRules.find((item) => item.id === ruleId) : null;
+  $('billingRuleId').value = rule?.id || '';
+  $('billingRuleService').value = rule?.service_id || serviceId || '';
+  $('billingRuleName').value = rule?.rule_name || '';
+  $('billingRuleStart').value = rule?.start_time ? String(rule.start_time).slice(0, 5) : '08:00';
+  $('billingRuleEnd').value = rule?.end_time ? String(rule.end_time).slice(0, 5) : '12:00';
+  $('billingRulePositions').value = String(rule?.positions || 1);
+  $('billingRuleValidFrom').value = rule?.valid_from || '';
+  $('billingRuleValidUntil').value = rule?.valid_until || '';
+  $('billingRuleNotes').value = rule?.notes || '';
+  const selectedDays = new Set((rule?.days_of_week || [1,2,3,4,5]).map(Number));
+  document.querySelectorAll('.billing-rule-day').forEach((input) => { input.checked = selectedDays.has(Number(input.value)); });
+  const title = $('billingRuleDialogTitle');
+  if (title) title.textContent = rule ? 'Editar cobertura facturable' : 'Configurar cobertura facturable';
+  el.billingRuleDialog?.showModal();
+}
+
+function openBillingAdjustmentDialog(serviceId = '') {
+  if (!ensureDataReady('registrar la novedad')) return;
+  if (!state.billingSchemaReady) {
+    alert('Primero ejecutá sql/migration_add_billing_forecast.sql en Supabase.');
+    return;
+  }
+  const monthKey = getSelectedBillingMonth();
+  const today = toDateKey(new Date());
+  $('billingAdjustmentId').value = '';
+  $('billingAdjustmentService').value = serviceId || '';
+  $('billingAdjustmentDate').value = getMonthKey(today) === monthKey ? today : `${monthKey}-01`;
+  $('billingAdjustmentType').value = 'uncovered';
+  $('billingAdjustmentImpact').value = 'subtract';
+  $('billingAdjustmentHours').value = '';
+  $('billingAdjustmentReason').value = '';
+  $('billingAdjustmentNotes').value = '';
+  el.billingAdjustmentDialog?.showModal();
+}
+
+function syncBillingAdjustmentImpact() {
+  const type = $('billingAdjustmentType')?.value;
+  const impact = $('billingAdjustmentImpact');
+  if (!impact) return;
+  if (type === 'extra') impact.value = 'add';
+  if (type === 'uncovered' || type === 'client_closure') impact.value = 'subtract';
+}
+
+async function saveBillingRule(event) {
+  event.preventDefault();
+  if (!state.billingSchemaReady) return;
+  const serviceId = $('billingRuleService').value;
+  const days = [...document.querySelectorAll('.billing-rule-day:checked')].map((input) => Number(input.value));
+  const startTime = $('billingRuleStart').value;
+  const endTime = $('billingRuleEnd').value;
+  const positions = Number($('billingRulePositions').value || 1);
+  const validFrom = $('billingRuleValidFrom').value || null;
+  const validUntil = $('billingRuleValidUntil').value || null;
+
+  if (!serviceId || !days.length || !startTime || !endTime) {
+    alert('Seleccioná el servicio, al menos un día y un horario completo.');
+    return;
+  }
+  if (startTime === endTime) {
+    alert('La hora de inicio y finalización no pueden ser iguales.');
+    return;
+  }
+  if (!Number.isInteger(positions) || positions < 1) {
+    alert('La cantidad de puestos simultáneos debe ser un número entero igual o mayor a 1.');
+    return;
+  }
+  if (validFrom && validUntil && validUntil < validFrom) {
+    alert('La fecha de finalización no puede ser anterior a la fecha de inicio.');
+    return;
+  }
+  const overnightMessage = buildOvernightConfirmation(days, startTime, endTime);
+  if (overnightMessage && !confirm(overnightMessage)) return;
+
+  const submitBtn = el.billingRuleForm?.querySelector('button[type="submit"]');
+  if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Guardando...'; }
+  try {
+    await ensureWriteSession();
+    markLocalMutation();
+    const payload = {
+      service_id: serviceId,
+      rule_name: $('billingRuleName').value.trim() || null,
+      days_of_week: days,
+      start_time: startTime,
+      end_time: endTime,
+      positions,
+      valid_from: validFrom,
+      valid_until: validUntil,
+      notes: $('billingRuleNotes').value.trim() || null,
+      is_active: true,
+    };
+    const ruleId = $('billingRuleId').value.trim();
+    const request = ruleId
+      ? supabase.from('service_billing_rules').update(payload).eq('id', ruleId)
+      : supabase.from('service_billing_rules').insert(payload);
+    const { error } = await request;
+    if (error) throw error;
+    el.billingRuleDialog.close();
+    await loadAllDataWithRetry(2, 250, { hardLock: false, silent: false });
+  } catch (error) {
+    console.error(error);
+    alert(error.message || 'No se pudo guardar la cobertura facturable.');
+  } finally {
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Guardar cobertura'; }
+  }
+}
+
+async function saveBillingAdjustment(event) {
+  event.preventDefault();
+  if (!state.billingSchemaReady) return;
+  const serviceId = $('billingAdjustmentService').value;
+  const date = $('billingAdjustmentDate').value;
+  const hours = Number($('billingAdjustmentHours').value || 0);
+  const impact = $('billingAdjustmentImpact').value;
+  if (!serviceId || !date || !Number.isFinite(hours) || hours <= 0) {
+    alert('Completá el servicio, la fecha y una cantidad de horas mayor a 0.');
+    return;
+  }
+  const submitBtn = el.billingAdjustmentForm?.querySelector('button[type="submit"]');
+  if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Guardando...'; }
+  try {
+    await ensureWriteSession();
+    markLocalMutation();
+    const { error } = await supabase.from('service_billing_adjustments').insert({
+      service_id: serviceId,
+      adjustment_date: date,
+      adjustment_type: $('billingAdjustmentType').value || 'manual',
+      hours_delta: impact === 'subtract' ? -hours : hours,
+      reason: $('billingAdjustmentReason').value.trim(),
+      notes: $('billingAdjustmentNotes').value.trim() || null,
+    });
+    if (error) throw error;
+    el.billingAdjustmentDialog.close();
+    await loadAllDataWithRetry(2, 250, { hardLock: false, silent: false });
+  } catch (error) {
+    console.error(error);
+    alert(error.message || 'No se pudo guardar la novedad de facturación.');
+  } finally {
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Guardar novedad'; }
+  }
+}
+
+async function deleteBillingRule(ruleId) {
+  if (!confirm('¿Eliminar esta regla de cobertura facturable?')) return;
+  markLocalMutation();
+  const { error } = await supabase.from('service_billing_rules').delete().eq('id', ruleId);
+  if (error) { alert(error.message); return; }
+  await loadAllDataWithRetry(2, 250, { hardLock: false, silent: false });
+}
+
+async function deleteBillingAdjustment(adjustmentId) {
+  if (!confirm('¿Eliminar esta novedad de facturación?')) return;
+  markLocalMutation();
+  const { error } = await supabase.from('service_billing_adjustments').delete().eq('id', adjustmentId);
+  if (error) { alert(error.message); return; }
+  await loadAllDataWithRetry(2, 250, { hardLock: false, silent: false });
+}
+
 function renderServices() {
   const services = getFilteredServices();
   const paginationMeta = getPaginationMeta(services, 'services');
@@ -2338,7 +2951,15 @@ function renderServices() {
 
           <div class="service-hours-strip">
             <div class="service-hours-metric">
-              <span>Facturadas mes</span>
+              <span>Proyección base</span>
+              <strong>${hoursSummary.projectedBilledHours == null ? 'Pendiente' : `${formatHours(hoursSummary.projectedBilledHours)} hs`}</strong>
+            </div>
+            <div class="service-hours-metric">
+              <span>Ajustes del mes</span>
+              <strong>${hoursSummary.billingAdjustmentsHours > 0 ? '+' : ''}${formatHours(hoursSummary.billingAdjustmentsHours)} hs</strong>
+            </div>
+            <div class="service-hours-metric">
+              <span>Facturación ajustada</span>
               <strong>${hoursSummary.billedHours == null ? 'Pendiente' : `${formatHours(hoursSummary.billedHours)} hs`}</strong>
             </div>
             <div class="service-hours-metric">
@@ -5562,6 +6183,9 @@ function renderCurrentView() {
       renderServices();
       break;
     }
+    case 'billing':
+      renderBilling();
+      break;
     case 'planner':
       renderPlanner();
       break;
@@ -5583,9 +6207,11 @@ function renderCurrentView() {
     case 'dashboard':
     default: {
       const summaries = getWorkerSummaries();
-      renderKpis(summaries);
+      const allWorkerSummaries = getWorkerSummaries({ applyFilters: false });
+      renderKpis(summaries, allWorkerSummaries);
+      renderWorkforceMonthlyBalance(allWorkerSummaries);
       renderServiceHoursBalance();
-      renderCriticalWorkers(summaries);
+      renderCriticalWorkers(allWorkerSummaries);
       renderServiceGaps();
       break;
     }
@@ -5872,6 +6498,8 @@ async function loadAllData() {
   const [
     workersRes,
     servicesRes,
+    billingRulesRes,
+    billingAdjustmentsRes,
     assignmentsRes,
     absencesRes,
     tardinessesRes,
@@ -5882,6 +6510,8 @@ async function loadAllData() {
     Promise.all([
       supabase.from('workers').select('*').order('name'),
       supabase.from('services').select('*').order('name'),
+      supabase.from('service_billing_rules').select('*').order('created_at'),
+      supabase.from('service_billing_adjustments').select('*').order('adjustment_date', { ascending: false }).order('created_at', { ascending: false }),
       supabase.from('assignments').select('*').eq('is_active', true).order('day_of_week').order('start_time'),
       supabase.from('absences').select('*').order('absence_date', { ascending: false }).order('created_at', { ascending: false }),
       supabase.from('tardinesses').select('*').order('tardiness_date', { ascending: false }).order('created_at', { ascending: false }),
@@ -5899,6 +6529,9 @@ async function loadAllData() {
 
   state.workers = workersRes.data || [];
   state.services = servicesRes.data || [];
+  state.billingRules = billingRulesRes.error ? [] : (billingRulesRes.data || []);
+  state.billingAdjustments = billingAdjustmentsRes.error ? [] : (billingAdjustmentsRes.data || []);
+  state.billingSchemaReady = !billingRulesRes.error && !billingAdjustmentsRes.error;
   state.assignments = assignmentsRes.data || [];
   state.absences = absencesRes.error ? [] : (absencesRes.data || []);
   state.tardinesses = tardinessesRes.error ? [] : (tardinessesRes.data || []);
@@ -5908,6 +6541,9 @@ async function loadAllData() {
   state.optimizerResults = null;
   state.proximityResults = null;
 
+  if (billingRulesRes.error || billingAdjustmentsRes.error) {
+    console.warn('Las tablas de proyección de facturación todavía no están disponibles.', billingRulesRes.error || billingAdjustmentsRes.error);
+  }
   if (absencesRes.error) {
     console.warn('La tabla de ausencias todavía no está disponible o devolvió error.', absencesRes.error);
   }
@@ -6007,7 +6643,7 @@ function subscribeRealtime() {
     supabase.removeChannel(state.realtimeChannel);
   }
 
-  state.realtimeChannel = supabase
+  let channel = supabase
     .channel('planner-realtime')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'workers' }, scheduleRealtimeRefresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'services' }, scheduleRealtimeRefresh)
@@ -6016,8 +6652,15 @@ function subscribeRealtime() {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'tardinesses' }, scheduleRealtimeRefresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'materials' }, scheduleRealtimeRefresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'service_materials' }, scheduleRealtimeRefresh)
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'material_consumptions' }, scheduleRealtimeRefresh)
-    .subscribe();
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'material_consumptions' }, scheduleRealtimeRefresh);
+
+  if (state.billingSchemaReady) {
+    channel = channel
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'service_billing_rules' }, scheduleRealtimeRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'service_billing_adjustments' }, scheduleRealtimeRefresh);
+  }
+
+  state.realtimeChannel = channel.subscribe();
 }
 
 async function initializeAfterLogin(options = {}) {
@@ -6049,6 +6692,8 @@ async function initAuth() {
       showAuth();
       state.workers = [];
       state.services = [];
+      state.billingRules = [];
+      state.billingAdjustments = [];
       state.assignments = [];
       state.absences = [];
       state.tardinesses = [];
@@ -7739,6 +8384,37 @@ function handleDynamicClicks(event) {
     return;
   }
 
+  const addBillingRuleBtn = event.target.closest('[data-add-billing-rule-service]');
+  if (addBillingRuleBtn) {
+    openBillingRuleDialog(addBillingRuleBtn.dataset.addBillingRuleService);
+    return;
+  }
+
+  const addBillingAdjustmentBtn = event.target.closest('[data-add-billing-adjustment-service]');
+  if (addBillingAdjustmentBtn) {
+    openBillingAdjustmentDialog(addBillingAdjustmentBtn.dataset.addBillingAdjustmentService);
+    return;
+  }
+
+  const editBillingRuleBtn = event.target.closest('[data-edit-billing-rule]');
+  if (editBillingRuleBtn) {
+    const rule = state.billingRules.find((item) => item.id === editBillingRuleBtn.dataset.editBillingRule);
+    openBillingRuleDialog(rule?.service_id || '', rule?.id || '');
+    return;
+  }
+
+  const deleteBillingRuleBtn = event.target.closest('[data-delete-billing-rule]');
+  if (deleteBillingRuleBtn) {
+    deleteBillingRule(deleteBillingRuleBtn.dataset.deleteBillingRule);
+    return;
+  }
+
+  const deleteBillingAdjustmentBtn = event.target.closest('[data-delete-billing-adjustment]');
+  if (deleteBillingAdjustmentBtn) {
+    deleteBillingAdjustment(deleteBillingAdjustmentBtn.dataset.deleteBillingAdjustment);
+    return;
+  }
+
   const assignmentBtn = event.target.closest('[data-edit-assignment]');
   if (assignmentBtn) {
     openAssignmentDialog(assignmentBtn.dataset.editAssignment);
@@ -7750,6 +8426,7 @@ function getCurrentViewTitle() {
     dashboard: 'Dashboard',
     workers: 'Operarios',
     services: 'Servicios',
+    billing: 'Facturación mensual',
     planner: 'Planner semanal',
     map: 'Mapa',
     optimizer: 'Optimizador',
@@ -7765,7 +8442,8 @@ function getCurrentViewElement() {
 }
 
 function buildDashboardExportData() {
-  const summaries = getWorkerSummaries();
+  const summaries = getWorkerSummaries({ applyFilters: false });
+  const workforceBalance = getWorkforceMonthlyBalance(getSelectedDashboardMonth(), summaries);
   const availableWorkers = summaries.filter((worker) => worker.status === 'available').length;
   const overloadedWorkers = summaries.filter((worker) => worker.status === 'over').length;
   const uncoveredServices = getUncoveredServices();
@@ -7783,11 +8461,16 @@ function buildDashboardExportData() {
           ['Métrica', 'Valor'],
           ['Mes de análisis', monthLabel],
           ['Operarios visibles', summaries.length],
-          ['Horas mensuales facturadas cargadas', hoursBalance.totalBilledHours],
+          ['Objetivo mensual de jornadas fijas', workforceBalance.totalTargetHours],
+          ['Horas asignadas a personal por hora / seguro', workforceBalance.hourlyAssignedHours],
+          ['Referencia total de horas a pagar', workforceBalance.payrollReferenceHours],
+          ['Horas asignadas mensuales de toda la dotación', workforceBalance.totalAssignedHours],
+          ['Desvío asignación vs objetivo fijo', workforceBalance.assignmentDifference],
+          ['Facturación mensual ajustada', hoursBalance.totalBilledHours],
+          ['Saldo facturación vs referencia de nómina', workforceBalance.commercialDifference],
           ['Horas operativas mensuales en servicios cargados', hoursBalance.assignedHoursOnConfiguredServices],
-          ['Horas operativas mensuales totales', hoursBalance.totalAssignedHours],
           ['Balance mensual: operativas - facturadas', hoursBalance.difference],
-          ['Servicios con horas mensuales facturadas pendientes', hoursBalance.pending.length],
+          ['Servicios con proyección pendiente', hoursBalance.pending.length],
           ['Operarios a los que les faltan horas', availableWorkers],
           ['Operarios por encima del objetivo', overloadedWorkers],
           ['Servicios sin cobertura', uncoveredServices.length],
@@ -7796,7 +8479,7 @@ function buildDashboardExportData() {
       {
         name: 'Balance servicios',
         rows: [
-          ['Mes de análisis', 'Servicio', 'Zona', 'Horas facturadas mensuales', 'Horas operativas mensuales', 'Diferencia', 'Estado'],
+          ['Mes de análisis', 'Servicio', 'Zona', 'Facturación ajustada', 'Horas operativas mensuales', 'Diferencia', 'Estado'],
           ...hoursBalance.summaries.map((service) => [
             monthLabel,
             service.name,
@@ -7811,13 +8494,15 @@ function buildDashboardExportData() {
       {
         name: 'Operarios críticos',
         rows: [
-          ['Operario', 'Tipo', 'Horas objetivo', 'Horas asignadas', 'Diferencia', 'Estado'],
+          ['Operario', 'Tipo', 'Objetivo semanal', 'Asignadas semanales', 'Objetivo mensual', 'Asignadas mensuales', 'Diferencia mensual', 'Estado'],
           ...criticalWorkers.map((worker) => [
             worker.name,
             TYPE_META[worker.worker_type].label,
             worker.targetHours == null ? 'SEGURO' : worker.targetHours,
             worker.totalHours,
-            worker.difference == null ? 'SEGURO' : worker.difference,
+            worker.monthlyTargetHours == null ? 'POR HORA' : worker.monthlyTargetHours,
+            worker.monthlyHours,
+            worker.monthlyDifference == null ? 'POR HORA' : worker.monthlyDifference,
             worker.status,
           ]),
         ],
@@ -7847,7 +8532,7 @@ function buildWorkersExportData() {
       {
         name: 'Operarios',
         rows: [
-          ['Operario', 'Tipo', 'Fecha de ingreso', 'Domicilio de referencia', 'Zona de residencia', 'Coordenadas', 'Mes de análisis', 'Horas objetivo semanales', 'Horas asignadas semanales', 'Horas operativas mensuales', 'Diferencia semanal', 'Estado', 'Servicios'],
+          ['Operario', 'Tipo', 'Fecha de ingreso', 'Domicilio de referencia', 'Zona de residencia', 'Coordenadas', 'Mes de análisis', 'Horas objetivo semanales', 'Horas asignadas semanales', 'Diferencia semanal', 'Horas objetivo mensuales', 'Horas asignadas mensuales', 'Diferencia mensual', 'Estado mensual', 'Servicios'],
           ...summaries.map((worker) => [
             worker.name,
             TYPE_META[worker.worker_type].label,
@@ -7858,8 +8543,10 @@ function buildWorkersExportData() {
             formatMonthLabel(getSelectedDashboardMonth()),
             worker.targetHours == null ? 'SEGURO' : worker.targetHours,
             worker.totalHours,
+            worker.weeklyDifference == null ? 'SEGURO' : worker.weeklyDifference,
+            worker.monthlyTargetHours == null ? 'POR HORA' : worker.monthlyTargetHours,
             worker.monthlyHours,
-            worker.difference == null ? 'SEGURO' : worker.difference,
+            worker.monthlyDifference == null ? 'POR HORA' : worker.monthlyDifference,
             worker.status,
             worker.services.map((service) => service.name).join(' | ') || 'Sin servicio',
           ]),
@@ -7905,7 +8592,7 @@ function buildServicesExportData() {
       {
         name: 'Servicios',
         rows: [
-          ['Mes de análisis', 'Servicio', 'Dirección', 'Zona', 'Coordenadas', 'Supervisor', 'Frecuencia', 'Horas facturadas mensuales', 'Horas operativas mensuales', 'Diferencia', 'Estado horas', 'Notas', 'Cobertura activa'],
+          ['Mes de análisis', 'Servicio', 'Dirección', 'Zona', 'Coordenadas', 'Supervisor', 'Frecuencia', 'Facturación ajustada', 'Horas operativas mensuales', 'Diferencia', 'Estado horas', 'Notas', 'Cobertura activa'],
           ...services.map((service) => {
             const summary = getServiceHoursSummary(service, monthKey);
             return [
@@ -7958,6 +8645,66 @@ function buildServicesExportData() {
   };
 }
 
+
+
+function buildBillingExportData() {
+  const monthKey = getSelectedBillingMonth();
+  const monthLabel = formatMonthLabel(monthKey);
+  const summaries = state.services.map((service) => getServiceHoursSummary(service, monthKey));
+  return {
+    sheets: [
+      {
+        name: 'Resumen facturación',
+        rows: [
+          ['Mes', 'Servicio', 'Fuente', 'Proyección base', 'Ajustes', 'Facturación ajustada', 'Horas operativas', 'Diferencia operativa - facturable'],
+          ...summaries.map((item) => [
+            monthLabel,
+            item.name,
+            formatBillingSource(item.billingForecast.source),
+            item.projectedBilledHours == null ? 'Pendiente' : item.projectedBilledHours,
+            item.billingAdjustmentsHours,
+            item.billedHours == null ? 'Pendiente' : item.billedHours,
+            item.assignedHours,
+            item.difference == null ? '' : item.difference,
+          ]),
+        ],
+      },
+      {
+        name: 'Reglas de cobertura',
+        rows: [
+          ['Servicio', 'Bloque', 'Días', 'Horario', 'Puestos simultáneos', 'Vigente desde', 'Vigente hasta', 'Horas proyectadas en el mes', 'Notas'],
+          ...state.billingRules.map((rule) => [
+            getServiceById(rule.service_id)?.name || '',
+            rule.rule_name || '',
+            formatBillingDays(rule.days_of_week),
+            formatShiftRange(rule.start_time, rule.end_time),
+            rule.positions,
+            rule.valid_from || '',
+            rule.valid_until || '',
+            calculateBillingRuleHours(rule, monthKey),
+            rule.notes || '',
+          ]),
+        ],
+      },
+      {
+        name: 'Novedades',
+        rows: [
+          ['Fecha', 'Servicio', 'Tipo', 'Horas', 'Motivo', 'Notas'],
+          ...state.billingAdjustments
+            .filter((item) => getMonthKey(item.adjustment_date) === monthKey)
+            .map((item) => [
+              item.adjustment_date,
+              getServiceById(item.service_id)?.name || '',
+              getBillingAdjustmentTypeLabel(item.adjustment_type),
+              item.hours_delta,
+              item.reason || '',
+              item.notes || '',
+            ]),
+        ],
+      },
+    ],
+  };
+}
 
 function buildMapExportData() {
   const mapped = getAllMapEntities().filter((item) => item.coordinates);
@@ -8480,6 +9227,8 @@ function buildCurrentExportData() {
       return buildWorkersExportData();
     case 'services':
       return buildServicesExportData();
+    case 'billing':
+      return buildBillingExportData();
     case 'planner':
       return buildPlannerExportData();
     case 'map':
@@ -8633,14 +9382,35 @@ function bindEvents() {
   el.globalSearchResults?.addEventListener('click', handleGlobalSearchResultClick);
   el.workerTypeFilter?.addEventListener('change', handleFilterChange);
   el.statusFilter?.addEventListener('change', handleFilterChange);
-  el.dashboardMonthFilter?.addEventListener('change', () => {
-    state.dashboardMonth = el.dashboardMonthFilter.value || getCurrentMonthKey();
+  el.billingMonthFilter?.addEventListener('change', () => {
+    state.billingMonth = el.billingMonthFilter.value || getCurrentMonthKey();
+    scheduleRenderCurrentView();
+  });
+  el.addBillingRuleBtn?.addEventListener('click', () => openBillingRuleDialog());
+  el.addBillingAdjustmentBtn?.addEventListener('click', () => openBillingAdjustmentDialog());
+  el.billingServicesBoard?.addEventListener('click', handleDynamicClicks);
+  el.billingRuleForm?.addEventListener('submit', saveBillingRule);
+  el.billingAdjustmentForm?.addEventListener('submit', saveBillingAdjustment);
+  $('billingAdjustmentType')?.addEventListener('change', syncBillingAdjustmentImpact);
+
+  const updateAnalysisMonth = (monthValue) => {
+    state.dashboardMonth = monthValue || getCurrentMonthKey();
+    if (el.dashboardMonthFilter) el.dashboardMonthFilter.value = state.dashboardMonth;
+    if (el.workersMonthFilter) el.workersMonthFilter.value = state.dashboardMonth;
     try {
       window.localStorage.setItem('staffPlannerDashboardMonth', state.dashboardMonth);
     } catch (error) {
       // La app sigue funcionando aunque el navegador bloquee el almacenamiento local.
     }
+    resetPagination('workers');
     scheduleRenderCurrentView();
+  };
+
+  el.dashboardMonthFilter?.addEventListener('change', () => {
+    updateAnalysisMonth(el.dashboardMonthFilter.value);
+  });
+  el.workersMonthFilter?.addEventListener('change', () => {
+    updateAnalysisMonth(el.workersMonthFilter.value);
   });
   el.optimizerForm?.addEventListener('submit', handleOptimizerSubmit);
   el.optimizerExistingService?.addEventListener('change', syncOptimizerFromService);
@@ -8821,7 +9591,9 @@ function boot() {
       workerTypeFilter: $('workerTypeFilter'),
       statusFilter: $('statusFilter'),
       dashboardMonthFilter: $('dashboardMonthFilter'),
+      workersMonthFilter: $('workersMonthFilter'),
       kpiCards: $('kpiCards'),
+      workforceMonthlyBalance: $('workforceMonthlyBalance'),
       serviceHoursBalance: $('serviceHoursBalance'),
       criticalWorkers: $('criticalWorkers'),
       serviceGaps: $('serviceGaps'),
@@ -8830,6 +9602,16 @@ function boot() {
       workersPagination: $('workersPagination'),
       servicesGrid: $('servicesGrid'),
       servicesPagination: $('servicesPagination'),
+      billingMonthFilter: $('billingMonthFilter'),
+      billingKpiCards: $('billingKpiCards'),
+      billingServicesBoard: $('billingServicesBoard'),
+      billingSchemaNotice: $('billingSchemaNotice'),
+      addBillingRuleBtn: $('addBillingRuleBtn'),
+      addBillingAdjustmentBtn: $('addBillingAdjustmentBtn'),
+      billingRuleDialog: $('billingRuleDialog'),
+      billingAdjustmentDialog: $('billingAdjustmentDialog'),
+      billingRuleForm: $('billingRuleForm'),
+      billingAdjustmentForm: $('billingAdjustmentForm'),
       plannerBoard: $('plannerBoard'),
       mapSearch: $('mapSearch'),
       mapEntityFilter: $('mapEntityFilter'),
@@ -8946,6 +9728,8 @@ function boot() {
     }
 
     initializeDashboardMonth();
+    state.billingMonth = state.dashboardMonth;
+    if (el.billingMonthFilter) el.billingMonthFilter.value = state.billingMonth;
     if (el.optimizerMonth) el.optimizerMonth.value = state.dashboardMonth;
     setCurrentView('dashboard');
     setAuthMode('login');
