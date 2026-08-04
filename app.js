@@ -22,6 +22,9 @@ const ABSENCE_TYPE_META = {
   suspension: 'Suspensión',
 };
 
+const FINAL_BILLING_OVERRIDE_MARKER = '[[FINAL_BILLING_OVERRIDE]]';
+const FINAL_BILLING_OVERRIDE_REASON = 'Cierre mensual manual';
+
 const VIEW_IDS = {
   dashboard: 'dashboardView',
   workers: 'workersView',
@@ -639,6 +642,27 @@ function getServiceBillingAdjustments(serviceId, monthKey = getSelectedBillingMo
     .sort((a, b) => String(b.adjustment_date || '').localeCompare(String(a.adjustment_date || '')));
 }
 
+function isFinalBillingOverride(item) {
+  return item?.adjustment_type === 'manual'
+    && String(item?.notes || '').includes(FINAL_BILLING_OVERRIDE_MARKER);
+}
+
+function getBillingAdjustmentVisibleNotes(item) {
+  return String(item?.notes || '')
+    .replace(FINAL_BILLING_OVERRIDE_MARKER, '')
+    .trim();
+}
+
+function getFinalBillingOverrides(serviceId, monthKey = getSelectedBillingMonth()) {
+  return getServiceBillingAdjustments(serviceId, monthKey).filter(isFinalBillingOverride);
+}
+
+function getMonthLastDateKey(monthKey) {
+  const monthStart = getMonthStartDate(monthKey);
+  if (!monthStart) return `${monthKey}-01`;
+  return toDateKey(new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0));
+}
+
 function calculateBillingRuleHours(rule, monthKey) {
   const monthStart = getMonthStartDate(monthKey);
   if (!monthStart || !rule) return 0;
@@ -692,6 +716,9 @@ function getServiceBillingForecast(service, monthKey = getSelectedDashboardMonth
       projectedHours = manual;
       source = 'manual';
     }
+  } else {
+    projectedHours = calculateMonthlyAssignmentHours(getServiceAssignments(service.id), monthKey);
+    source = 'operational';
   }
 
   const adjustedHours = projectedHours == null
@@ -704,6 +731,7 @@ function getServiceBillingForecast(service, monthKey = getSelectedDashboardMonth
 function formatBillingSource(source) {
   if (source === 'rules') return 'Calculado por cobertura';
   if (source === 'manual') return 'Referencia manual';
+  if (source === 'operational') return 'Horas operativas del mes';
   return 'Sin configuración';
 }
 
@@ -2667,7 +2695,7 @@ function renderBilling() {
 
   if (el.billingKpiCards) {
     const cards = [
-      { label: 'Proyección contractual', value: `${formatHours(projectedTotal)} hs`, foot: monthLabel },
+      { label: 'Proyección base', value: `${formatHours(projectedTotal)} hs`, foot: monthLabel },
       { label: 'Ajustes registrados', value: `${adjustmentsTotal > 0 ? '+' : ''}${formatHours(adjustmentsTotal)} hs`, foot: 'Descuentos y adicionales del mes' },
       { label: 'Facturación ajustada', value: `${formatHours(adjustedTotal)} hs`, foot: 'Proyección más novedades cargadas' },
       { label: 'Horas operativas', value: `${formatHours(operativeTotal)} hs`, foot: 'Cronograma activo proyectado al mes' },
@@ -2708,14 +2736,18 @@ function renderBilling() {
             </div>
           `;
         }).join('')
-      : `<div class="billing-empty">Sin reglas. Se utiliza ${summary.projectedBilledHours == null ? 'ninguna referencia' : 'la referencia manual del servicio'}.</div>`;
+      : `<div class="billing-empty">${forecast.source === 'operational'
+          ? 'La proyección base toma automáticamente las horas operativas del mes.'
+          : forecast.source === 'manual'
+            ? 'Se utiliza la referencia manual cargada en el servicio.'
+            : 'Sin cobertura facturable adicional configurada.'}</div>`;
 
     const adjustmentsHtml = forecast.adjustments.length
       ? forecast.adjustments.map((item) => `
           <div class="billing-adjustment-row">
             <div>
               <strong>${escapeHtml(item.reason || getBillingAdjustmentTypeLabel(item.adjustment_type))}</strong>
-              <small>${escapeHtml(formatDateLabel(item.adjustment_date))} · ${escapeHtml(getBillingAdjustmentTypeLabel(item.adjustment_type))}${item.notes ? ` · ${escapeHtml(item.notes)}` : ''}</small>
+              <small>${escapeHtml(formatDateLabel(item.adjustment_date))} · ${escapeHtml(getBillingAdjustmentTypeLabel(item.adjustment_type))}${getBillingAdjustmentVisibleNotes(item) ? ` · ${escapeHtml(getBillingAdjustmentVisibleNotes(item))}` : ''}</small>
             </div>
             <div class="inline-actions">
               <strong class="billing-adjustment-value ${Number(item.hours_delta) < 0 ? 'negative' : 'positive'}">${Number(item.hours_delta) > 0 ? '+' : ''}${formatHours(item.hours_delta)} hs</strong>
@@ -2734,6 +2766,7 @@ function renderBilling() {
           </div>
           <div class="inline-actions">
             <button class="btn btn-secondary btn-sm" type="button" data-add-billing-rule-service="${summary.id}">Agregar cobertura</button>
+            <button class="btn btn-secondary btn-sm" type="button" data-edit-final-billing-service="${summary.id}">Editar facturación final</button>
             <button class="btn btn-primary btn-sm" type="button" data-add-billing-adjustment-service="${summary.id}">Agregar novedad</button>
           </div>
         </header>
@@ -2757,6 +2790,118 @@ function renderBilling() {
       </article>
     `;
   }).join('');
+}
+
+
+function openFinalBillingDialog(serviceId = '') {
+  if (!ensureDataReady('editar la facturación final')) return;
+  if (!state.billingSchemaReady) {
+    alert('Primero ejecutá sql/migration_add_billing_forecast.sql en Supabase.');
+    return;
+  }
+
+  const service = getServiceById(serviceId);
+  if (!service) return;
+  const monthKey = getSelectedBillingMonth();
+  const forecast = getServiceBillingForecast(service, monthKey);
+  const overrides = getFinalBillingOverrides(serviceId, monthKey);
+  const otherAdjustmentHours = Number(
+    forecast.adjustments
+      .filter((item) => !isFinalBillingOverride(item))
+      .reduce((sum, item) => sum + Number(item.hours_delta || 0), 0)
+      .toFixed(2)
+  );
+  const calculatedBeforeFinal = Number((Number(forecast.projectedHours || 0) + otherAdjustmentHours).toFixed(2));
+
+  $('finalBillingServiceId').value = serviceId;
+  $('finalBillingMonth').value = monthKey;
+  $('finalBillingServiceName').textContent = service.name || 'Servicio';
+  $('finalBillingMonthLabel').textContent = formatMonthLabel(monthKey);
+  $('finalBillingBaseHours').textContent = `${formatHours(forecast.projectedHours || 0)} hs`;
+  $('finalBillingOtherAdjustments').textContent = `${otherAdjustmentHours > 0 ? '+' : ''}${formatHours(otherAdjustmentHours)} hs`;
+  $('finalBillingCalculatedHours').textContent = `${formatHours(calculatedBeforeFinal)} hs`;
+  $('finalBillingHours').value = Number(forecast.adjustedHours || 0).toFixed(2).replace(/\.00$/, '');
+  $('finalBillingNotes').value = String(overrides[0]?.notes || '')
+    .replace(FINAL_BILLING_OVERRIDE_MARKER, '')
+    .trim();
+  el.finalBillingDialog?.showModal();
+}
+
+async function saveFinalBilling(event) {
+  event.preventDefault();
+  if (!state.billingSchemaReady) return;
+
+  const serviceId = $('finalBillingServiceId').value;
+  const monthKey = $('finalBillingMonth').value;
+  const finalHours = Number($('finalBillingHours').value);
+  const service = getServiceById(serviceId);
+  if (!serviceId || !monthKey || !service || !Number.isFinite(finalHours) || finalHours < 0) {
+    alert('Ingresá una cantidad de horas válida, igual o mayor a 0.');
+    return;
+  }
+
+  const forecast = getServiceBillingForecast(service, monthKey);
+  const overrides = getFinalBillingOverrides(serviceId, monthKey);
+  const otherAdjustmentHours = Number(
+    forecast.adjustments
+      .filter((item) => !isFinalBillingOverride(item))
+      .reduce((sum, item) => sum + Number(item.hours_delta || 0), 0)
+      .toFixed(2)
+  );
+  const requiredDelta = Number((finalHours - Number(forecast.projectedHours || 0) - otherAdjustmentHours).toFixed(2));
+  const notesText = $('finalBillingNotes').value.trim();
+  const submitBtn = el.finalBillingForm?.querySelector('button[type="submit"]');
+  if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Guardando...'; }
+
+  try {
+    await ensureWriteSession();
+    markLocalMutation();
+
+    if (Math.abs(requiredDelta) < 0.01) {
+      if (overrides.length) {
+        const { error } = await supabase
+          .from('service_billing_adjustments')
+          .delete()
+          .in('id', overrides.map((item) => item.id));
+        if (error) throw error;
+      }
+    } else {
+      const payload = {
+        service_id: serviceId,
+        adjustment_date: getMonthLastDateKey(monthKey),
+        adjustment_type: 'manual',
+        hours_delta: requiredDelta,
+        reason: FINAL_BILLING_OVERRIDE_REASON,
+        notes: `${FINAL_BILLING_OVERRIDE_MARKER}${notesText ? `\n${notesText}` : ''}`,
+      };
+
+      if (overrides[0]) {
+        const { error } = await supabase
+          .from('service_billing_adjustments')
+          .update(payload)
+          .eq('id', overrides[0].id);
+        if (error) throw error;
+        if (overrides.length > 1) {
+          const { error: cleanupError } = await supabase
+            .from('service_billing_adjustments')
+            .delete()
+            .in('id', overrides.slice(1).map((item) => item.id));
+          if (cleanupError) throw cleanupError;
+        }
+      } else {
+        const { error } = await supabase.from('service_billing_adjustments').insert(payload);
+        if (error) throw error;
+      }
+    }
+
+    el.finalBillingDialog.close();
+    await loadAllDataWithRetry(2, 250, { hardLock: false, silent: false });
+  } catch (error) {
+    console.error(error);
+    alert(error.message || 'No se pudo guardar la facturación final.');
+  } finally {
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Guardar facturación final'; }
+  }
 }
 
 function openBillingRuleDialog(serviceId = '', ruleId = '') {
@@ -8396,6 +8541,12 @@ function handleDynamicClicks(event) {
     return;
   }
 
+  const editFinalBillingBtn = event.target.closest('[data-edit-final-billing-service]');
+  if (editFinalBillingBtn) {
+    openFinalBillingDialog(editFinalBillingBtn.dataset.editFinalBillingService);
+    return;
+  }
+
   const editBillingRuleBtn = event.target.closest('[data-edit-billing-rule]');
   if (editBillingRuleBtn) {
     const rule = state.billingRules.find((item) => item.id === editBillingRuleBtn.dataset.editBillingRule);
@@ -8698,7 +8849,7 @@ function buildBillingExportData() {
               getBillingAdjustmentTypeLabel(item.adjustment_type),
               item.hours_delta,
               item.reason || '',
-              item.notes || '',
+              getBillingAdjustmentVisibleNotes(item),
             ]),
         ],
       },
@@ -9391,6 +9542,7 @@ function bindEvents() {
   el.billingServicesBoard?.addEventListener('click', handleDynamicClicks);
   el.billingRuleForm?.addEventListener('submit', saveBillingRule);
   el.billingAdjustmentForm?.addEventListener('submit', saveBillingAdjustment);
+  el.finalBillingForm?.addEventListener('submit', saveFinalBilling);
   $('billingAdjustmentType')?.addEventListener('change', syncBillingAdjustmentImpact);
 
   const updateAnalysisMonth = (monthValue) => {
@@ -9610,8 +9762,10 @@ function boot() {
       addBillingAdjustmentBtn: $('addBillingAdjustmentBtn'),
       billingRuleDialog: $('billingRuleDialog'),
       billingAdjustmentDialog: $('billingAdjustmentDialog'),
+      finalBillingDialog: $('finalBillingDialog'),
       billingRuleForm: $('billingRuleForm'),
       billingAdjustmentForm: $('billingAdjustmentForm'),
+      finalBillingForm: $('finalBillingForm'),
       plannerBoard: $('plannerBoard'),
       mapSearch: $('mapSearch'),
       mapEntityFilter: $('mapEntityFilter'),

@@ -228,3 +228,12 @@ El Dashboard compara tres capas distintas para el mes seleccionado:
 Para jornada completa se utiliza como patrón 8 horas de lunes a viernes y 4 horas el sábado. Para media jornada, 4 horas de lunes a sábado. Los objetivos semanales personalizados se distribuyen proporcionalmente sobre ese patrón. El personal sin objetivo fijo se incorpora a la referencia de nómina con sus horas efectivamente asignadas.
 
 La vista muestra por separado las horas faltantes y las horas excedidas de los operarios, porque compensarlas en un único saldo ocultaría desvíos individuales.
+
+
+## Actualización: facturación por defecto según horas operativas
+
+- Si un servicio no tiene una cobertura comercial ni una referencia manual específica, la **Proyección base** se calcula automáticamente con sus horas operativas del mes.
+- La **Facturación ajustada** coincide inicialmente con esa proyección.
+- Al cierre del mes se puede usar **Editar facturación final** para cargar el total realmente facturado. La aplicación registra únicamente la diferencia necesaria, sin cambiar horarios, asignaciones ni datos históricos.
+- También se mantiene **Registrar novedad** para descuentos o adicionales puntuales durante el mes.
+- Esta actualización no requiere ejecutar SQL nuevo.

@@ -205,11 +205,11 @@
               <div>
                 <span class="eyebrow">Proyección y cierre</span>
                 <h3>Facturación mensual por servicio</h3>
-                <p class="muted">Calcula lo que se espera facturar según la cobertura contractual del mes y permite registrar descuentos o adicionales cuando la prestación real cambia.</p>
+                <p class="muted">Por defecto, la proyección base y la facturación ajustada toman las horas operativas programadas para cada servicio en el mes seleccionado.</p>
               </div>
               <div class="billing-method-note">
-                <strong>Regla clave</strong>
-                <span>La proyección depende de los puestos y franjas vendidos al cliente, no de qué operario los cubre. Una ausencia solo descuenta si el servicio quedó efectivamente sin cobertura.</span>
+                <strong>Cierre mensual</strong>
+                <span>Durante el mes ambos valores coinciden con el cronograma. Al cierre podés registrar novedades o editar directamente la facturación final si hubo horas no prestadas o adicionales.</span>
               </div>
             </article>
 
@@ -1288,6 +1288,40 @@
       <div class="modal-actions">
         <button class="btn btn-secondary" type="button" data-close="billingAdjustmentDialog">Cancelar</button>
         <button class="btn btn-primary" type="submit">Guardar novedad</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="finalBillingDialog" class="modal">
+    <form id="finalBillingForm" class="modal-card stack-md">
+      <div class="section-head with-action">
+        <div>
+          <h3>Editar facturación final</h3>
+          <span class="muted"><strong id="finalBillingServiceName"></strong> · <span id="finalBillingMonthLabel"></span></span>
+        </div>
+        <button class="icon-btn" type="button" data-close="finalBillingDialog">✕</button>
+      </div>
+      <input id="finalBillingServiceId" type="hidden" />
+      <input id="finalBillingMonth" type="hidden" />
+
+      <div class="final-billing-summary">
+        <div><span>Proyección base</span><strong id="finalBillingBaseHours">0 hs</strong></div>
+        <div><span>Otras novedades</span><strong id="finalBillingOtherAdjustments">0 hs</strong></div>
+        <div><span>Resultado antes del cierre</span><strong id="finalBillingCalculatedHours">0 hs</strong></div>
+      </div>
+
+      <div class="field">
+        <label for="finalBillingHours">Horas efectivamente facturadas</label>
+        <input id="finalBillingHours" type="number" min="0" step="0.25" required />
+        <small class="field-help">Al guardar, la app calcula automáticamente el ajuste necesario respecto de la proyección base y de las novedades ya registradas.</small>
+      </div>
+      <div class="field">
+        <label for="finalBillingNotes">Observaciones del cierre</label>
+        <textarea id="finalBillingNotes" rows="3" placeholder="Ej. Se descontaron 8 horas por ausencia sin cobertura"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" type="button" data-close="finalBillingDialog">Cancelar</button>
+        <button class="btn btn-primary" type="submit">Guardar facturación final</button>
       </div>
     </form>
   </dialog>

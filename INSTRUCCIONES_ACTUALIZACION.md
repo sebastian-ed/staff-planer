@@ -83,3 +83,10 @@ Cambios principales:
 - exportaciones actualizadas.
 
 No se eliminan ni modifican operarios, servicios, horarios, asignaciones o reglas de facturación existentes.
+
+
+## Cambio de esta versión
+
+La proyección y la facturación ajustada de cada servicio toman por defecto las horas operativas del mes. Al finalizar el período, el botón **Editar facturación final** permite reemplazar el total estimado por las horas efectivamente facturadas.
+
+No requiere migraciones SQL adicionales. Reemplazá los archivos de la aplicación conservando tu `supabase-config.js` actual.

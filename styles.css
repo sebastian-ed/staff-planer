@@ -1820,3 +1820,34 @@ select option:disabled {
   .workers-header-actions { width: 100%; align-items: stretch; }
   .workers-month-field { width: 100%; }
 }
+
+
+.final-billing-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  padding: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.final-billing-summary > div {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.final-billing-summary span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.final-billing-summary strong {
+  font-size: 1rem;
+}
+
+@media (max-width: 720px) {
+  .final-billing-summary {
+    grid-template-columns: 1fr;
+  }
+}
