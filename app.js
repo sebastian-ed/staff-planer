@@ -717,25 +717,14 @@ function getServiceBillingForecast(service, monthKey = getSelectedDashboardMonth
   const adjustments = getServiceBillingAdjustments(service.id, monthKey);
   const adjustmentHours = Number(adjustments.reduce((sum, item) => sum + Number(item.hours_delta || 0), 0).toFixed(2));
 
-  let projectedHours = null;
-  let source = 'pending';
-  if (rules.length) {
-    projectedHours = Number(rules.reduce((sum, rule) => sum + calculateBillingRuleHours(rule, monthKey), 0).toFixed(2));
-    source = 'rules';
-  } else if (service.billed_monthly_hours != null && service.billed_monthly_hours !== '') {
-    const manual = Number(service.billed_monthly_hours);
-    if (Number.isFinite(manual)) {
-      projectedHours = manual;
-      source = 'manual';
-    }
-  } else {
-    projectedHours = calculateMonthlyAssignmentHours(getServiceAssignments(service.id), monthKey);
-    source = 'operational';
-  }
+  // La proyección base siempre parte de las horas operativas realmente asignadas
+  // al servicio para el calendario del mes seleccionado. Las referencias manuales
+  // y las coberturas guardadas se conservan como información histórica, pero no
+  // reemplazan esta proyección automática.
+  const projectedHours = calculateMonthlyAssignmentHours(getServiceAssignments(service.id), monthKey);
+  const source = 'operational';
 
-  const adjustedHours = projectedHours == null
-    ? null
-    : Number(Math.max(0, projectedHours + adjustmentHours).toFixed(2));
+  const adjustedHours = Number(Math.max(0, projectedHours + adjustmentHours).toFixed(2));
 
   return { projectedHours, adjustmentHours, adjustedHours, source, rules, adjustments };
 }
@@ -2731,7 +2720,7 @@ function renderBilling() {
   el.billingServicesBoard.innerHTML = summaries.map((summary) => {
     const forecast = summary.billingForecast;
     const rulesHtml = forecast.rules.length
-      ? forecast.rules.map((rule) => {
+      ? `<div class="billing-empty">Estas coberturas quedan como referencia. La proyección base se calcula con las horas operativas asignadas del mes.</div>${forecast.rules.map((rule) => {
           const validity = rule.valid_from || rule.valid_until
             ? `${rule.valid_from ? `desde ${formatDateLabel(rule.valid_from)}` : 'sin inicio'} · ${rule.valid_until ? `hasta ${formatDateLabel(rule.valid_until)}` : 'sin fin'}`
             : 'Vigencia permanente';
@@ -2747,7 +2736,7 @@ function renderBilling() {
               </div>
             </div>
           `;
-        }).join('')
+        }).join('')}`
       : `<div class="billing-empty">${forecast.source === 'operational'
           ? 'La proyección base toma automáticamente las horas operativas del mes.'
           : forecast.source === 'manual'

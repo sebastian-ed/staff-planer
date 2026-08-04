@@ -247,3 +247,7 @@ El objetivo mensual ahora se determina por la cantidad de horas objetivo semanal
 - Objetivos personalizados: ajuste proporcional sobre el patrón correspondiente.
 
 Esto elimina resultados fraccionarios incorrectos generados por repartir una jornada de 44 hs en seis partes iguales. No requiere cambios en Supabase.
+
+## Actualización: facturación alineada con operación
+
+La proyección base mensual de cada servicio se toma automáticamente de las horas operativas asignadas para el mes. Las referencias manuales y coberturas comerciales existentes se conservan como referencia, mientras que las novedades y la edición de facturación final permiten ajustar el cierre real.
