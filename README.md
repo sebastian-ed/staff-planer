@@ -257,3 +257,6 @@ La proyección base mensual de cada servicio se toma automáticamente de las hor
 La app incluye `manifest.webmanifest` y `service-worker.js`, por lo que puede instalarse como PWA desde navegadores compatibles sobre HTTPS (GitHub Pages cumple esta condición). Cuando el navegador habilita la instalación aparece el botón **Instalar app**.
 
 El Dashboard compara las horas operativas mensuales asignadas con la facturación estimada del mismo mes. Si no coinciden, informa cuántas horas hay de diferencia y el porcentaje de desvío calculado sobre las horas facturables estimadas.
+
+### Balance global de eficiencia
+El Dashboard diferencia jornada objetivo, horas asignadas y horas estimadas de facturación. Además informa horas faltantes y excedidas por jornada, su porcentaje sobre el objetivo mensual y el neto total de dotación.

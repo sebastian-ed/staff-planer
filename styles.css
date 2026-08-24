@@ -1851,3 +1851,52 @@ select option:disabled {
     grid-template-columns: 1fr;
   }
 }
+
+/* Dashboard: balance global de jornada, asignación y facturación */
+.kpi-card.kpi-primary {
+  min-height: 152px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.kpi-card.kpi-primary .kpi-value {
+  font-size: clamp(32px, 3.5vw, 46px);
+  line-height: 1.05;
+}
+.kpi-card.kpi-tone-missing,
+.hours-balance-metric.balance-metric-missing {
+  border-color: rgba(255,124,139,0.34);
+  background: rgba(255,124,139,0.075);
+}
+.kpi-card.kpi-tone-over,
+.hours-balance-metric.balance-metric-over {
+  border-color: rgba(88,214,141,0.34);
+  background: rgba(88,214,141,0.075);
+}
+.kpi-card.kpi-tone-balanced,
+.hours-balance-metric.balance-metric-balanced {
+  border-color: rgba(91,140,255,0.32);
+  background: rgba(91,140,255,0.065);
+}
+.hours-balance-metric.balance-metric-warning {
+  border-color: rgba(255,203,102,0.34);
+  background: rgba(255,203,102,0.075);
+}
+.workforce-balance-summary-priority .balance-metric-main strong {
+  font-size: clamp(26px, 2.8vw, 38px);
+}
+.workforce-balance-summary-priority .balance-metric-alert {
+  min-height: 150px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.workforce-balance-summary-priority .balance-metric-alert strong {
+  font-size: clamp(36px, 4vw, 54px);
+  line-height: 1;
+  margin: 12px 0 4px;
+}
+.kpi-card.kpi-tone-warning {
+  border-color: rgba(255,203,102,0.34);
+  background: rgba(255,203,102,0.075);
+}

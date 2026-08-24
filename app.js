@@ -762,14 +762,33 @@ function getServiceBillingForecast(service, monthKey = getSelectedDashboardMonth
   const adjustments = getServiceBillingAdjustments(service.id, monthKey);
   const adjustmentHours = Number(adjustments.reduce((sum, item) => sum + Number(item.hours_delta || 0), 0).toFixed(2));
 
-  // La proyección base siempre parte de las horas operativas realmente asignadas
-  // al servicio para el calendario del mes seleccionado. Las referencias manuales
-  // y las coberturas guardadas se conservan como información histórica, pero no
-  // reemplazan esta proyección automática.
-  const projectedHours = calculateMonthlyAssignmentHours(getServiceAssignments(service.id), monthKey);
-  const source = 'operational';
+  // La facturación estimada debe representar la demanda vendida al cliente, no la
+  // cantidad de personal que hoy está asignada. Por eso la prioridad es:
+  // 1) cobertura facturable por días/horarios/puestos; 2) referencia mensual manual;
+  // 3) solo como respaldo provisional, las horas operativas actuales.
+  let projectedHours = null;
+  let source = 'pending';
 
-  const adjustedHours = Number(Math.max(0, projectedHours + adjustmentHours).toFixed(2));
+  if (rules.length) {
+    projectedHours = Number(rules.reduce(
+      (sum, rule) => sum + calculateBillingRuleHours(rule, monthKey),
+      0
+    ).toFixed(2));
+    source = 'rules';
+  } else if (service.billed_monthly_hours != null && service.billed_monthly_hours !== '') {
+    const manual = Number(service.billed_monthly_hours);
+    if (Number.isFinite(manual)) {
+      projectedHours = manual;
+      source = 'manual';
+    }
+  } else {
+    projectedHours = calculateMonthlyAssignmentHours(getServiceAssignments(service.id), monthKey);
+    source = 'operational';
+  }
+
+  const adjustedHours = projectedHours == null
+    ? null
+    : Number(Math.max(0, projectedHours + adjustmentHours).toFixed(2));
 
   return { projectedHours, adjustmentHours, adjustedHours, source, rules, adjustments };
 }
@@ -777,7 +796,7 @@ function getServiceBillingForecast(service, monthKey = getSelectedDashboardMonth
 function formatBillingSource(source) {
   if (source === 'rules') return 'Calculado por cobertura';
   if (source === 'manual') return 'Referencia manual';
-  if (source === 'operational') return 'Horas operativas del mes';
+  if (source === 'operational') return 'Estimación operativa provisional';
   return 'Sin configuración';
 }
 
@@ -2069,6 +2088,23 @@ function getWorkforceMonthlyBalance(monthKey = getSelectedDashboardMonth(), summ
     0
   ).toFixed(2));
 
+  // Neto de dotación: compara únicamente operarios que tienen una jornada objetivo.
+  // Negativo = horas de jornada pagada que todavía no tienen asignación.
+  // Positivo = horas asignadas por encima del objetivo contractual.
+  const targetNetDifference = Number((totalAssignedFixedHours - totalTargetHours).toFixed(2));
+  const targetNetDifferencePercent = totalTargetHours > 0
+    ? Number(((Math.abs(targetNetDifference) / totalTargetHours) * 100).toFixed(2))
+    : null;
+  const targetCoveragePercent = totalTargetHours > 0
+    ? Number(((totalAssignedFixedHours / totalTargetHours) * 100).toFixed(2))
+    : null;
+  const missingHoursPercent = totalTargetHours > 0
+    ? Number(((totalMissingHours / totalTargetHours) * 100).toFixed(2))
+    : null;
+  const excessHoursPercent = totalTargetHours > 0
+    ? Number(((totalExcessHours / totalTargetHours) * 100).toFixed(2))
+    : null;
+
   return {
     monthKey,
     workers,
@@ -2087,6 +2123,11 @@ function getWorkforceMonthlyBalance(monthKey = getSelectedDashboardMonth(), summ
     operationalCoveragePercent,
     totalMissingHours,
     totalExcessHours,
+    targetNetDifference,
+    targetNetDifferencePercent,
+    targetCoveragePercent,
+    missingHoursPercent,
+    excessHoursPercent,
     missingWorkers: fixedWorkers.filter((worker) => Number(worker.monthlyDifference || 0) > 0.01),
     excessWorkers: fixedWorkers.filter((worker) => Number(worker.monthlyDifference || 0) < -0.01),
     balancedWorkers: fixedWorkers.filter((worker) => Math.abs(Number(worker.monthlyDifference || 0)) <= 0.01),
@@ -2285,59 +2326,96 @@ function renderKpis(summaries, allWorkerSummaries = summaries) {
   const unassignedWorkers = summaries.filter((worker) => worker.services.length === 0).length;
   const uncoveredServices = getUncoveredServices().length;
 
-  let commercialValue = 'Equilibrado';
-  let commercialFoot = `100% · ${formatHours(workforceBalance.totalAssignedHours)} hs operativas = ${formatHours(balance.totalBilledHours)} hs facturables`;
+  let commercialValue = 'Equilibrado · 100%';
+  let commercialFoot = `${formatHours(workforceBalance.totalAssignedHours)} hs asignadas = ${formatHours(balance.totalBilledHours)} hs facturables`;
+  let commercialClass = 'kpi-tone-balanced';
   if (workforceBalance.operationalDifference > 0.01) {
     commercialValue = `Pasados ${formatPercent(workforceBalance.operationalDifferencePercent)}`;
-    commercialFoot = `${formatHours(workforceBalance.operationalDifference)} hs operativas por encima de la facturación estimada`;
+    commercialFoot = `+${formatHours(workforceBalance.operationalDifference)} hs asignadas por encima de lo estimado a facturar`;
+    commercialClass = 'kpi-tone-missing';
   } else if (workforceBalance.operationalDifference < -0.01) {
     commercialValue = `Faltan ${formatPercent(workforceBalance.operationalDifferencePercent)}`;
-    commercialFoot = `${formatHours(Math.abs(workforceBalance.operationalDifference))} hs operativas para alcanzar la facturación estimada`;
+    commercialFoot = `${formatHours(Math.abs(workforceBalance.operationalDifference))} hs asignadas por debajo de lo estimado a facturar`;
+    commercialClass = 'kpi-tone-warning';
   }
 
   if (balance.pending.length) {
     commercialFoot = `Balance parcial · ${balance.pending.length} servicio${balance.pending.length === 1 ? '' : 's'} sin proyección`;
   }
 
+  let targetNetValue = 'Equilibrado';
+  let targetNetFoot = `${formatHours(workforceBalance.totalAssignedFixedHours)} hs asignadas sobre ${formatHours(workforceBalance.totalTargetHours)} hs objetivo`;
+  let targetNetClass = 'kpi-tone-balanced';
+  if (workforceBalance.targetNetDifference < -0.01) {
+    targetNetValue = `Déficit ${formatHours(Math.abs(workforceBalance.targetNetDifference))} hs`;
+    targetNetFoot = `${formatPercent(workforceBalance.targetNetDifferencePercent)} por debajo del objetivo total de jornada`;
+    targetNetClass = 'kpi-tone-missing';
+  } else if (workforceBalance.targetNetDifference > 0.01) {
+    targetNetValue = `Exceso ${formatHours(workforceBalance.targetNetDifference)} hs`;
+    targetNetFoot = `${formatPercent(workforceBalance.targetNetDifferencePercent)} por encima del objetivo total de jornada`;
+    targetNetClass = 'kpi-tone-over';
+  }
+
   const cards = [
     {
-      label: 'Operarios visibles',
-      value: summaries.length,
-      foot: `${unassignedWorkers} sin servicio asignado`,
+      label: 'Facturación estimada del mes',
+      value: `${formatHours(balance.totalBilledHours)} hs`,
+      foot: balance.pending.length
+        ? `${balance.configured.length} servicios con proyección · ${balance.pending.length} pendientes`
+        : `${balance.configured.length} servicios · ${monthLabel}`,
+      className: 'kpi-primary',
+    },
+    {
+      label: 'Horas efectivamente asignadas',
+      value: `${formatHours(workforceBalance.totalAssignedHours)} hs`,
+      foot: `Cronograma proyectado a los días reales de ${monthLabel}`,
+      className: 'kpi-primary',
+    },
+    {
+      label: 'Asignadas vs facturación',
+      value: commercialValue,
+      foot: commercialFoot,
+      className: `kpi-primary ${commercialClass}`,
+    },
+    {
+      label: 'Horas faltantes vs jornada',
+      value: `${formatHours(workforceBalance.totalMissingHours)} hs`,
+      foot: `${workforceBalance.missingWorkers.length} operario${workforceBalance.missingWorkers.length === 1 ? '' : 's'} por debajo · ${formatPercent(workforceBalance.missingHoursPercent)} del objetivo total`,
+      className: 'kpi-primary kpi-tone-missing',
+    },
+    {
+      label: 'Horas excedidas vs jornada',
+      value: `${formatHours(workforceBalance.totalExcessHours)} hs`,
+      foot: `${workforceBalance.excessWorkers.length} operario${workforceBalance.excessWorkers.length === 1 ? '' : 's'} por encima · ${formatPercent(workforceBalance.excessHoursPercent)} del objetivo total`,
+      className: 'kpi-primary kpi-tone-over',
+    },
+    {
+      label: 'Neto de dotación vs jornada',
+      value: targetNetValue,
+      foot: targetNetFoot,
+      className: `kpi-primary ${targetNetClass}`,
     },
     {
       label: 'Objetivo mensual de dotación',
-      value: formatHours(workforceBalance.payrollReferenceHours),
-      foot: `${formatHours(workforceBalance.totalTargetHours)} hs de jornada fija${workforceBalance.hourlyWorkers.length ? ` + ${formatHours(workforceBalance.hourlyAssignedHours)} hs por hora` : ''}`,
-    },
-    {
-      label: 'Facturación estimada del mes',
-      value: formatHours(balance.totalBilledHours),
-      foot: balance.pending.length
-        ? `${balance.configured.length} servicios cargados · ${balance.pending.length} pendientes`
-        : `${balance.configured.length} servicios cargados · ${monthLabel}`,
-    },
-    {
-      label: 'Horas asignadas del mes',
-      value: formatHours(workforceBalance.totalAssignedHours),
-      foot: `Según el cronograma y los días reales de ${monthLabel}`,
-    },
-    {
-      label: 'Balance operativo facturación',
-      value: commercialValue,
-      foot: commercialFoot,
+      value: `${formatHours(workforceBalance.totalTargetHours)} hs`,
+      foot: `${workforceBalance.fixedWorkers.length} operario${workforceBalance.fixedWorkers.length === 1 ? '' : 's'} con jornada objetivo`,
     },
     {
       label: 'Servicios sin cobertura',
       value: uncoveredServices,
       foot: 'Sin ninguna asignación activa',
     },
+    {
+      label: 'Operarios visibles',
+      value: summaries.length,
+      foot: `${unassignedWorkers} sin servicio asignado`,
+    },
   ];
 
   el.kpiCards.innerHTML = cards
     .map(
       (card) => `
-        <article class="kpi-card card-lite">
+        <article class="kpi-card card-lite ${card.className || ''}">
           <span class="kpi-label">${card.label}</span>
           <strong class="kpi-value">${card.value}</strong>
           <small class="kpi-foot">${card.foot}</small>
@@ -2389,54 +2467,65 @@ function renderWorkforceMonthlyBalance(summaries = null) {
         </div>
       </div>
 
-      <div class="workforce-balance-summary">
-        <div class="hours-balance-metric">
-          <span>Objetivo mensual de jornadas fijas</span>
+      <div class="workforce-balance-summary workforce-balance-summary-priority">
+        <div class="hours-balance-metric balance-metric-main">
+          <span>Horas objetivo de la dotación</span>
           <strong>${formatHours(balance.totalTargetHours)} hs</strong>
-          <small>${balance.fixedWorkers.length} operario${balance.fixedWorkers.length === 1 ? '' : 's'} con objetivo semanal</small>
+          <small>Lo que deberían cumplir en ${escapeHtml(monthLabel)} los operarios con jornada objetivo.</small>
         </div>
-        <div class="hours-balance-metric">
-          <span>Personal por hora / seguro</span>
-          <strong>${formatHours(balance.hourlyAssignedHours)} hs</strong>
-          <small>${balance.hourlyWorkers.length} operario${balance.hourlyWorkers.length === 1 ? '' : 's'} sin objetivo fijo</small>
-        </div>
-        <div class="hours-balance-metric">
-          <span>Referencia total de horas a pagar</span>
-          <strong>${formatHours(balance.payrollReferenceHours)} hs</strong>
-          <small>Objetivo fijo más horas asignadas al personal por hora</small>
-        </div>
-        <div class="hours-balance-metric">
+        <div class="hours-balance-metric balance-metric-main">
           <span>Horas efectivamente asignadas</span>
-          <strong>${formatHours(balance.totalAssignedHours)} hs</strong>
-          <small>Cronograma activo proyectado al calendario real</small>
+          <strong>${formatHours(balance.totalAssignedFixedHours)} hs</strong>
+          <small>Horas del cronograma de esos mismos operarios durante el mes.</small>
         </div>
-        <div class="hours-balance-metric">
-          <span>Horas facturables estimadas</span>
+        <div class="hours-balance-metric balance-metric-main ${balance.targetNetDifference < -0.01 ? 'balance-metric-missing' : balance.targetNetDifference > 0.01 ? 'balance-metric-over' : 'balance-metric-balanced'}">
+          <span>Neto contra jornada objetivo</span>
+          <strong>${Math.abs(balance.targetNetDifference) <= 0.01
+            ? 'Equilibrado'
+            : balance.targetNetDifference < 0
+              ? `Déficit ${formatHours(Math.abs(balance.targetNetDifference))} hs`
+              : `Exceso ${formatHours(balance.targetNetDifference)} hs`}</strong>
+          <small>${Math.abs(balance.targetNetDifference) <= 0.01
+            ? 'La suma asignada coincide con la suma de jornadas objetivo.'
+            : `${formatPercent(balance.targetNetDifferencePercent)} ${balance.targetNetDifference < 0 ? 'por debajo' : 'por encima'} del objetivo total.`}</small>
+        </div>
+        <div class="hours-balance-metric balance-metric-main">
+          <span>Facturación estimada</span>
           <strong>${formatHours(balance.serviceBalance.totalBilledHours)} hs</strong>
-          <small>Proyección contractual más novedades registradas</small>
+          <small>Horas que se proyecta cobrar a los clientes durante el mes.</small>
         </div>
-        <div class="hours-balance-metric">
-          <span>Balance operativo vs facturación</span>
+        <div class="hours-balance-metric balance-metric-main ${balance.operationalDifference > 0.01 ? 'balance-metric-missing' : balance.operationalDifference < -0.01 ? 'balance-metric-warning' : 'balance-metric-balanced'}">
+          <span>Asignadas vs facturación estimada</span>
           <strong>${Math.abs(balance.operationalDifference) <= 0.01
             ? 'Equilibrado · 100%'
             : balance.operationalDifference > 0
               ? `Pasados ${formatPercent(balance.operationalDifferencePercent)}`
               : `Faltan ${formatPercent(balance.operationalDifferencePercent)}`}</strong>
           <small>${Math.abs(balance.operationalDifference) <= 0.01
-            ? 'Horas operativas y facturables coinciden'
+            ? `${formatHours(balance.totalAssignedHours)} hs asignadas y facturables.`
             : balance.operationalDifference > 0
-              ? `${formatHours(balance.operationalDifference)} hs operativas por encima de lo facturable`
-              : `${formatHours(Math.abs(balance.operationalDifference))} hs operativas por debajo de lo facturable`}</small>
+              ? `Hay ${formatHours(balance.operationalDifference)} hs de personal por encima de lo estimado a facturar.`
+              : `Faltan ${formatHours(Math.abs(balance.operationalDifference))} hs asignadas para cubrir lo estimado a facturar.`}</small>
         </div>
-        <div class="hours-balance-metric">
-          <span>Desvíos individuales acumulados</span>
-          <strong>${formatHours(balance.totalMissingHours)} hs faltantes · ${formatHours(balance.totalExcessHours)} hs extra</strong>
-          <small>Se muestran por separado para evitar que un exceso oculte un déficit</small>
+        <div class="hours-balance-metric balance-metric-alert balance-metric-missing">
+          <span>Horas de jornada sin asignar</span>
+          <strong>${formatHours(balance.totalMissingHours)} hs</strong>
+          <small>${balance.missingWorkers.length} operario${balance.missingWorkers.length === 1 ? '' : 's'} por debajo de su objetivo · ${formatPercent(balance.missingHoursPercent)} del total objetivo.</small>
         </div>
+        <div class="hours-balance-metric balance-metric-alert balance-metric-over">
+          <span>Horas excedidas sobre jornada</span>
+          <strong>${formatHours(balance.totalExcessHours)} hs</strong>
+          <small>${balance.excessWorkers.length} operario${balance.excessWorkers.length === 1 ? '' : 's'} por encima de su objetivo · ${formatPercent(balance.excessHoursPercent)} del total objetivo.</small>
+        </div>
+        ${balance.hourlyWorkers.length ? `<div class="hours-balance-metric">
+          <span>Personal sin objetivo fijo</span>
+          <strong>${formatHours(balance.hourlyAssignedHours)} hs</strong>
+          <small>${balance.hourlyWorkers.length} operario${balance.hourlyWorkers.length === 1 ? '' : 's'}; estas horas sí entran en asignadas vs facturación, pero no en déficit/exceso contra jornada.</small>
+        </div>` : ''}
       </div>
 
       <div class="hours-balance-note">
-        La jornada mensual no se calcula multiplicando siempre por cuatro. La app cuenta los lunes, martes, miércoles y demás días reales de ${escapeHtml(monthLabel)}. Todo operario con objetivo de 44 hs usa el patrón de 8 hs de lunes a viernes y 4 hs el sábado; todo operario con objetivo de 24 hs usa 4 hs de lunes a sábado, independientemente de que figure como jornada completa, media jornada o seguro/por hora. Si el objetivo semanal fue personalizado, se ajusta proporcionalmente al patrón más cercano.
+        Lectura del neto: si 10 operarios tienen 5 hs mensuales sin asignar cada uno, la app muestra 50 hs de jornada sin asignar. Si otros operarios se exceden, ese exceso se informa por separado y también se muestra el neto general. Así un exceso no oculta dónde existe capacidad pagada que todavía no está siendo utilizada. El objetivo mensual se calcula con los días reales de ${escapeHtml(monthLabel)}, no multiplicando siempre por cuatro.
       </div>
 
       ${balance.serviceBalance.pending.length
@@ -2792,7 +2881,7 @@ function renderBilling() {
   el.billingServicesBoard.innerHTML = summaries.map((summary) => {
     const forecast = summary.billingForecast;
     const rulesHtml = forecast.rules.length
-      ? `<div class="billing-empty">Estas coberturas quedan como referencia. La proyección base se calcula con las horas operativas asignadas del mes.</div>${forecast.rules.map((rule) => {
+      ? `<div class="billing-empty">La proyección base se calcula con esta cobertura facturable, independientemente de qué operario esté asignado hoy.</div>${forecast.rules.map((rule) => {
           const validity = rule.valid_from || rule.valid_until
             ? `${rule.valid_from ? `desde ${formatDateLabel(rule.valid_from)}` : 'sin inicio'} · ${rule.valid_until ? `hasta ${formatDateLabel(rule.valid_until)}` : 'sin fin'}`
             : 'Vigencia permanente';
@@ -2810,7 +2899,7 @@ function renderBilling() {
           `;
         }).join('')}`
       : `<div class="billing-empty">${forecast.source === 'operational'
-          ? 'La proyección base toma automáticamente las horas operativas del mes.'
+          ? 'Sin cobertura comercial configurada: se usan provisionalmente las horas operativas actuales. Para un balance independiente, configurá la cobertura facturable del servicio.'
           : forecast.source === 'manual'
             ? 'Se utiliza la referencia manual cargada en el servicio.'
             : 'Sin cobertura facturable adicional configurada.'}</div>`;

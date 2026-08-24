@@ -20,3 +20,30 @@ Esta versión agrega únicamente:
 - Si coinciden: **Equilibrado · 100%**.
 
 El porcentaje de desvío se calcula sobre las horas facturables estimadas del mes.
+
+## Balance global de dotación (actualización)
+
+Esta versión agrega al Dashboard una lectura global separando tres conceptos:
+
+- **Horas objetivo de la dotación:** lo que deberían cumplir los operarios según su jornada y el calendario real del mes.
+- **Horas efectivamente asignadas:** lo que el cronograma activo les está asignando realmente.
+- **Facturación estimada:** las horas proyectadas para cobrar a los clientes.
+
+También muestra de forma destacada:
+
+- horas de jornada sin asignar;
+- horas excedidas sobre la jornada objetivo;
+- neto de dotación contra jornada;
+- diferencia y porcentaje entre horas asignadas y facturación estimada.
+
+Los déficits y excesos individuales se suman por separado para evitar que un operario excedido oculte a otro que todavía tiene horas de jornada sin utilizar.
+
+### Facturación estimada
+
+Para que la comparación comercial sea independiente de la asignación del personal, la proyección usa esta prioridad:
+
+1. cobertura facturable configurada por días, horarios y puestos;
+2. referencia mensual manual del servicio;
+3. si no existe ninguna de las anteriores, horas operativas actuales como estimación provisional.
+
+No requiere cambios en Supabase ni nuevas migraciones.
