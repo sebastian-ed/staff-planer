@@ -3,7 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#111a36" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Staff Planner" />
   <title>Clean It · Planificador Operativo</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" type="image/png" sizes="192x192" href="./assets/icon-192.png" />
+  <link rel="apple-touch-icon" href="./assets/icon-192.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -52,6 +60,7 @@
           <h2>Operarios y servicios</h2>
         </div>
         <div class="topbar-actions topbar-actions-wrap">
+          <button id="installPwaBtn" class="btn btn-secondary hidden" type="button">Instalar app</button>
           <button id="refreshBtn" class="btn btn-secondary" type="button">Actualizar</button>
           <button id="printViewBtn" class="btn btn-secondary" type="button">Imprimir vista</button>
           <button id="exportExcelBtn" class="btn btn-secondary" type="button">Descargar Excel</button>
@@ -92,7 +101,7 @@
               </select>
             </div>
             <div class="field">
-              <label for="statusFilter">Estado semanal</label>
+              <label for="statusFilter">Estado mensual</label>
               <select id="statusFilter">
                 <option value="all">Todos</option>
                 <option value="available">Le faltan horas</option>
@@ -109,7 +118,7 @@
             <article class="card dashboard-period-bar">
               <div>
                 <h3>Control mensual de horas</h3>
-                <p class="muted">Compara la facturación mensual proyectada y ajustada con las horas operativas mensuales calculadas desde el cronograma semanal activo.</p>
+                <p class="muted">Compara las horas objetivo de la dotación, las horas efectivamente asignadas y las horas proyectadas de facturación según el calendario real del mes.</p>
               </div>
               <div class="field dashboard-month-field">
                 <label for="dashboardMonthFilter">Mes de análisis</label>
@@ -117,12 +126,13 @@
               </div>
             </article>
             <div class="cards-grid" id="kpiCards"></div>
+            <article id="workforceMonthlyBalance" class="card"></article>
             <article id="serviceHoursBalance" class="card"></article>
             <div class="split-grid">
               <article class="card">
                 <div class="section-head">
                   <h3>Operarios críticos</h3>
-                  <span class="muted">Déficit o exceso de horas</span>
+                  <span class="muted">Desvíos mensuales según la jornada objetivo</span>
                 </div>
                 <div id="criticalWorkers"></div>
               </article>
@@ -141,9 +151,15 @@
               <div class="section-head with-action section-head-stack-mobile">
                 <div>
                   <h3>Operarios</h3>
-                  <span class="muted">Alta, edición y control de carga semanal</span>
+                  <span class="muted">Control semanal y balance mensual según la jornada objetivo</span>
                 </div>
-                <button id="addWorkerBtn" class="btn btn-primary" type="button">Nuevo operario</button>
+                <div class="inline-actions workers-header-actions">
+                  <div class="field workers-month-field">
+                    <label for="workersMonthFilter">Mes de análisis</label>
+                    <input id="workersMonthFilter" type="month" />
+                  </div>
+                  <button id="addWorkerBtn" class="btn btn-primary" type="button">Nuevo operario</button>
+                </div>
               </div>
               <div class="table-wrap">
                 <table>
@@ -153,11 +169,12 @@
                       <th>Tipo</th>
                       <th>Antigüedad</th>
                       <th>Período de prueba</th>
-                      <th>Horas objetivo</th>
-                      <th>Horas asignadas semanales</th>
-                      <th>Horas del mes</th>
-                      <th>Diferencia</th>
-                      <th>Estado</th>
+                      <th>Objetivo semanal</th>
+                      <th>Asignadas semanales</th>
+                      <th>Objetivo del mes</th>
+                      <th>Asignadas del mes</th>
+                      <th>Diferencia mensual</th>
+                      <th>Estado mensual</th>
                       <th>Servicios</th>
                       <th>Acciones</th>
                     </tr>
@@ -197,11 +214,11 @@
               <div>
                 <span class="eyebrow">Proyección y cierre</span>
                 <h3>Facturación mensual por servicio</h3>
-                <p class="muted">Calcula lo que se espera facturar según la cobertura contractual del mes y permite registrar descuentos o adicionales cuando la prestación real cambia.</p>
+                <p class="muted">Por defecto, la proyección base y la facturación ajustada toman las horas operativas programadas para cada servicio en el mes seleccionado.</p>
               </div>
               <div class="billing-method-note">
-                <strong>Regla clave</strong>
-                <span>La proyección depende de los puestos y franjas vendidos al cliente, no de qué operario los cubre. Una ausencia solo descuenta si el servicio quedó efectivamente sin cobertura.</span>
+                <strong>Cierre mensual</strong>
+                <span>Durante el mes ambos valores coinciden con el cronograma. Al cierre podés registrar novedades o editar directamente la facturación final si hubo horas no prestadas o adicionales.</span>
               </div>
             </article>
 
@@ -1280,6 +1297,40 @@
       <div class="modal-actions">
         <button class="btn btn-secondary" type="button" data-close="billingAdjustmentDialog">Cancelar</button>
         <button class="btn btn-primary" type="submit">Guardar novedad</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="finalBillingDialog" class="modal">
+    <form id="finalBillingForm" class="modal-card stack-md">
+      <div class="section-head with-action">
+        <div>
+          <h3>Editar facturación final</h3>
+          <span class="muted"><strong id="finalBillingServiceName"></strong> · <span id="finalBillingMonthLabel"></span></span>
+        </div>
+        <button class="icon-btn" type="button" data-close="finalBillingDialog">✕</button>
+      </div>
+      <input id="finalBillingServiceId" type="hidden" />
+      <input id="finalBillingMonth" type="hidden" />
+
+      <div class="final-billing-summary">
+        <div><span>Proyección base</span><strong id="finalBillingBaseHours">0 hs</strong></div>
+        <div><span>Otras novedades</span><strong id="finalBillingOtherAdjustments">0 hs</strong></div>
+        <div><span>Resultado antes del cierre</span><strong id="finalBillingCalculatedHours">0 hs</strong></div>
+      </div>
+
+      <div class="field">
+        <label for="finalBillingHours">Horas efectivamente facturadas</label>
+        <input id="finalBillingHours" type="number" min="0" step="0.25" required />
+        <small class="field-help">Al guardar, la app calcula automáticamente el ajuste necesario respecto de la proyección base y de las novedades ya registradas.</small>
+      </div>
+      <div class="field">
+        <label for="finalBillingNotes">Observaciones del cierre</label>
+        <textarea id="finalBillingNotes" rows="3" placeholder="Ej. Se descontaron 8 horas por ausencia sin cobertura"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" type="button" data-close="finalBillingDialog">Cancelar</button>
+        <button class="btn btn-primary" type="submit">Guardar facturación final</button>
       </div>
     </form>
   </dialog>

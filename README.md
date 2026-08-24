@@ -215,3 +215,45 @@ Los servicios que todavía no tengan reglas continúan usando `billed_monthly_ho
 - Cobertura 24/7 con 3 puestos simultáneos: **2.232 horas** en agosto de 2026.
 
 La cantidad de operarios contratados no define por sí sola las horas facturables. Lo que las define es la cantidad de puestos simultáneos vendidos y sus franjas de cobertura.
+
+
+## Balance mensual de dotación
+
+El Dashboard compara tres capas distintas para el mes seleccionado:
+
+1. **Horas objetivo de la dotación:** se calculan desde la jornada semanal de cada operario y los días reales del calendario. No se usa un multiplicador fijo de cuatro semanas.
+2. **Horas efectivamente asignadas:** se proyectan desde los horarios semanales activos de cada operario sobre el mes seleccionado.
+3. **Horas facturables estimadas:** se obtienen desde las reglas de cobertura contractual y las novedades de facturación.
+
+Para jornada completa se utiliza como patrón 8 horas de lunes a viernes y 4 horas el sábado. Para media jornada, 4 horas de lunes a sábado. Los objetivos semanales personalizados se distribuyen proporcionalmente sobre ese patrón. El personal sin objetivo fijo se incorpora a la referencia de nómina con sus horas efectivamente asignadas.
+
+La vista muestra por separado las horas faltantes y las horas excedidas de los operarios, porque compensarlas en un único saldo ocultaría desvíos individuales.
+
+
+## Actualización: facturación por defecto según horas operativas
+
+- Si un servicio no tiene una cobertura comercial ni una referencia manual específica, la **Proyección base** se calcula automáticamente con sus horas operativas del mes.
+- La **Facturación ajustada** coincide inicialmente con esa proyección.
+- Al cierre del mes se puede usar **Editar facturación final** para cargar el total realmente facturado. La aplicación registra únicamente la diferencia necesaria, sin cambiar horarios, asignaciones ni datos históricos.
+- También se mantiene **Registrar novedad** para descuentos o adicionales puntuales durante el mes.
+- Esta actualización no requiere ejecutar SQL nuevo.
+
+## Corrección: jornadas objetivo de operarios por hora
+
+El objetivo mensual ahora se determina por la cantidad de horas objetivo semanales, aunque el operario figure como `Seguro / por hora`:
+
+- 44 hs: patrón de 8 hs de lunes a viernes y 4 hs el sábado.
+- 24 hs: patrón de 4 hs de lunes a sábado.
+- Objetivos personalizados: ajuste proporcional sobre el patrón correspondiente.
+
+Esto elimina resultados fraccionarios incorrectos generados por repartir una jornada de 44 hs en seis partes iguales. No requiere cambios en Supabase.
+
+## Actualización: facturación alineada con operación
+
+La proyección base mensual de cada servicio se toma automáticamente de las horas operativas asignadas para el mes. Las referencias manuales y coberturas comerciales existentes se conservan como referencia, mientras que las novedades y la edición de facturación final permiten ajustar el cierre real.
+
+## PWA y balance operativo porcentual
+
+La app incluye `manifest.webmanifest` y `service-worker.js`, por lo que puede instalarse como PWA desde navegadores compatibles sobre HTTPS (GitHub Pages cumple esta condición). Cuando el navegador habilita la instalación aparece el botón **Instalar app**.
+
+El Dashboard compara las horas operativas mensuales asignadas con la facturación estimada del mismo mes. Si no coinciden, informa cuántas horas hay de diferencia y el porcentaje de desvío calculado sobre las horas facturables estimadas.

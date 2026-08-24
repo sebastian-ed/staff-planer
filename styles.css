@@ -1775,3 +1775,79 @@ select option:disabled {
 .service-hours-strip {
   grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
 }
+
+
+/* Balance mensual de dotación */
+#workforceMonthlyBalance { padding: 18px; }
+.workforce-balance-card { display: grid; gap: 18px; }
+.workforce-balance-head { align-items: flex-start; }
+.workforce-balance-statuses {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.workforce-balance-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.workforce-balance-summary .hours-balance-metric small {
+  display: block;
+  margin-top: 7px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.workforce-worker-row { min-width: 0; }
+.workforce-worker-row > div:first-child { min-width: 0; }
+.workforce-worker-row strong,
+.workforce-worker-row p { overflow-wrap: anywhere; }
+
+@media (max-width: 1100px) {
+  .workforce-balance-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .workforce-balance-head { flex-direction: column; }
+  .workforce-balance-statuses { justify-content: flex-start; }
+}
+
+@media (max-width: 820px) {
+  .workforce-balance-summary { grid-template-columns: 1fr; }
+}
+
+.workers-header-actions { align-items: flex-end; }
+.workers-month-field { min-width: 180px; }
+.workers-month-field label { font-size: 11px; }
+@media (max-width: 820px) {
+  .workers-header-actions { width: 100%; align-items: stretch; }
+  .workers-month-field { width: 100%; }
+}
+
+
+.final-billing-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  padding: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.final-billing-summary > div {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.final-billing-summary span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.final-billing-summary strong {
+  font-size: 1rem;
+}
+
+@media (max-width: 720px) {
+  .final-billing-summary {
+    grid-template-columns: 1fr;
+  }
+}
