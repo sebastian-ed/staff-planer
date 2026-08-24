@@ -289,3 +289,6 @@ El Dashboard incluye un bloque de estado de dotación. Los porcentajes de operar
 
 ## Detalle interactivo de indicadores
 Los indicadores del Control mensual de horas, Estado de la dotación y balances mensuales ahora son clickeables. Al seleccionar un KPI se abre un detalle con los operarios o servicios que forman ese número. No requiere cambios de base de datos ni SQL adicional.
+
+### Scroll en detalle de indicadores
+Los listados abiertos desde los KPI del Dashboard tienen scroll vertical interno para poder visualizar todos los operarios/servicios incluidos en cada indicador, manteniendo visibles el encabezado y las acciones del modal.

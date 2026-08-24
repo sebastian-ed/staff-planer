@@ -80,3 +80,9 @@ No requiere cambios de base de datos ni ejecutar SQL. La PWA actualiza su caché
 
 ## Detalle interactivo de indicadores
 Los indicadores del Control mensual de horas, Estado de la dotación y balances mensuales ahora son clickeables. Al seleccionar un KPI se abre un detalle con los operarios o servicios que forman ese número. No requiere cambios de base de datos ni SQL adicional.
+
+## Ajuste de visualización del detalle por clic
+
+El modal **Detalle del indicador** ahora tiene scroll vertical interno permanente. El encabezado y el botón **Cerrar** permanecen visibles, mientras que la lista de operarios o servicios puede recorrerse completa con la rueda del mouse, touchpad o barra lateral.
+
+No requiere SQL y no modifica datos ni cálculos.

@@ -2240,3 +2240,57 @@ select option:disabled {
   appearance: none;
   background: rgba(255,255,255,0.03);
 }
+
+/* Ajuste 2026-08-24: el detalle de indicadores debe poder recorrerse completo
+   sin que el encabezado ni el botón de cierre desaparezcan. */
+.dashboard-drilldown-card {
+  display: flex;
+  flex-direction: column;
+  max-height: min(88vh, 860px);
+  overflow: hidden;
+}
+
+.dashboard-drilldown-card > .section-head,
+.dashboard-drilldown-card > .modal-actions {
+  flex: 0 0 auto;
+}
+
+.dashboard-drilldown-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: scroll;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding-right: 10px;
+  padding-bottom: 4px;
+}
+
+/* Scrollbar visible y con buen contraste en Chrome/Edge. */
+.dashboard-drilldown-body::-webkit-scrollbar {
+  width: 11px;
+}
+.dashboard-drilldown-body::-webkit-scrollbar-track {
+  background: rgba(255,255,255,0.035);
+  border-radius: 999px;
+}
+.dashboard-drilldown-body::-webkit-scrollbar-thumb {
+  background: rgba(121, 151, 255, 0.58);
+  border: 2px solid rgba(15, 24, 54, 0.95);
+  border-radius: 999px;
+}
+.dashboard-drilldown-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(141, 169, 255, 0.82);
+}
+.dashboard-drilldown-body {
+  scrollbar-width: auto;
+  scrollbar-color: rgba(121, 151, 255, 0.72) rgba(255,255,255,0.035);
+}
+
+@media (max-width: 640px) {
+  .dashboard-drilldown-card {
+    max-height: 92dvh;
+  }
+  .dashboard-drilldown-body {
+    padding-right: 7px;
+  }
+}
