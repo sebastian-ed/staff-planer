@@ -25,6 +25,95 @@ const ABSENCE_TYPE_META = {
 const FINAL_BILLING_OVERRIDE_MARKER = '[[FINAL_BILLING_OVERRIDE]]';
 const FINAL_BILLING_OVERRIDE_REASON = 'Cierre mensual manual';
 
+
+const DASHBOARD_HELP = {
+  overview: {
+    title: 'Cómo leer el balance mensual',
+    html: `
+      <p>El balance separa tres variables que pueden parecer similares, pero miden cosas distintas:</p>
+      <ul>
+        <li><strong>Horas objetivo de la dotación:</strong> lo que deberían trabajar los operarios según su jornada.</li>
+        <li><strong>Horas efectivamente asignadas:</strong> lo que realmente tienen cargado en el cronograma.</li>
+        <li><strong>Facturación estimada:</strong> lo que proyectás cobrar a los clientes.</li>
+      </ul>
+      <p>Además, los indicadores de desvío se leen así:</p>
+      <ul>
+        <li><strong>Horas faltantes vs jornada:</strong> suma todas las horas que los operarios deberían trabajar pero todavía no tienen asignadas.</li>
+        <li><strong>Horas excedidas vs jornada:</strong> suma todas las horas que los operarios están trabajando por encima de su objetivo.</li>
+        <li><strong>Neto de dotación:</strong> horas asignadas menos horas objetivo.</li>
+        <li><strong>Asignadas vs facturación:</strong> diferencia en horas y porcentaje entre lo que trabaja la dotación y lo que se estima facturar.</li>
+      </ul>
+      <div class="dashboard-help-example">
+        <strong>Ejemplo simple</strong>
+        <p>Si 10 operarios deberían trabajar 24 hs y a cada uno le faltan 5 hs, el sistema acumula <strong>50 hs de jornada sin asignar</strong>.</p>
+        <p>Si al mismo tiempo otros operarios tienen 20 hs excedidas, la app sigue mostrando <strong>50 hs faltantes</strong> y <strong>20 hs excedidas</strong> por separado, además de un <strong>neto de -30 hs</strong>. Así un exceso no oculta capacidad ociosa de otros trabajadores.</p>
+      </div>
+    `,
+  },
+  target: {
+    title: 'Horas objetivo de la dotación',
+    html: `
+      <p><strong>Qué significa:</strong> lo que deberían trabajar los operarios según su jornada.</p>
+      <p>La app toma las horas objetivo semanales de cada operario y las proyecta sobre los días reales del mes seleccionado. No supone que todos los meses tienen exactamente cuatro semanas.</p>
+      <p><strong>Para qué sirve:</strong> representa la cantidad de horas de personal que la empresa tiene comprometidas como jornada objetivo.</p>
+    `,
+  },
+  assigned: {
+    title: 'Horas efectivamente asignadas',
+    html: `
+      <p><strong>Qué significa:</strong> lo que realmente tienen cargado los operarios en el cronograma.</p>
+      <p>Se calcula a partir de los días y horarios de las asignaciones activas y se proyecta sobre el calendario real del mes seleccionado.</p>
+      <p>Puede ser menor, igual o mayor que las horas objetivo de la dotación.</p>
+    `,
+  },
+  billing: {
+    title: 'Facturación estimada',
+    html: `
+      <p><strong>Qué significa:</strong> lo que proyectás cobrar a los clientes durante el mes.</p>
+      <p>Es la referencia comercial contra la que conviene comparar las horas que efectivamente está utilizando la dotación.</p>
+      <p>Al cierre del mes puede ajustarse si hubo horas no prestadas, descuentos, adicionales u otras novedades.</p>
+    `,
+  },
+  missing: {
+    title: 'Horas faltantes vs jornada',
+    html: `
+      <p><strong>Qué significa:</strong> suma todas las horas que los operarios deberían trabajar pero todavía no tienen asignadas.</p>
+      <div class="dashboard-help-example">
+        <strong>Ejemplo</strong>
+        <p>Si 10 operarios deberían trabajar 24 hs y a cada uno le faltan 5 hs, el sistema muestra un déficit acumulado de <strong>50 hs</strong>.</p>
+      </div>
+      <p>Son horas de jornada objetivo que hoy no están siendo utilizadas en servicios.</p>
+    `,
+  },
+  excess: {
+    title: 'Horas excedidas vs jornada',
+    html: `
+      <p><strong>Qué significa:</strong> suma todas las horas que los operarios están trabajando por encima de su objetivo.</p>
+      <p>Por ejemplo, si una persona tiene una jornada objetivo de 24 hs pero está asignada 30 hs, aporta <strong>6 hs excedidas</strong> al total.</p>
+      <p>Las horas excedidas se muestran por separado de las faltantes para que un exceso no oculte capacidad ociosa en otros operarios.</p>
+    `,
+  },
+  net: {
+    title: 'Neto de dotación vs jornada',
+    html: `
+      <p><strong>Cómo se calcula:</strong> horas asignadas menos horas objetivo.</p>
+      <p>Un resultado negativo indica que, en el total, hay horas objetivo de la dotación que todavía no están asignadas. Un resultado positivo indica que la dotación está trabajando por encima de su objetivo total.</p>
+      <div class="dashboard-help-example">
+        <strong>Importante</strong>
+        <p>El neto no reemplaza a los indicadores de faltantes y excedidas. Si hay 50 hs faltantes y 20 hs excedidas, el neto es <strong>-30 hs</strong>, pero la app conserva ambos valores por separado.</p>
+      </div>
+    `,
+  },
+  assignedBilling: {
+    title: 'Asignadas vs facturación',
+    html: `
+      <p><strong>Qué significa:</strong> diferencia en horas y porcentaje entre lo que trabaja la dotación y lo que se estima facturar.</p>
+      <p>Si las horas asignadas superan a las facturables, la operación está utilizando más horas de personal que las que proyecta cobrar. Si están por debajo, faltan horas operativas para alcanzar la proyección comercial.</p>
+      <p>El objetivo es que este indicador tienda a un equilibrio operativo, sin perder de vista los faltantes y excedentes individuales de jornada.</p>
+    `,
+  },
+};
+
 const VIEW_IDS = {
   dashboard: 'dashboardView',
   workers: 'workersView',
@@ -2319,6 +2408,15 @@ function populateSelects() {
   updateMaterialConsumptionOptions();
 }
 
+
+function openDashboardHelp(helpKey = 'overview') {
+  const content = DASHBOARD_HELP[helpKey] || DASHBOARD_HELP.overview;
+  if (!el.dashboardHelpDialog || !content) return;
+  if (el.dashboardHelpTitle) el.dashboardHelpTitle.textContent = content.title;
+  if (el.dashboardHelpBody) el.dashboardHelpBody.innerHTML = content.html;
+  el.dashboardHelpDialog.showModal();
+}
+
 function renderKpis(summaries, allWorkerSummaries = summaries) {
   const balance = getOverallServiceHoursBalance();
   const workforceBalance = getWorkforceMonthlyBalance(balance.monthKey, allWorkerSummaries);
@@ -2364,41 +2462,48 @@ function renderKpis(summaries, allWorkerSummaries = summaries) {
         ? `${balance.configured.length} servicios con proyección · ${balance.pending.length} pendientes`
         : `${balance.configured.length} servicios · ${monthLabel}`,
       className: 'kpi-primary',
+      helpKey: 'billing',
     },
     {
       label: 'Horas efectivamente asignadas',
       value: `${formatHours(workforceBalance.totalAssignedHours)} hs`,
       foot: `Cronograma proyectado a los días reales de ${monthLabel}`,
       className: 'kpi-primary',
+      helpKey: 'assigned',
     },
     {
       label: 'Asignadas vs facturación',
       value: commercialValue,
       foot: commercialFoot,
       className: `kpi-primary ${commercialClass}`,
+      helpKey: 'assignedBilling',
     },
     {
       label: 'Horas faltantes vs jornada',
       value: `${formatHours(workforceBalance.totalMissingHours)} hs`,
       foot: `${workforceBalance.missingWorkers.length} operario${workforceBalance.missingWorkers.length === 1 ? '' : 's'} por debajo · ${formatPercent(workforceBalance.missingHoursPercent)} del objetivo total`,
       className: 'kpi-primary kpi-tone-missing',
+      helpKey: 'missing',
     },
     {
       label: 'Horas excedidas vs jornada',
       value: `${formatHours(workforceBalance.totalExcessHours)} hs`,
       foot: `${workforceBalance.excessWorkers.length} operario${workforceBalance.excessWorkers.length === 1 ? '' : 's'} por encima · ${formatPercent(workforceBalance.excessHoursPercent)} del objetivo total`,
       className: 'kpi-primary kpi-tone-over',
+      helpKey: 'excess',
     },
     {
       label: 'Neto de dotación vs jornada',
       value: targetNetValue,
       foot: targetNetFoot,
       className: `kpi-primary ${targetNetClass}`,
+      helpKey: 'net',
     },
     {
       label: 'Objetivo mensual de dotación',
       value: `${formatHours(workforceBalance.totalTargetHours)} hs`,
       foot: `${workforceBalance.fixedWorkers.length} operario${workforceBalance.fixedWorkers.length === 1 ? '' : 's'} con jornada objetivo`,
+      helpKey: 'target',
     },
     {
       label: 'Servicios sin cobertura',
@@ -2416,7 +2521,10 @@ function renderKpis(summaries, allWorkerSummaries = summaries) {
     .map(
       (card) => `
         <article class="kpi-card card-lite ${card.className || ''}">
-          <span class="kpi-label">${card.label}</span>
+          <div class="kpi-label-row">
+            <span class="kpi-label">${card.label}</span>
+            ${card.helpKey ? `<button class="metric-info-btn" type="button" data-dashboard-help="${card.helpKey}" aria-label="Información sobre ${escapeHtml(card.label)}" title="¿Qué significa?">i</button>` : ''}
+          </div>
           <strong class="kpi-value">${card.value}</strong>
           <small class="kpi-foot">${card.foot}</small>
         </article>
@@ -2462,6 +2570,7 @@ function renderWorkforceMonthlyBalance(summaries = null) {
           <span class="muted">Compara jornada objetivo, horas efectivamente asignadas y horas estimadas de facturación.</span>
         </div>
         <div class="workforce-balance-statuses">
+          <button id="balanceOverviewHelpBtn" class="balance-help-btn" type="button" data-dashboard-help="overview">? Cómo leer este balance</button>
           <span class="status-pill ${assignmentClass}">${assignmentLabel}</span>
           <span class="status-pill ${commercialClass}">${commercialLabel}</span>
         </div>
@@ -2469,17 +2578,26 @@ function renderWorkforceMonthlyBalance(summaries = null) {
 
       <div class="workforce-balance-summary workforce-balance-summary-priority">
         <div class="hours-balance-metric balance-metric-main">
-          <span>Horas objetivo de la dotación</span>
+          <div class="metric-title-row">
+            <span>Horas objetivo de la dotación</span>
+            <button class="metric-info-btn" type="button" data-dashboard-help="target" aria-label="Información sobre Horas objetivo de la dotación" title="¿Qué significa?">i</button>
+          </div>
           <strong>${formatHours(balance.totalTargetHours)} hs</strong>
           <small>Lo que deberían cumplir en ${escapeHtml(monthLabel)} los operarios con jornada objetivo.</small>
         </div>
         <div class="hours-balance-metric balance-metric-main">
-          <span>Horas efectivamente asignadas</span>
+          <div class="metric-title-row">
+            <span>Horas efectivamente asignadas</span>
+            <button class="metric-info-btn" type="button" data-dashboard-help="assigned" aria-label="Información sobre Horas efectivamente asignadas" title="¿Qué significa?">i</button>
+          </div>
           <strong>${formatHours(balance.totalAssignedFixedHours)} hs</strong>
           <small>Horas del cronograma de esos mismos operarios durante el mes.</small>
         </div>
         <div class="hours-balance-metric balance-metric-main ${balance.targetNetDifference < -0.01 ? 'balance-metric-missing' : balance.targetNetDifference > 0.01 ? 'balance-metric-over' : 'balance-metric-balanced'}">
-          <span>Neto contra jornada objetivo</span>
+          <div class="metric-title-row">
+            <span>Neto contra jornada objetivo</span>
+            <button class="metric-info-btn" type="button" data-dashboard-help="net" aria-label="Información sobre Neto contra jornada objetivo" title="¿Qué significa?">i</button>
+          </div>
           <strong>${Math.abs(balance.targetNetDifference) <= 0.01
             ? 'Equilibrado'
             : balance.targetNetDifference < 0
@@ -2490,12 +2608,18 @@ function renderWorkforceMonthlyBalance(summaries = null) {
             : `${formatPercent(balance.targetNetDifferencePercent)} ${balance.targetNetDifference < 0 ? 'por debajo' : 'por encima'} del objetivo total.`}</small>
         </div>
         <div class="hours-balance-metric balance-metric-main">
-          <span>Facturación estimada</span>
+          <div class="metric-title-row">
+            <span>Facturación estimada</span>
+            <button class="metric-info-btn" type="button" data-dashboard-help="billing" aria-label="Información sobre Facturación estimada" title="¿Qué significa?">i</button>
+          </div>
           <strong>${formatHours(balance.serviceBalance.totalBilledHours)} hs</strong>
           <small>Horas que se proyecta cobrar a los clientes durante el mes.</small>
         </div>
         <div class="hours-balance-metric balance-metric-main ${balance.operationalDifference > 0.01 ? 'balance-metric-missing' : balance.operationalDifference < -0.01 ? 'balance-metric-warning' : 'balance-metric-balanced'}">
-          <span>Asignadas vs facturación estimada</span>
+          <div class="metric-title-row">
+            <span>Asignadas vs facturación estimada</span>
+            <button class="metric-info-btn" type="button" data-dashboard-help="assignedBilling" aria-label="Información sobre Asignadas vs facturación estimada" title="¿Qué significa?">i</button>
+          </div>
           <strong>${Math.abs(balance.operationalDifference) <= 0.01
             ? 'Equilibrado · 100%'
             : balance.operationalDifference > 0
@@ -2508,12 +2632,18 @@ function renderWorkforceMonthlyBalance(summaries = null) {
               : `Faltan ${formatHours(Math.abs(balance.operationalDifference))} hs asignadas para cubrir lo estimado a facturar.`}</small>
         </div>
         <div class="hours-balance-metric balance-metric-alert balance-metric-missing">
-          <span>Horas de jornada sin asignar</span>
+          <div class="metric-title-row">
+            <span>Horas de jornada sin asignar</span>
+            <button class="metric-info-btn" type="button" data-dashboard-help="missing" aria-label="Información sobre Horas de jornada sin asignar" title="¿Qué significa?">i</button>
+          </div>
           <strong>${formatHours(balance.totalMissingHours)} hs</strong>
           <small>${balance.missingWorkers.length} operario${balance.missingWorkers.length === 1 ? '' : 's'} por debajo de su objetivo · ${formatPercent(balance.missingHoursPercent)} del total objetivo.</small>
         </div>
         <div class="hours-balance-metric balance-metric-alert balance-metric-over">
-          <span>Horas excedidas sobre jornada</span>
+          <div class="metric-title-row">
+            <span>Horas excedidas sobre jornada</span>
+            <button class="metric-info-btn" type="button" data-dashboard-help="excess" aria-label="Información sobre Horas excedidas sobre jornada" title="¿Qué significa?">i</button>
+          </div>
           <strong>${formatHours(balance.totalExcessHours)} hs</strong>
           <small>${balance.excessWorkers.length} operario${balance.excessWorkers.length === 1 ? '' : 's'} por encima de su objetivo · ${formatPercent(balance.excessHoursPercent)} del total objetivo.</small>
         </div>
@@ -9872,6 +10002,12 @@ function bindEvents() {
   });
 
   document.addEventListener('click', (event) => {
+    const helpButton = event.target.closest('[data-dashboard-help]');
+    if (helpButton) {
+      event.preventDefault();
+      openDashboardHelp(helpButton.dataset.dashboardHelp || 'overview');
+      return;
+    }
     if (event.target.closest('.global-search-shell')) return;
     closeGlobalSearchResults();
   });
@@ -9910,6 +10046,9 @@ function boot() {
       workersMonthFilter: $('workersMonthFilter'),
       kpiCards: $('kpiCards'),
       workforceMonthlyBalance: $('workforceMonthlyBalance'),
+      dashboardHelpDialog: $('dashboardHelpDialog'),
+      dashboardHelpTitle: $('dashboardHelpTitle'),
+      dashboardHelpBody: $('dashboardHelpBody'),
       serviceHoursBalance: $('serviceHoursBalance'),
       criticalWorkers: $('criticalWorkers'),
       serviceGaps: $('serviceGaps'),

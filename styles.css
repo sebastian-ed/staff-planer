@@ -1900,3 +1900,115 @@ select option:disabled {
   border-color: rgba(255,203,102,0.34);
   background: rgba(255,203,102,0.075);
 }
+
+
+/* Ayuda contextual del balance mensual */
+.kpi-label-row,
+.metric-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+}
+
+.metric-title-row > span,
+.kpi-label-row > .kpi-label {
+  min-width: 0;
+}
+
+.metric-info-btn {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  border-radius: 999px;
+  border: 1px solid rgba(184, 202, 255, 0.35);
+  background: rgba(91, 140, 255, 0.10);
+  color: #d9e3ff;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+}
+
+.metric-info-btn:hover,
+.metric-info-btn:focus-visible {
+  background: rgba(91, 140, 255, 0.24);
+  border-color: rgba(184, 202, 255, 0.68);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.balance-help-btn {
+  min-height: 34px;
+  padding: 7px 11px;
+  border: 1px solid rgba(184, 202, 255, 0.30);
+  border-radius: 999px;
+  background: rgba(91, 140, 255, 0.09);
+  color: #dbe5ff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.balance-help-btn:hover,
+.balance-help-btn:focus-visible {
+  background: rgba(91, 140, 255, 0.20);
+  border-color: rgba(184, 202, 255, 0.56);
+  outline: none;
+}
+
+.dashboard-help-dialog {
+  width: min(720px, calc(100vw - 28px));
+}
+
+.dashboard-help-card {
+  width: 100%;
+  max-height: min(82vh, 760px);
+  overflow-y: auto;
+}
+
+.dashboard-help-body {
+  color: var(--text);
+  line-height: 1.6;
+  display: grid;
+  gap: 12px;
+}
+
+.dashboard-help-body p {
+  margin: 0;
+}
+
+.dashboard-help-body ul {
+  margin: 0;
+  padding-left: 22px;
+  display: grid;
+  gap: 9px;
+}
+
+.dashboard-help-example {
+  padding: 14px 16px;
+  border: 1px solid rgba(91, 140, 255, 0.24);
+  border-radius: 14px;
+  background: rgba(91, 140, 255, 0.07);
+  display: grid;
+  gap: 8px;
+}
+
+.dashboard-help-example > strong {
+  font-size: 14px;
+}
+
+@media (max-width: 680px) {
+  .workforce-balance-statuses {
+    width: 100%;
+  }
+  .balance-help-btn {
+    width: 100%;
+  }
+}

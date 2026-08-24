@@ -47,3 +47,10 @@ Para que la comparación comercial sea independiente de la asignación del perso
 3. si no existe ninguna de las anteriores, horas operativas actuales como estimación provisional.
 
 No requiere cambios en Supabase ni nuevas migraciones.
+
+
+## Ayuda contextual del balance
+
+Se agregaron botones **i** en los indicadores principales del Dashboard y el botón **“? Cómo leer este balance”**. Cada ayuda explica en lenguaje simple qué significa el indicador, cómo interpretarlo y, cuando corresponde, incluye un ejemplo.
+
+Este cambio es exclusivamente de interfaz y documentación: **no requiere ejecutar SQL ni modifica datos existentes**.

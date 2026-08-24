@@ -260,3 +260,8 @@ El Dashboard compara las horas operativas mensuales asignadas con la facturació
 
 ### Balance global de eficiencia
 El Dashboard diferencia jornada objetivo, horas asignadas y horas estimadas de facturación. Además informa horas faltantes y excedidas por jornada, su porcentaje sobre el objetivo mensual y el neto total de dotación.
+
+
+### Ayuda rápida del balance mensual
+
+Los KPI principales de jornada, asignación y facturación incluyen un botón de información. También existe un acceso **“Cómo leer este balance”** que resume la lógica completa y explica por qué las horas faltantes y excedidas se muestran por separado.
