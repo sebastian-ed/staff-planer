@@ -51,6 +51,20 @@ const DASHBOARD_HELP = {
       </div>
     `,
   },
+  headcount: {
+    title: 'Estado de la dotación',
+    html: `
+      <p><strong>Qué muestra:</strong> cuántos operarios hay cargados y cómo están respecto de su jornada objetivo en el mes seleccionado.</p>
+      <ul>
+        <li><strong>Con jornada asignada:</strong> operarios que tienen un objetivo semanal definido, por ejemplo 24 hs o 44 hs.</li>
+        <li><strong>Sin jornada asignada:</strong> operarios sin un objetivo fijo de horas. No pueden clasificarse como equilibrados, por debajo o por encima.</li>
+        <li><strong>Equilibrados:</strong> sus horas asignadas del mes coinciden con su objetivo mensual.</li>
+        <li><strong>Por debajo:</strong> tienen menos horas asignadas que las que deberían cumplir.</li>
+        <li><strong>Por encima:</strong> tienen más horas asignadas que su jornada objetivo.</li>
+      </ul>
+      <p>Los porcentajes de <strong>con/sin jornada</strong> se calculan sobre el total de operarios. Los porcentajes de <strong>equilibrados, por debajo y por encima</strong> se calculan únicamente sobre los operarios que sí tienen una jornada objetivo.</p>
+    `,
+  },
   target: {
     title: 'Horas objetivo de la dotación',
     html: `
@@ -2220,6 +2234,31 @@ function getWorkforceMonthlyBalance(monthKey = getSelectedDashboardMonth(), summ
     ? Number(((totalExcessHours / totalTargetHours) * 100).toFixed(2))
     : null;
 
+  // Conteo de dotación y distribución por estado mensual.
+  // Con/sin jornada se mide sobre el total de operarios.
+  // Equilibrados/déficit/exceso se mide sobre quienes sí tienen jornada objetivo.
+  const totalWorkersCount = workers.length;
+  const workersWithTargetCount = fixedWorkers.length;
+  const workersWithoutTargetCount = hourlyWorkers.length;
+  const missingWorkers = fixedWorkers.filter((worker) => Number(worker.monthlyDifference || 0) > 0.01);
+  const excessWorkers = fixedWorkers.filter((worker) => Number(worker.monthlyDifference || 0) < -0.01);
+  const balancedWorkers = fixedWorkers.filter((worker) => Math.abs(Number(worker.monthlyDifference || 0)) <= 0.01);
+  const workersWithTargetPercent = totalWorkersCount > 0
+    ? Number(((workersWithTargetCount / totalWorkersCount) * 100).toFixed(2))
+    : 0;
+  const workersWithoutTargetPercent = totalWorkersCount > 0
+    ? Number(((workersWithoutTargetCount / totalWorkersCount) * 100).toFixed(2))
+    : 0;
+  const balancedWorkersPercent = workersWithTargetCount > 0
+    ? Number(((balancedWorkers.length / workersWithTargetCount) * 100).toFixed(2))
+    : 0;
+  const missingWorkersPercent = workersWithTargetCount > 0
+    ? Number(((missingWorkers.length / workersWithTargetCount) * 100).toFixed(2))
+    : 0;
+  const excessWorkersPercent = workersWithTargetCount > 0
+    ? Number(((excessWorkers.length / workersWithTargetCount) * 100).toFixed(2))
+    : 0;
+
   return {
     monthKey,
     workers,
@@ -2246,9 +2285,17 @@ function getWorkforceMonthlyBalance(monthKey = getSelectedDashboardMonth(), summ
     targetCoveragePercent,
     missingHoursPercent,
     excessHoursPercent,
-    missingWorkers: fixedWorkers.filter((worker) => Number(worker.monthlyDifference || 0) > 0.01),
-    excessWorkers: fixedWorkers.filter((worker) => Number(worker.monthlyDifference || 0) < -0.01),
-    balancedWorkers: fixedWorkers.filter((worker) => Math.abs(Number(worker.monthlyDifference || 0)) <= 0.01),
+    totalWorkersCount,
+    workersWithTargetCount,
+    workersWithoutTargetCount,
+    workersWithTargetPercent,
+    workersWithoutTargetPercent,
+    balancedWorkersPercent,
+    missingWorkersPercent,
+    excessWorkersPercent,
+    missingWorkers,
+    excessWorkers,
+    balancedWorkers,
   };
 }
 
@@ -2518,6 +2565,13 @@ function renderKpis(summaries, allWorkerSummaries = summaries) {
       helpKey: 'target',
     },
     {
+      label: 'Dotación total',
+      value: `${workforceBalance.totalWorkersCount} operarios`,
+      foot: `${workforceBalance.workersWithTargetCount} con jornada (${formatPercent(workforceBalance.workersWithTargetPercent)}) · ${workforceBalance.workersWithoutTargetCount} sin jornada (${formatPercent(workforceBalance.workersWithoutTargetPercent)})`,
+      className: 'kpi-primary',
+      helpKey: 'headcount',
+    },
+    {
       label: 'Facturación vs objetivo de dotación',
       value: billingTargetValue,
       foot: billingTargetFoot,
@@ -2639,6 +2693,49 @@ function renderWorkforceMonthlyBalance(summaries = null) {
           <span class="status-pill ${assignmentClass}">${assignmentLabel}</span>
           <span class="status-pill ${commercialClass}">${commercialLabel}</span>
         </div>
+      </div>
+
+      <div class="workforce-headcount-section">
+        <div class="section-head workforce-headcount-head">
+          <div>
+            <h4>Estado de la dotación</h4>
+            <span class="muted">Cantidad de operarios y distribución según su jornada para ${escapeHtml(monthLabel)}.</span>
+          </div>
+          <button class="metric-info-btn" type="button" data-dashboard-help="headcount" aria-label="Información sobre Estado de la dotación" title="¿Qué significa?">i</button>
+        </div>
+        <div class="workforce-headcount-grid">
+          <div class="workforce-headcount-metric headcount-total">
+            <span>Operarios totales</span>
+            <strong>${balance.totalWorkersCount}</strong>
+            <small>100% de la dotación cargada</small>
+          </div>
+          <div class="workforce-headcount-metric">
+            <span>Con jornada asignada</span>
+            <strong>${balance.workersWithTargetCount}</strong>
+            <small>${formatPercent(balance.workersWithTargetPercent)} del total</small>
+          </div>
+          <div class="workforce-headcount-metric headcount-neutral">
+            <span>Sin jornada asignada</span>
+            <strong>${balance.workersWithoutTargetCount}</strong>
+            <small>${formatPercent(balance.workersWithoutTargetPercent)} del total</small>
+          </div>
+          <div class="workforce-headcount-metric headcount-balanced">
+            <span>Horas equilibradas</span>
+            <strong>${balance.balancedWorkers.length}</strong>
+            <small>${formatPercent(balance.balancedWorkersPercent)} de quienes tienen jornada</small>
+          </div>
+          <div class="workforce-headcount-metric headcount-missing">
+            <span>Por debajo de jornada</span>
+            <strong>${balance.missingWorkers.length}</strong>
+            <small>${formatPercent(balance.missingWorkersPercent)} de quienes tienen jornada</small>
+          </div>
+          <div class="workforce-headcount-metric headcount-over">
+            <span>Por encima de jornada</span>
+            <strong>${balance.excessWorkers.length}</strong>
+            <small>${formatPercent(balance.excessWorkersPercent)} de quienes tienen jornada</small>
+          </div>
+        </div>
+        ${balance.workersWithoutTargetCount ? `<div class="workforce-headcount-note"><strong>Importante:</strong> los ${balance.workersWithoutTargetCount} operario${balance.workersWithoutTargetCount === 1 ? '' : 's'} sin jornada objetivo no se incluyen en los porcentajes de equilibrados, por debajo o por encima.</div>` : ''}
       </div>
 
       <div class="workforce-balance-summary workforce-balance-summary-priority">

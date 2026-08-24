@@ -64,3 +64,15 @@ Se agregó al Dashboard un KPI principal que compara la facturación estimada de
 Fórmula: `Facturación estimada - Objetivo mensual de dotación`.
 
 Después de publicar los archivos, realizar una recarga forzada (`Ctrl + F5`). La versión del caché PWA fue incrementada para tomar esta actualización.
+
+## Actualización: conteo y estado de dotación
+
+Se agregó al Dashboard un bloque "Estado de la dotación" que contabiliza automáticamente, para el mes seleccionado:
+
+- Operarios totales cargados.
+- Operarios con jornada objetivo y porcentaje sobre la dotación total.
+- Operarios sin jornada objetivo y porcentaje sobre la dotación total.
+- Operarios equilibrados, por debajo y por encima de su jornada.
+- Porcentajes de equilibrio/déficit/exceso calculados sobre los operarios que sí tienen jornada objetivo.
+
+No requiere cambios de base de datos ni ejecutar SQL. La PWA actualiza su caché automáticamente a una nueva versión al publicar estos archivos.

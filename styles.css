@@ -2026,3 +2026,86 @@ select option:disabled {
     width: 100%;
   }
 }
+
+/* Dashboard: conteo y distribución de dotación */
+.workforce-headcount-section {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.025);
+}
+.workforce-headcount-head { margin-bottom: 0; }
+.workforce-headcount-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+.workforce-headcount-metric {
+  min-width: 0;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.035);
+}
+.workforce-headcount-metric span,
+.workforce-headcount-metric small {
+  display: block;
+}
+.workforce-headcount-metric span {
+  min-height: 32px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.workforce-headcount-metric strong {
+  display: block;
+  margin: 7px 0 4px;
+  font-size: clamp(26px, 2.7vw, 38px);
+  line-height: 1;
+}
+.workforce-headcount-metric small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+.workforce-headcount-metric.headcount-total {
+  border-width: 2px;
+  border-color: rgba(91,140,255,0.32);
+  background: rgba(91,140,255,0.065);
+}
+.workforce-headcount-metric.headcount-balanced {
+  border-color: rgba(91,140,255,0.32);
+  background: rgba(91,140,255,0.065);
+}
+.workforce-headcount-metric.headcount-missing {
+  border-color: rgba(255,124,139,0.34);
+  background: rgba(255,124,139,0.075);
+}
+.workforce-headcount-metric.headcount-over {
+  border-color: rgba(88,214,141,0.34);
+  background: rgba(88,214,141,0.075);
+}
+.workforce-headcount-metric.headcount-neutral {
+  border-color: rgba(255,203,102,0.28);
+  background: rgba(255,203,102,0.055);
+}
+.workforce-headcount-note {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255,203,102,0.06);
+  border: 1px dashed rgba(255,203,102,0.24);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+@media (max-width: 1180px) {
+  .workforce-headcount-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .workforce-headcount-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 430px) {
+  .workforce-headcount-grid { grid-template-columns: 1fr; }
+}

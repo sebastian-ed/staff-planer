@@ -281,3 +281,7 @@ Interpretación:
 - Resultado **cero**: cartera y dotación objetivo están equilibradas.
 
 El porcentaje de desvío se calcula tomando como base el objetivo mensual de dotación. Este indicador es independiente de **Asignadas vs facturación** y de **Neto de dotación vs jornada**, para evitar mezclar capacidad estructural, utilización real y demanda comercial.
+
+### Conteo de dotación
+
+El Dashboard incluye un bloque de estado de dotación. Los porcentajes de operarios con/sin jornada se calculan sobre todos los operarios cargados. Los porcentajes de equilibrados, por debajo y por encima se calculan solamente sobre los operarios que tienen jornada objetivo, porque el personal sin objetivo fijo no puede clasificarse contra una jornada mensual.
