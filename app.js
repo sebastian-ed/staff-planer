@@ -2493,6 +2493,309 @@ function openDashboardHelp(helpKey = 'overview') {
   el.dashboardHelpDialog.showModal();
 }
 
+function getWorkerDrilldownStatus(worker) {
+  if (worker.monthlyTargetHours == null) {
+    return { label: 'Sin jornada objetivo', className: 'status-insurance' };
+  }
+  const difference = Number(worker.monthlyDifference || 0);
+  if (difference > 0.01) {
+    return { label: `Faltan ${formatHours(difference)} hs`, className: 'status-hours-missing' };
+  }
+  if (difference < -0.01) {
+    return { label: `Excede ${formatHours(Math.abs(difference))} hs`, className: 'status-hours-over' };
+  }
+  return { label: 'Equilibrado', className: 'status-balanced' };
+}
+
+function renderWorkerDrilldownList(workers = [], monthLabel = '') {
+  if (!workers.length) {
+    return '<div class="empty-state">No hay operarios dentro de este indicador.</div>';
+  }
+
+  return `
+    <div class="dashboard-drilldown-list">
+      ${workers.map((worker) => {
+        const status = getWorkerDrilldownStatus(worker);
+        const services = (worker.services || []).map((service) => service.name).filter(Boolean);
+        return `
+          <button class="dashboard-drilldown-row dashboard-drilldown-row-button" type="button" data-dashboard-drilldown="worker:${worker.id}" title="Ver detalle de ${escapeHtml(worker.name)}">
+            <div class="dashboard-drilldown-row-main">
+              <div class="dashboard-drilldown-row-title">
+                <strong>${escapeHtml(worker.name)}</strong>
+                <span class="status-pill ${status.className}">${escapeHtml(status.label)}</span>
+              </div>
+              <div class="dashboard-drilldown-meta">
+                <span>Jornada semanal: <strong>${worker.targetHours == null ? 'Sin objetivo fijo' : `${formatHours(worker.targetHours)} hs`}</strong></span>
+                <span>Objetivo ${escapeHtml(monthLabel)}: <strong>${worker.monthlyTargetHours == null ? '—' : `${formatHours(worker.monthlyTargetHours)} hs`}</strong></span>
+                <span>Asignadas: <strong>${formatHours(worker.monthlyHours)} hs</strong></span>
+              </div>
+              <small>${services.length ? `Servicios: ${escapeHtml(services.join(', '))}` : 'Sin servicios asignados'}</small>
+            </div>
+            <span class="dashboard-drilldown-chevron">›</span>
+          </button>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderServiceDrilldownList(services = [], monthLabel = '') {
+  if (!services.length) {
+    return '<div class="empty-state">No hay servicios dentro de este indicador.</div>';
+  }
+
+  return `
+    <div class="dashboard-drilldown-list">
+      ${services.map((service) => {
+        const diff = service.difference;
+        let status = { label: 'Pendiente', className: 'status-hours-pending' };
+        if (diff != null) {
+          if (Math.abs(diff) <= 0.01) status = { label: 'Equilibrado', className: 'status-balanced' };
+          else if (diff > 0) status = { label: `+${formatHours(diff)} hs operativas`, className: 'status-hours-over' };
+          else status = { label: `${formatHours(Math.abs(diff))} hs por cubrir`, className: 'status-hours-missing' };
+        }
+        return `
+          <button class="dashboard-drilldown-row dashboard-drilldown-row-button" type="button" data-dashboard-drilldown="service:${service.id}" title="Ver detalle de ${escapeHtml(service.name)}">
+            <div class="dashboard-drilldown-row-main">
+              <div class="dashboard-drilldown-row-title">
+                <strong>${escapeHtml(service.name)}</strong>
+                <span class="status-pill ${status.className}">${escapeHtml(status.label)}</span>
+              </div>
+              <div class="dashboard-drilldown-meta">
+                <span>Proyección base: <strong>${service.projectedBilledHours == null ? 'Pendiente' : `${formatHours(service.projectedBilledHours)} hs`}</strong></span>
+                <span>Facturación ajustada: <strong>${service.billedHours == null ? 'Pendiente' : `${formatHours(service.billedHours)} hs`}</strong></span>
+                <span>Ajustes: <strong>${Number(service.billingAdjustmentsHours || 0) > 0 ? '+' : ''}${formatHours(service.billingAdjustmentsHours || 0)} hs</strong></span>
+                <span>Operativas ${escapeHtml(monthLabel)}: <strong>${formatHours(service.assignedHours)} hs</strong></span>
+              </div>
+              <small>${escapeHtml(service.zone || 'Sin zona')} · ${escapeHtml(service.client_address || 'Sin dirección')}</small>
+            </div>
+            <span class="dashboard-drilldown-chevron">›</span>
+          </button>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderDrilldownSummary(items = []) {
+  return `<div class="dashboard-drilldown-summary">${items.map((item) => `
+    <div class="dashboard-drilldown-summary-item">
+      <span>${escapeHtml(item.label)}</span>
+      <strong>${escapeHtml(String(item.value))}</strong>
+      ${item.note ? `<small>${escapeHtml(item.note)}</small>` : ''}
+    </div>
+  `).join('')}</div>`;
+}
+
+function openDashboardDrilldown(key = '', source = 'dashboard') {
+  if (!el.dashboardDrilldownDialog || !key) return;
+
+  const monthKey = source === 'billing' ? getSelectedBillingMonth() : getSelectedDashboardMonth();
+  const monthLabel = formatMonthLabel(monthKey);
+  const serviceBalance = getOverallServiceHoursBalance(monthKey);
+  const workforceBalance = source === 'dashboard'
+    ? getWorkforceMonthlyBalance(monthKey)
+    : null;
+
+  let title = 'Detalle';
+  let subtitle = monthLabel;
+  let body = '';
+
+  if (key.startsWith('worker:')) {
+    const workerId = key.slice('worker:'.length);
+    const worker = getWorkerSummaries({ applyFilters: false }).find((item) => item.id === workerId);
+    if (!worker) return;
+    const status = getWorkerDrilldownStatus(worker);
+    title = worker.name || 'Operario';
+    subtitle = `Detalle mensual · ${monthLabel}`;
+    body = `${renderDrilldownSummary([
+      { label: 'Jornada semanal', value: worker.targetHours == null ? 'Sin objetivo' : `${formatHours(worker.targetHours)} hs` },
+      { label: 'Objetivo mensual', value: worker.monthlyTargetHours == null ? '—' : `${formatHours(worker.monthlyTargetHours)} hs` },
+      { label: 'Horas asignadas', value: `${formatHours(worker.monthlyHours)} hs` },
+      { label: 'Estado', value: status.label },
+    ])}${renderWorkerDrilldownList([worker], monthLabel)}`;
+  } else if (key.startsWith('service:')) {
+    const serviceId = key.slice('service:'.length);
+    const service = serviceBalance.summaries.find((item) => item.id === serviceId);
+    if (!service) return;
+    title = service.name || 'Servicio';
+    subtitle = `Detalle mensual · ${monthLabel}`;
+    body = `${renderDrilldownSummary([
+      { label: 'Proyección base', value: service.projectedBilledHours == null ? 'Pendiente' : `${formatHours(service.projectedBilledHours)} hs` },
+      { label: 'Facturación ajustada', value: service.billedHours == null ? 'Pendiente' : `${formatHours(service.billedHours)} hs` },
+      { label: 'Horas operativas', value: `${formatHours(service.assignedHours)} hs` },
+      { label: 'Diferencia', value: service.difference == null ? '—' : `${service.difference > 0 ? '+' : ''}${formatHours(service.difference)} hs` },
+    ])}${renderServiceDrilldownList([service], monthLabel)}`;
+  } else {
+    const workers = workforceBalance?.workers || [];
+    const fixedWorkers = workforceBalance?.fixedWorkers || [];
+    const sortByAbsDifference = (items) => [...items].sort((a, b) => Math.abs(Number(b.monthlyDifference || 0)) - Math.abs(Number(a.monthlyDifference || 0)));
+    const sortServicesByDifference = (items) => [...items].sort((a, b) => Math.abs(Number(b.difference || 0)) - Math.abs(Number(a.difference || 0)));
+
+    switch (key) {
+      case 'workers-all':
+        title = 'Operarios totales';
+        subtitle = `${workers.length} operario${workers.length === 1 ? '' : 's'} cargado${workers.length === 1 ? '' : 's'} · ${monthLabel}`;
+        body = renderWorkerDrilldownList(workers, monthLabel);
+        break;
+      case 'workers-visible': {
+        const visible = getWorkerSummaries({ applyFilters: true });
+        title = 'Operarios visibles';
+        subtitle = `${visible.length} resultado${visible.length === 1 ? '' : 's'} según los filtros actuales`;
+        body = renderWorkerDrilldownList(visible, monthLabel);
+        break;
+      }
+      case 'workers-with-target':
+        title = 'Operarios con jornada asignada';
+        subtitle = `${fixedWorkers.length} operario${fixedWorkers.length === 1 ? '' : 's'} con objetivo semanal definido`;
+        body = renderWorkerDrilldownList(fixedWorkers, monthLabel);
+        break;
+      case 'workers-without-target':
+        title = 'Operarios sin jornada asignada';
+        subtitle = `${workforceBalance.hourlyWorkers.length} operario${workforceBalance.hourlyWorkers.length === 1 ? '' : 's'} sin objetivo fijo`;
+        body = renderWorkerDrilldownList(workforceBalance.hourlyWorkers, monthLabel);
+        break;
+      case 'workers-balanced':
+        title = 'Operarios con horas equilibradas';
+        subtitle = `${workforceBalance.balancedWorkers.length} operario${workforceBalance.balancedWorkers.length === 1 ? '' : 's'} en objetivo para ${monthLabel}`;
+        body = renderWorkerDrilldownList(workforceBalance.balancedWorkers, monthLabel);
+        break;
+      case 'workers-missing':
+        title = 'Operarios por debajo de jornada';
+        subtitle = `${workforceBalance.missingWorkers.length} operario${workforceBalance.missingWorkers.length === 1 ? '' : 's'} · ${formatHours(workforceBalance.totalMissingHours)} hs acumuladas sin asignar`;
+        body = renderWorkerDrilldownList(sortByAbsDifference(workforceBalance.missingWorkers), monthLabel);
+        break;
+      case 'workers-excess':
+        title = 'Operarios por encima de jornada';
+        subtitle = `${workforceBalance.excessWorkers.length} operario${workforceBalance.excessWorkers.length === 1 ? '' : 's'} · ${formatHours(workforceBalance.totalExcessHours)} hs excedidas acumuladas`;
+        body = renderWorkerDrilldownList(sortByAbsDifference(workforceBalance.excessWorkers), monthLabel);
+        break;
+      case 'workforce-target':
+        title = 'Horas objetivo de la dotación';
+        subtitle = `${formatHours(workforceBalance.totalTargetHours)} hs objetivo · ${monthLabel}`;
+        body = `${renderDrilldownSummary([
+          { label: 'Operarios con jornada', value: workforceBalance.fixedWorkers.length },
+          { label: 'Objetivo total', value: `${formatHours(workforceBalance.totalTargetHours)} hs` },
+        ])}${renderWorkerDrilldownList(fixedWorkers, monthLabel)}`;
+        break;
+      case 'workforce-assigned-fixed':
+        title = 'Horas efectivamente asignadas';
+        subtitle = `${formatHours(workforceBalance.totalAssignedFixedHours)} hs asignadas a operarios con jornada objetivo · ${monthLabel}`;
+        body = renderWorkerDrilldownList(sortByAbsDifference(fixedWorkers), monthLabel);
+        break;
+      case 'workforce-assigned-all':
+        title = 'Horas efectivamente asignadas';
+        subtitle = `${formatHours(workforceBalance.totalAssignedHours)} hs asignadas a toda la dotación · ${monthLabel}`;
+        body = renderWorkerDrilldownList([...workers].sort((a, b) => Number(b.monthlyHours || 0) - Number(a.monthlyHours || 0)), monthLabel);
+        break;
+      case 'workforce-net':
+        title = 'Neto de dotación vs jornada';
+        subtitle = `${workforceBalance.targetNetDifference > 0 ? '+' : ''}${formatHours(workforceBalance.targetNetDifference)} hs · asignadas menos objetivo`;
+        body = `${renderDrilldownSummary([
+          { label: 'Objetivo total', value: `${formatHours(workforceBalance.totalTargetHours)} hs` },
+          { label: 'Asignadas', value: `${formatHours(workforceBalance.totalAssignedFixedHours)} hs` },
+          { label: 'Neto', value: `${workforceBalance.targetNetDifference > 0 ? '+' : ''}${formatHours(workforceBalance.targetNetDifference)} hs` },
+        ])}${renderWorkerDrilldownList(sortByAbsDifference(fixedWorkers), monthLabel)}`;
+        break;
+      case 'missing-hours':
+        title = 'Horas de jornada sin asignar';
+        subtitle = `${formatHours(workforceBalance.totalMissingHours)} hs acumuladas · ${workforceBalance.missingWorkers.length} operarios`;
+        body = renderWorkerDrilldownList(sortByAbsDifference(workforceBalance.missingWorkers), monthLabel);
+        break;
+      case 'excess-hours':
+        title = 'Horas excedidas sobre jornada';
+        subtitle = `${formatHours(workforceBalance.totalExcessHours)} hs acumuladas · ${workforceBalance.excessWorkers.length} operarios`;
+        body = renderWorkerDrilldownList(sortByAbsDifference(workforceBalance.excessWorkers), monthLabel);
+        break;
+      case 'hourly-assigned':
+        title = 'Personal sin objetivo fijo';
+        subtitle = `${formatHours(workforceBalance.hourlyAssignedHours)} hs asignadas · ${workforceBalance.hourlyWorkers.length} operarios`;
+        body = renderWorkerDrilldownList(workforceBalance.hourlyWorkers, monthLabel);
+        break;
+      case 'billing-projected': {
+        const projected = serviceBalance.summaries.filter((service) => service.projectedBilledHours != null);
+        const projectedHours = Number(projected.reduce((sum, service) => sum + Number(service.projectedBilledHours || 0), 0).toFixed(2));
+        title = 'Proyección base';
+        subtitle = `${formatHours(projectedHours)} hs proyectadas antes de ajustes · ${monthLabel}`;
+        body = `${renderDrilldownSummary([
+          { label: 'Servicios con proyección', value: projected.length },
+          { label: 'Horas proyectadas', value: `${formatHours(projectedHours)} hs` },
+        ])}${renderServiceDrilldownList(projected, monthLabel)}`;
+        break;
+      }
+      case 'billing-adjustments': {
+        const adjustedServices = serviceBalance.summaries.filter((service) => Math.abs(Number(service.billingAdjustmentsHours || 0)) > 0.01);
+        const adjustmentHours = Number(adjustedServices.reduce((sum, service) => sum + Number(service.billingAdjustmentsHours || 0), 0).toFixed(2));
+        title = 'Ajustes registrados';
+        subtitle = `${adjustmentHours > 0 ? '+' : ''}${formatHours(adjustmentHours)} hs en ${monthLabel}`;
+        body = `${renderDrilldownSummary([
+          { label: 'Servicios con ajustes', value: adjustedServices.length },
+          { label: 'Ajuste neto', value: `${adjustmentHours > 0 ? '+' : ''}${formatHours(adjustmentHours)} hs` },
+        ])}${renderServiceDrilldownList(adjustedServices, monthLabel)}`;
+        break;
+      }
+      case 'billing-estimated':
+      case 'services-billed':
+        title = 'Facturación estimada del mes';
+        subtitle = `${formatHours(serviceBalance.totalBilledHours)} hs proyectadas · ${monthLabel}`;
+        body = `${renderDrilldownSummary([
+          { label: 'Servicios con proyección', value: serviceBalance.configured.length },
+          { label: 'Servicios pendientes', value: serviceBalance.pending.length },
+          { label: 'Horas facturables', value: `${formatHours(serviceBalance.totalBilledHours)} hs` },
+        ])}${renderServiceDrilldownList(serviceBalance.summaries, monthLabel)}`;
+        break;
+      case 'services-assigned-configured':
+        title = 'Horas operativas en servicios con facturación';
+        subtitle = `${formatHours(serviceBalance.assignedHoursOnConfiguredServices)} hs · ${monthLabel}`;
+        body = renderServiceDrilldownList(sortServicesByDifference(serviceBalance.configured), monthLabel);
+        break;
+      case 'services-assigned-all':
+        title = 'Total operativo general';
+        subtitle = `${formatHours(serviceBalance.totalAssignedHours)} hs operativas · ${monthLabel}`;
+        body = renderServiceDrilldownList([...serviceBalance.summaries].sort((a, b) => Number(b.assignedHours || 0) - Number(a.assignedHours || 0)), monthLabel);
+        break;
+      case 'service-balance':
+        title = 'Balance operativo vs facturación';
+        subtitle = `${serviceBalance.difference > 0 ? '+' : ''}${formatHours(serviceBalance.difference)} hs · ${monthLabel}`;
+        body = renderServiceDrilldownList(sortServicesByDifference(serviceBalance.configured), monthLabel);
+        break;
+      case 'services-uncovered': {
+        const uncovered = getUncoveredServices().map((service) => getServiceHoursSummary(service, monthKey));
+        title = 'Servicios sin cobertura';
+        subtitle = `${uncovered.length} servicio${uncovered.length === 1 ? '' : 's'} sin asignaciones activas`;
+        body = renderServiceDrilldownList(uncovered, monthLabel);
+        break;
+      }
+      case 'billing-target':
+        title = 'Facturación vs objetivo de dotación';
+        subtitle = `${monthLabel} · comparación estructural`;
+        body = `${renderDrilldownSummary([
+          { label: 'Facturación estimada', value: `${formatHours(serviceBalance.totalBilledHours)} hs` },
+          { label: 'Objetivo dotación', value: `${formatHours(workforceBalance.totalTargetHours)} hs` },
+          { label: 'Diferencia', value: `${workforceBalance.billingTargetDifference > 0 ? '+' : ''}${formatHours(workforceBalance.billingTargetDifference)} hs` },
+        ])}<h4 class="dashboard-drilldown-section-title">Servicios que forman la facturación estimada</h4>${renderServiceDrilldownList(serviceBalance.summaries, monthLabel)}<h4 class="dashboard-drilldown-section-title">Operarios que forman el objetivo de dotación</h4>${renderWorkerDrilldownList(fixedWorkers, monthLabel)}`;
+        break;
+      case 'assigned-billing':
+        title = 'Asignadas vs facturación estimada';
+        subtitle = `${monthLabel} · comparación operativa`;
+        body = `${renderDrilldownSummary([
+          { label: 'Horas asignadas', value: `${formatHours(workforceBalance.totalAssignedHours)} hs` },
+          { label: 'Facturación estimada', value: `${formatHours(serviceBalance.totalBilledHours)} hs` },
+          { label: 'Diferencia', value: `${workforceBalance.operationalDifference > 0 ? '+' : ''}${formatHours(workforceBalance.operationalDifference)} hs` },
+        ])}<h4 class="dashboard-drilldown-section-title">Diferencia por servicio</h4>${renderServiceDrilldownList(sortServicesByDifference(serviceBalance.summaries), monthLabel)}`;
+        break;
+      default:
+        title = 'Detalle del indicador';
+        body = '<div class="empty-state">No hay un detalle disponible para este indicador.</div>';
+    }
+  }
+
+  if (el.dashboardDrilldownTitle) el.dashboardDrilldownTitle.textContent = title;
+  if (el.dashboardDrilldownSubtitle) el.dashboardDrilldownSubtitle.textContent = subtitle;
+  if (el.dashboardDrilldownBody) el.dashboardDrilldownBody.innerHTML = body;
+  if (!el.dashboardDrilldownDialog.open) el.dashboardDrilldownDialog.showModal();
+}
+
 function renderKpis(summaries, allWorkerSummaries = summaries) {
   const balance = getOverallServiceHoursBalance();
   const workforceBalance = getWorkforceMonthlyBalance(balance.monthKey, allWorkerSummaries);
@@ -2556,6 +2859,7 @@ function renderKpis(summaries, allWorkerSummaries = summaries) {
         : `${balance.configured.length} servicios · ${monthLabel}`,
       className: 'kpi-primary',
       helpKey: 'billing',
+      drilldownKey: 'billing-estimated',
     },
     {
       label: 'Objetivo mensual de dotación',
@@ -2563,6 +2867,7 @@ function renderKpis(summaries, allWorkerSummaries = summaries) {
       foot: `${workforceBalance.fixedWorkers.length} operario${workforceBalance.fixedWorkers.length === 1 ? '' : 's'} con jornada objetivo · ${monthLabel}`,
       className: 'kpi-primary',
       helpKey: 'target',
+      drilldownKey: 'workforce-target',
     },
     {
       label: 'Dotación total',
@@ -2570,6 +2875,7 @@ function renderKpis(summaries, allWorkerSummaries = summaries) {
       foot: `${workforceBalance.workersWithTargetCount} con jornada (${formatPercent(workforceBalance.workersWithTargetPercent)}) · ${workforceBalance.workersWithoutTargetCount} sin jornada (${formatPercent(workforceBalance.workersWithoutTargetPercent)})`,
       className: 'kpi-primary',
       helpKey: 'headcount',
+      drilldownKey: 'workers-all',
     },
     {
       label: 'Facturación vs objetivo de dotación',
@@ -2577,6 +2883,7 @@ function renderKpis(summaries, allWorkerSummaries = summaries) {
       foot: billingTargetFoot,
       className: `kpi-primary kpi-strategic ${billingTargetClass}`,
       helpKey: 'billingTarget',
+      drilldownKey: 'billing-target',
     },
     {
       label: 'Horas efectivamente asignadas',
@@ -2584,6 +2891,7 @@ function renderKpis(summaries, allWorkerSummaries = summaries) {
       foot: `Cronograma proyectado a los días reales de ${monthLabel}`,
       className: 'kpi-primary',
       helpKey: 'assigned',
+      drilldownKey: 'workforce-assigned-all',
     },
     {
       label: 'Asignadas vs facturación',
@@ -2591,6 +2899,7 @@ function renderKpis(summaries, allWorkerSummaries = summaries) {
       foot: commercialFoot,
       className: `kpi-primary ${commercialClass}`,
       helpKey: 'assignedBilling',
+      drilldownKey: 'assigned-billing',
     },
     {
       label: 'Horas faltantes vs jornada',
@@ -2598,6 +2907,7 @@ function renderKpis(summaries, allWorkerSummaries = summaries) {
       foot: `${workforceBalance.missingWorkers.length} operario${workforceBalance.missingWorkers.length === 1 ? '' : 's'} por debajo · ${formatPercent(workforceBalance.missingHoursPercent)} del objetivo total`,
       className: 'kpi-primary kpi-tone-missing',
       helpKey: 'missing',
+      drilldownKey: 'workers-missing',
     },
     {
       label: 'Horas excedidas vs jornada',
@@ -2605,6 +2915,7 @@ function renderKpis(summaries, allWorkerSummaries = summaries) {
       foot: `${workforceBalance.excessWorkers.length} operario${workforceBalance.excessWorkers.length === 1 ? '' : 's'} por encima · ${formatPercent(workforceBalance.excessHoursPercent)} del objetivo total`,
       className: 'kpi-primary kpi-tone-over',
       helpKey: 'excess',
+      drilldownKey: 'workers-excess',
     },
     {
       label: 'Neto de dotación vs jornada',
@@ -2612,23 +2923,26 @@ function renderKpis(summaries, allWorkerSummaries = summaries) {
       foot: targetNetFoot,
       className: `kpi-primary ${targetNetClass}`,
       helpKey: 'net',
+      drilldownKey: 'workforce-net',
     },
     {
       label: 'Servicios sin cobertura',
       value: uncoveredServices,
       foot: 'Sin ninguna asignación activa',
+      drilldownKey: 'services-uncovered',
     },
     {
       label: 'Operarios visibles',
       value: summaries.length,
       foot: `${unassignedWorkers} sin servicio asignado`,
+      drilldownKey: 'workers-visible',
     },
   ];
 
   el.kpiCards.innerHTML = cards
     .map(
       (card) => `
-        <article class="kpi-card card-lite ${card.className || ''}">
+        <article class="kpi-card card-lite ${card.className || ''} ${card.drilldownKey ? 'metric-drilldown-clickable' : ''}" ${card.drilldownKey ? `data-dashboard-drilldown="${card.drilldownKey}" role="button" tabindex="0" title="Ver detalle"` : ''}>
           <div class="kpi-label-row">
             <span class="kpi-label">${card.label}</span>
             ${card.helpKey ? `<button class="metric-info-btn" type="button" data-dashboard-help="${card.helpKey}" aria-label="Información sobre ${escapeHtml(card.label)}" title="¿Qué significa?">i</button>` : ''}
@@ -2689,9 +3003,9 @@ function renderWorkforceMonthlyBalance(summaries = null) {
         </div>
         <div class="workforce-balance-statuses">
           <button id="balanceOverviewHelpBtn" class="balance-help-btn" type="button" data-dashboard-help="overview">? Cómo leer este balance</button>
-          <span class="status-pill ${capacityClass}">${capacityLabel}</span>
-          <span class="status-pill ${assignmentClass}">${assignmentLabel}</span>
-          <span class="status-pill ${commercialClass}">${commercialLabel}</span>
+          <span class="status-pill ${capacityClass} metric-drilldown-clickable compact-drilldown" data-dashboard-drilldown="billing-target" role="button" tabindex="0" title="Ver detalle">${capacityLabel}</span>
+          <span class="status-pill ${assignmentClass} metric-drilldown-clickable compact-drilldown" data-dashboard-drilldown="workforce-net" role="button" tabindex="0" title="Ver detalle">${assignmentLabel}</span>
+          <span class="status-pill ${commercialClass} metric-drilldown-clickable compact-drilldown" data-dashboard-drilldown="assigned-billing" role="button" tabindex="0" title="Ver detalle">${commercialLabel}</span>
         </div>
       </div>
 
@@ -2704,32 +3018,32 @@ function renderWorkforceMonthlyBalance(summaries = null) {
           <button class="metric-info-btn" type="button" data-dashboard-help="headcount" aria-label="Información sobre Estado de la dotación" title="¿Qué significa?">i</button>
         </div>
         <div class="workforce-headcount-grid">
-          <div class="workforce-headcount-metric headcount-total">
+          <div class="workforce-headcount-metric headcount-total metric-drilldown-clickable" data-dashboard-drilldown="workers-all" role="button" tabindex="0" title="Ver operarios">
             <span>Operarios totales</span>
             <strong>${balance.totalWorkersCount}</strong>
             <small>100% de la dotación cargada</small>
           </div>
-          <div class="workforce-headcount-metric">
+          <div class="workforce-headcount-metric metric-drilldown-clickable" data-dashboard-drilldown="workers-with-target" role="button" tabindex="0" title="Ver operarios">
             <span>Con jornada asignada</span>
             <strong>${balance.workersWithTargetCount}</strong>
             <small>${formatPercent(balance.workersWithTargetPercent)} del total</small>
           </div>
-          <div class="workforce-headcount-metric headcount-neutral">
+          <div class="workforce-headcount-metric headcount-neutral metric-drilldown-clickable" data-dashboard-drilldown="workers-without-target" role="button" tabindex="0" title="Ver operarios">
             <span>Sin jornada asignada</span>
             <strong>${balance.workersWithoutTargetCount}</strong>
             <small>${formatPercent(balance.workersWithoutTargetPercent)} del total</small>
           </div>
-          <div class="workforce-headcount-metric headcount-balanced">
+          <div class="workforce-headcount-metric headcount-balanced metric-drilldown-clickable" data-dashboard-drilldown="workers-balanced" role="button" tabindex="0" title="Ver operarios equilibrados">
             <span>Horas equilibradas</span>
             <strong>${balance.balancedWorkers.length}</strong>
             <small>${formatPercent(balance.balancedWorkersPercent)} de quienes tienen jornada</small>
           </div>
-          <div class="workforce-headcount-metric headcount-missing">
+          <div class="workforce-headcount-metric headcount-missing metric-drilldown-clickable" data-dashboard-drilldown="workers-missing" role="button" tabindex="0" title="Ver operarios por debajo de jornada">
             <span>Por debajo de jornada</span>
             <strong>${balance.missingWorkers.length}</strong>
             <small>${formatPercent(balance.missingWorkersPercent)} de quienes tienen jornada</small>
           </div>
-          <div class="workforce-headcount-metric headcount-over">
+          <div class="workforce-headcount-metric headcount-over metric-drilldown-clickable" data-dashboard-drilldown="workers-excess" role="button" tabindex="0" title="Ver operarios por encima de jornada">
             <span>Por encima de jornada</span>
             <strong>${balance.excessWorkers.length}</strong>
             <small>${formatPercent(balance.excessWorkersPercent)} de quienes tienen jornada</small>
@@ -2739,7 +3053,7 @@ function renderWorkforceMonthlyBalance(summaries = null) {
       </div>
 
       <div class="workforce-balance-summary workforce-balance-summary-priority">
-        <div class="hours-balance-metric balance-metric-main">
+        <div class="hours-balance-metric balance-metric-main metric-drilldown-clickable" data-dashboard-drilldown="workforce-target" role="button" tabindex="0" title="Ver operarios que forman este total">
           <div class="metric-title-row">
             <span>Horas objetivo de la dotación</span>
             <button class="metric-info-btn" type="button" data-dashboard-help="target" aria-label="Información sobre Horas objetivo de la dotación" title="¿Qué significa?">i</button>
@@ -2747,7 +3061,7 @@ function renderWorkforceMonthlyBalance(summaries = null) {
           <strong>${formatHours(balance.totalTargetHours)} hs</strong>
           <small>Lo que deberían cumplir en ${escapeHtml(monthLabel)} los operarios con jornada objetivo.</small>
         </div>
-        <div class="hours-balance-metric balance-metric-main">
+        <div class="hours-balance-metric balance-metric-main metric-drilldown-clickable" data-dashboard-drilldown="workforce-assigned-fixed" role="button" tabindex="0" title="Ver detalle de operarios">
           <div class="metric-title-row">
             <span>Horas efectivamente asignadas</span>
             <button class="metric-info-btn" type="button" data-dashboard-help="assigned" aria-label="Información sobre Horas efectivamente asignadas" title="¿Qué significa?">i</button>
@@ -2755,7 +3069,7 @@ function renderWorkforceMonthlyBalance(summaries = null) {
           <strong>${formatHours(balance.totalAssignedFixedHours)} hs</strong>
           <small>Horas del cronograma de esos mismos operarios durante el mes.</small>
         </div>
-        <div class="hours-balance-metric balance-metric-main ${balance.targetNetDifference < -0.01 ? 'balance-metric-missing' : balance.targetNetDifference > 0.01 ? 'balance-metric-over' : 'balance-metric-balanced'}">
+        <div class="hours-balance-metric balance-metric-main metric-drilldown-clickable ${balance.targetNetDifference < -0.01 ? 'balance-metric-missing' : balance.targetNetDifference > 0.01 ? 'balance-metric-over' : 'balance-metric-balanced'}" data-dashboard-drilldown="workforce-net" role="button" tabindex="0" title="Ver detalle por operario">
           <div class="metric-title-row">
             <span>Neto contra jornada objetivo</span>
             <button class="metric-info-btn" type="button" data-dashboard-help="net" aria-label="Información sobre Neto contra jornada objetivo" title="¿Qué significa?">i</button>
@@ -2769,7 +3083,7 @@ function renderWorkforceMonthlyBalance(summaries = null) {
             ? 'La suma asignada coincide con la suma de jornadas objetivo.'
             : `${formatPercent(balance.targetNetDifferencePercent)} ${balance.targetNetDifference < 0 ? 'por debajo' : 'por encima'} del objetivo total.`}</small>
         </div>
-        <div class="hours-balance-metric balance-metric-main">
+        <div class="hours-balance-metric balance-metric-main metric-drilldown-clickable" data-dashboard-drilldown="billing-estimated" role="button" tabindex="0" title="Ver servicios que forman este total">
           <div class="metric-title-row">
             <span>Facturación estimada</span>
             <button class="metric-info-btn" type="button" data-dashboard-help="billing" aria-label="Información sobre Facturación estimada" title="¿Qué significa?">i</button>
@@ -2777,7 +3091,7 @@ function renderWorkforceMonthlyBalance(summaries = null) {
           <strong>${formatHours(balance.serviceBalance.totalBilledHours)} hs</strong>
           <small>Horas que se proyecta cobrar a los clientes durante el mes.</small>
         </div>
-        <div class="hours-balance-metric balance-metric-main balance-metric-strategic ${balance.billingTargetDifference < -0.01 ? 'balance-metric-missing' : balance.billingTargetDifference > 0.01 ? 'balance-metric-warning' : 'balance-metric-balanced'}">
+        <div class="hours-balance-metric balance-metric-main balance-metric-strategic metric-drilldown-clickable ${balance.billingTargetDifference < -0.01 ? 'balance-metric-missing' : balance.billingTargetDifference > 0.01 ? 'balance-metric-warning' : 'balance-metric-balanced'}" data-dashboard-drilldown="billing-target" role="button" tabindex="0" title="Ver qué forma este balance">
           <div class="metric-title-row">
             <span>Facturación vs objetivo de dotación</span>
             <button class="metric-info-btn" type="button" data-dashboard-help="billingTarget" aria-label="Información sobre Facturación vs objetivo de dotación" title="¿Qué significa?">i</button>
@@ -2793,7 +3107,7 @@ function renderWorkforceMonthlyBalance(summaries = null) {
               ? `Hay ${formatHours(Math.abs(balance.billingTargetDifference))} hs de jornada objetivo por encima de lo que se estima cobrar.`
               : `Hay ${formatHours(balance.billingTargetDifference)} hs facturables por encima de la capacidad objetivo de la dotación.`}</small>
         </div>
-        <div class="hours-balance-metric balance-metric-main ${balance.operationalDifference > 0.01 ? 'balance-metric-missing' : balance.operationalDifference < -0.01 ? 'balance-metric-warning' : 'balance-metric-balanced'}">
+        <div class="hours-balance-metric balance-metric-main metric-drilldown-clickable ${balance.operationalDifference > 0.01 ? 'balance-metric-missing' : balance.operationalDifference < -0.01 ? 'balance-metric-warning' : 'balance-metric-balanced'}" data-dashboard-drilldown="assigned-billing" role="button" tabindex="0" title="Ver diferencia por servicio">
           <div class="metric-title-row">
             <span>Asignadas vs facturación estimada</span>
             <button class="metric-info-btn" type="button" data-dashboard-help="assignedBilling" aria-label="Información sobre Asignadas vs facturación estimada" title="¿Qué significa?">i</button>
@@ -2809,7 +3123,7 @@ function renderWorkforceMonthlyBalance(summaries = null) {
               ? `Hay ${formatHours(balance.operationalDifference)} hs de personal por encima de lo estimado a facturar.`
               : `Faltan ${formatHours(Math.abs(balance.operationalDifference))} hs asignadas para cubrir lo estimado a facturar.`}</small>
         </div>
-        <div class="hours-balance-metric balance-metric-alert balance-metric-missing">
+        <div class="hours-balance-metric balance-metric-alert balance-metric-missing metric-drilldown-clickable" data-dashboard-drilldown="missing-hours" role="button" tabindex="0" title="Ver operarios con horas faltantes">
           <div class="metric-title-row">
             <span>Horas de jornada sin asignar</span>
             <button class="metric-info-btn" type="button" data-dashboard-help="missing" aria-label="Información sobre Horas de jornada sin asignar" title="¿Qué significa?">i</button>
@@ -2817,7 +3131,7 @@ function renderWorkforceMonthlyBalance(summaries = null) {
           <strong>${formatHours(balance.totalMissingHours)} hs</strong>
           <small>${balance.missingWorkers.length} operario${balance.missingWorkers.length === 1 ? '' : 's'} por debajo de su objetivo · ${formatPercent(balance.missingHoursPercent)} del total objetivo.</small>
         </div>
-        <div class="hours-balance-metric balance-metric-alert balance-metric-over">
+        <div class="hours-balance-metric balance-metric-alert balance-metric-over metric-drilldown-clickable" data-dashboard-drilldown="excess-hours" role="button" tabindex="0" title="Ver operarios con horas excedidas">
           <div class="metric-title-row">
             <span>Horas excedidas sobre jornada</span>
             <button class="metric-info-btn" type="button" data-dashboard-help="excess" aria-label="Información sobre Horas excedidas sobre jornada" title="¿Qué significa?">i</button>
@@ -2825,7 +3139,7 @@ function renderWorkforceMonthlyBalance(summaries = null) {
           <strong>${formatHours(balance.totalExcessHours)} hs</strong>
           <small>${balance.excessWorkers.length} operario${balance.excessWorkers.length === 1 ? '' : 's'} por encima de su objetivo · ${formatPercent(balance.excessHoursPercent)} del total objetivo.</small>
         </div>
-        ${balance.hourlyWorkers.length ? `<div class="hours-balance-metric">
+        ${balance.hourlyWorkers.length ? `<div class="hours-balance-metric metric-drilldown-clickable" data-dashboard-drilldown="hourly-assigned" role="button" tabindex="0" title="Ver personal sin objetivo fijo">
           <span>Personal sin objetivo fijo</span>
           <strong>${formatHours(balance.hourlyAssignedHours)} hs</strong>
           <small>${balance.hourlyWorkers.length} operario${balance.hourlyWorkers.length === 1 ? '' : 's'}; estas horas sí entran en asignadas vs facturación, pero no en déficit/exceso contra jornada.</small>
@@ -2854,13 +3168,13 @@ function renderWorkforceMonthlyBalance(summaries = null) {
         <div class="hours-balance-list">
           ${deviations.length
             ? deviations.map((worker) => `
-                <div class="hours-balance-row workforce-worker-row">
+                <button class="hours-balance-row workforce-worker-row dashboard-drilldown-row-button" type="button" data-dashboard-drilldown="worker:${worker.id}" title="Ver detalle de ${escapeHtml(worker.name)}">
                   <div>
                     <strong>${escapeHtml(worker.name)}</strong>
                     <p>Objetivo mes: ${formatHours(worker.monthlyTargetHours)} hs · Asignadas: ${formatHours(worker.monthlyHours)} hs · Objetivo semanal: ${formatHours(worker.targetHours)} hs</p>
                   </div>
                   ${renderDifferencePill(worker)}
-                </div>
+                </button>
               `).join('')
             : '<div class="empty-state">Todos los operarios con jornada fija están equilibrados para el mes seleccionado.</div>'}
         </div>
@@ -2896,19 +3210,19 @@ function renderServiceHoursBalance() {
           <h3>Balance mensual · ${escapeHtml(monthLabel)}</h3>
           <span class="muted">Facturación mensual proyectada y ajustada contra horas operativas asignadas</span>
         </div>
-        <span class="status-pill ${differenceClass}">${differenceLabel}</span>
+        <span class="status-pill ${differenceClass} metric-drilldown-clickable compact-drilldown" data-dashboard-drilldown="service-balance" role="button" tabindex="0" title="Ver detalle">${differenceLabel}</span>
       </div>
 
       <div class="hours-balance-summary">
-        <div class="hours-balance-metric">
+        <div class="hours-balance-metric metric-drilldown-clickable" data-dashboard-drilldown="services-billed" role="button" tabindex="0" title="Ver servicios">
           <span>Horas facturadas cargadas</span>
           <strong>${formatHours(balance.totalBilledHours)} hs</strong>
         </div>
-        <div class="hours-balance-metric">
+        <div class="hours-balance-metric metric-drilldown-clickable" data-dashboard-drilldown="services-assigned-configured" role="button" tabindex="0" title="Ver servicios">
           <span>Horas operativas en servicios cargados</span>
           <strong>${formatHours(balance.assignedHoursOnConfiguredServices)} hs</strong>
         </div>
-        <div class="hours-balance-metric">
+        <div class="hours-balance-metric metric-drilldown-clickable" data-dashboard-drilldown="services-assigned-all" role="button" tabindex="0" title="Ver servicios">
           <span>Total operativo general</span>
           <strong>${formatHours(balance.totalAssignedHours)} hs</strong>
         </div>
@@ -2932,13 +3246,13 @@ function renderServiceHoursBalance() {
         <div class="hours-balance-list">
           ${rows.length
             ? rows.map((service) => `
-                <div class="hours-balance-row">
+                <button class="hours-balance-row dashboard-drilldown-row-button" type="button" data-dashboard-drilldown="service:${service.id}" title="Ver detalle de ${escapeHtml(service.name)}">
                   <div>
                     <strong>${escapeHtml(service.name)}</strong>
                     <p>Facturadas mes: ${service.billedHours == null ? 'Pendiente' : `${formatHours(service.billedHours)} hs`} · Operativas mes: ${formatHours(service.assignedHours)} hs</p>
                   </div>
                   ${renderServiceHoursPill(service)}
-                </div>
+                </button>
               `).join('')
             : '<div class="empty-state">No hay diferencias entre las horas mensuales facturadas y las operativas.</div>'}
         </div>
@@ -3168,14 +3482,14 @@ function renderBilling() {
 
   if (el.billingKpiCards) {
     const cards = [
-      { label: 'Proyección base', value: `${formatHours(projectedTotal)} hs`, foot: monthLabel },
-      { label: 'Ajustes registrados', value: `${adjustmentsTotal > 0 ? '+' : ''}${formatHours(adjustmentsTotal)} hs`, foot: 'Descuentos y adicionales del mes' },
-      { label: 'Facturación ajustada', value: `${formatHours(adjustedTotal)} hs`, foot: 'Proyección más novedades cargadas' },
-      { label: 'Horas operativas', value: `${formatHours(operativeTotal)} hs`, foot: 'Cronograma activo proyectado al mes' },
-      { label: 'Balance comparable', value: `${difference > 0 ? '+' : ''}${formatHours(difference)} hs`, foot: difference > 0 ? 'Más horas operativas que facturables' : difference < 0 ? 'Cobertura operativa por debajo de lo facturable' : 'Horas alineadas' },
+      { label: 'Proyección base', value: `${formatHours(projectedTotal)} hs`, foot: monthLabel, drilldownKey: 'billing-projected' },
+      { label: 'Ajustes registrados', value: `${adjustmentsTotal > 0 ? '+' : ''}${formatHours(adjustmentsTotal)} hs`, foot: 'Descuentos y adicionales del mes', drilldownKey: 'billing-adjustments' },
+      { label: 'Facturación ajustada', value: `${formatHours(adjustedTotal)} hs`, foot: 'Proyección más novedades cargadas', drilldownKey: 'services-billed' },
+      { label: 'Horas operativas', value: `${formatHours(operativeTotal)} hs`, foot: 'Cronograma activo proyectado al mes', drilldownKey: 'services-assigned-all' },
+      { label: 'Balance comparable', value: `${difference > 0 ? '+' : ''}${formatHours(difference)} hs`, foot: difference > 0 ? 'Más horas operativas que facturables' : difference < 0 ? 'Cobertura operativa por debajo de lo facturable' : 'Horas alineadas', drilldownKey: 'service-balance' },
     ];
     el.billingKpiCards.innerHTML = cards.map((card) => `
-      <article class="kpi-card card-lite">
+      <article class="kpi-card card-lite metric-drilldown-clickable" data-dashboard-drilldown="${card.drilldownKey}" data-drilldown-source="billing" role="button" tabindex="0" title="Ver detalle">
         <span class="kpi-label">${escapeHtml(card.label)}</span>
         <strong class="kpi-value">${escapeHtml(card.value)}</strong>
         <small class="kpi-foot">${escapeHtml(card.foot)}</small>
@@ -10182,11 +10496,32 @@ function bindEvents() {
     });
   });
 
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    const drilldownTarget = event.target.closest('[data-dashboard-drilldown]');
+    if (!drilldownTarget || drilldownTarget.tagName === 'BUTTON') return;
+    event.preventDefault();
+    openDashboardDrilldown(
+      drilldownTarget.dataset.dashboardDrilldown || '',
+      drilldownTarget.dataset.drilldownSource || 'dashboard'
+    );
+  });
+
   document.addEventListener('click', (event) => {
     const helpButton = event.target.closest('[data-dashboard-help]');
     if (helpButton) {
       event.preventDefault();
       openDashboardHelp(helpButton.dataset.dashboardHelp || 'overview');
+      return;
+    }
+
+    const drilldownTarget = event.target.closest('[data-dashboard-drilldown]');
+    if (drilldownTarget) {
+      event.preventDefault();
+      openDashboardDrilldown(
+        drilldownTarget.dataset.dashboardDrilldown || '',
+        drilldownTarget.dataset.drilldownSource || 'dashboard'
+      );
       return;
     }
     if (event.target.closest('.global-search-shell')) return;
@@ -10230,6 +10565,10 @@ function boot() {
       dashboardHelpDialog: $('dashboardHelpDialog'),
       dashboardHelpTitle: $('dashboardHelpTitle'),
       dashboardHelpBody: $('dashboardHelpBody'),
+      dashboardDrilldownDialog: $('dashboardDrilldownDialog'),
+      dashboardDrilldownTitle: $('dashboardDrilldownTitle'),
+      dashboardDrilldownSubtitle: $('dashboardDrilldownSubtitle'),
+      dashboardDrilldownBody: $('dashboardDrilldownBody'),
       serviceHoursBalance: $('serviceHoursBalance'),
       criticalWorkers: $('criticalWorkers'),
       serviceGaps: $('serviceGaps'),

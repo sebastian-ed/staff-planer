@@ -76,3 +76,7 @@ Se agregó al Dashboard un bloque "Estado de la dotación" que contabiliza autom
 - Porcentajes de equilibrio/déficit/exceso calculados sobre los operarios que sí tienen jornada objetivo.
 
 No requiere cambios de base de datos ni ejecutar SQL. La PWA actualiza su caché automáticamente a una nueva versión al publicar estos archivos.
+
+
+## Detalle interactivo de indicadores
+Los indicadores del Control mensual de horas, Estado de la dotación y balances mensuales ahora son clickeables. Al seleccionar un KPI se abre un detalle con los operarios o servicios que forman ese número. No requiere cambios de base de datos ni SQL adicional.

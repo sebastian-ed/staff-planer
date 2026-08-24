@@ -285,3 +285,7 @@ El porcentaje de desvío se calcula tomando como base el objetivo mensual de dot
 ### Conteo de dotación
 
 El Dashboard incluye un bloque de estado de dotación. Los porcentajes de operarios con/sin jornada se calculan sobre todos los operarios cargados. Los porcentajes de equilibrados, por debajo y por encima se calculan solamente sobre los operarios que tienen jornada objetivo, porque el personal sin objetivo fijo no puede clasificarse contra una jornada mensual.
+
+
+## Detalle interactivo de indicadores
+Los indicadores del Control mensual de horas, Estado de la dotación y balances mensuales ahora son clickeables. Al seleccionar un KPI se abre un detalle con los operarios o servicios que forman ese número. No requiere cambios de base de datos ni SQL adicional.

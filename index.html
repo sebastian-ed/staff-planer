@@ -823,6 +823,23 @@
     </div>
   </dialog>
 
+  <dialog id="dashboardDrilldownDialog" class="modal dashboard-drilldown-dialog">
+    <div class="modal-card dashboard-drilldown-card stack-md">
+      <div class="section-head with-action">
+        <div>
+          <span class="eyebrow">Detalle del indicador</span>
+          <h3 id="dashboardDrilldownTitle">Detalle</h3>
+          <p id="dashboardDrilldownSubtitle" class="muted dashboard-drilldown-subtitle"></p>
+        </div>
+        <button class="icon-btn" type="button" data-close="dashboardDrilldownDialog" aria-label="Cerrar detalle">✕</button>
+      </div>
+      <div id="dashboardDrilldownBody" class="dashboard-drilldown-body"></div>
+      <div class="modal-actions">
+        <button class="btn btn-primary" type="button" data-close="dashboardDrilldownDialog">Cerrar</button>
+      </div>
+    </div>
+  </dialog>
+
   <dialog id="workerDialog" class="modal">
     <form id="workerForm" class="modal-card stack-md">
       <div class="section-head with-action">

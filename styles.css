@@ -2109,3 +2109,134 @@ select option:disabled {
 @media (max-width: 430px) {
   .workforce-headcount-grid { grid-template-columns: 1fr; }
 }
+
+
+/* Drill-down interactivo de KPIs y balances mensuales */
+.metric-drilldown-clickable {
+  position: relative;
+  cursor: pointer;
+  transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+}
+.metric-drilldown-clickable:hover,
+.metric-drilldown-clickable:focus-visible {
+  transform: translateY(-1px);
+  border-color: rgba(184, 202, 255, 0.46) !important;
+  background: rgba(91, 140, 255, 0.08);
+  box-shadow: 0 10px 28px rgba(0,0,0,0.14);
+  outline: none;
+}
+.metric-drilldown-clickable::after {
+  content: 'Ver detalle';
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  color: rgba(219,229,255,0.62);
+  opacity: 0;
+  transition: opacity 0.16s ease;
+  pointer-events: none;
+}
+.metric-drilldown-clickable:hover::after,
+.metric-drilldown-clickable:focus-visible::after { opacity: 1; }
+.metric-drilldown-clickable .metric-info-btn {
+  position: relative;
+  z-index: 2;
+}
+
+.dashboard-drilldown-dialog {
+  width: min(980px, calc(100vw - 28px));
+}
+.dashboard-drilldown-card {
+  width: 100%;
+  max-height: min(88vh, 860px);
+  overflow: hidden;
+}
+.dashboard-drilldown-subtitle { margin-top: 4px; }
+.dashboard-drilldown-body {
+  display: grid;
+  gap: 16px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.dashboard-drilldown-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+.dashboard-drilldown-summary-item {
+  padding: 13px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.035);
+  min-width: 0;
+}
+.dashboard-drilldown-summary-item span,
+.dashboard-drilldown-summary-item small { display: block; color: var(--muted); }
+.dashboard-drilldown-summary-item span { font-size: 12px; }
+.dashboard-drilldown-summary-item strong { display: block; margin-top: 6px; font-size: 22px; }
+.dashboard-drilldown-summary-item small { margin-top: 5px; font-size: 11px; }
+.dashboard-drilldown-list { display: grid; gap: 9px; }
+.dashboard-drilldown-row {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  padding: 13px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.028);
+  color: var(--text);
+  text-align: left;
+}
+.dashboard-drilldown-row-button {
+  appearance: none;
+  font: inherit;
+  cursor: pointer;
+}
+.dashboard-drilldown-row-button:hover,
+.dashboard-drilldown-row-button:focus-visible {
+  border-color: rgba(184, 202, 255, 0.42);
+  background: rgba(91, 140, 255, 0.07);
+  outline: none;
+}
+.dashboard-drilldown-row-main { min-width: 0; flex: 1; display: grid; gap: 7px; }
+.dashboard-drilldown-row-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; }
+.dashboard-drilldown-row-title strong { font-size: 14px; }
+.dashboard-drilldown-meta { display: flex; flex-wrap: wrap; gap: 7px 16px; color: var(--muted); font-size: 12px; }
+.dashboard-drilldown-meta strong { color: var(--text); }
+.dashboard-drilldown-row-main > small { color: var(--muted); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.dashboard-drilldown-chevron { flex: 0 0 auto; font-size: 28px; color: rgba(184,202,255,0.7); }
+.dashboard-drilldown-section-title { margin: 3px 0 -4px; font-size: 14px; }
+
+/* Los listados del balance que ahora son botones deben conservar el layout previo */
+.hours-balance-row.dashboard-drilldown-row-button {
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+@media (max-width: 640px) {
+  .dashboard-drilldown-dialog { width: calc(100vw - 16px); }
+  .dashboard-drilldown-card { max-height: 92vh; }
+  .dashboard-drilldown-meta { display: grid; gap: 4px; }
+  .dashboard-drilldown-row { align-items: flex-start; }
+  .metric-drilldown-clickable::after { display: none; }
+}
+
+.metric-drilldown-clickable.compact-drilldown { transform: none; }
+.metric-drilldown-clickable.compact-drilldown::after { display: none; }
+.metric-drilldown-clickable.compact-drilldown:hover,
+.metric-drilldown-clickable.compact-drilldown:focus-visible {
+  transform: none;
+  filter: brightness(1.12);
+  box-shadow: 0 0 0 2px rgba(184,202,255,0.12);
+}
+.hours-balance-row.dashboard-drilldown-row-button {
+  width: 100%;
+  appearance: none;
+  background: rgba(255,255,255,0.03);
+}
