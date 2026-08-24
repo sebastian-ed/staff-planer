@@ -42,6 +42,7 @@ const DASHBOARD_HELP = {
         <li><strong>Horas excedidas vs jornada:</strong> suma todas las horas que los operarios están trabajando por encima de su objetivo.</li>
         <li><strong>Neto de dotación:</strong> horas asignadas menos horas objetivo.</li>
         <li><strong>Asignadas vs facturación:</strong> diferencia en horas y porcentaje entre lo que trabaja la dotación y lo que se estima facturar.</li>
+        <li><strong>Facturación vs objetivo de dotación:</strong> compara las horas que se estima cobrar con las horas que la empresa debería cubrir según la jornada objetivo de toda la dotación.</li>
       </ul>
       <div class="dashboard-help-example">
         <strong>Ejemplo simple</strong>
@@ -110,6 +111,19 @@ const DASHBOARD_HELP = {
       <p><strong>Qué significa:</strong> diferencia en horas y porcentaje entre lo que trabaja la dotación y lo que se estima facturar.</p>
       <p>Si las horas asignadas superan a las facturables, la operación está utilizando más horas de personal que las que proyecta cobrar. Si están por debajo, faltan horas operativas para alcanzar la proyección comercial.</p>
       <p>El objetivo es que este indicador tienda a un equilibrio operativo, sin perder de vista los faltantes y excedentes individuales de jornada.</p>
+    `,
+  },
+  billingTarget: {
+    title: 'Facturación vs objetivo de dotación',
+    html: `
+      <p><strong>Qué significa:</strong> compara las horas que estimás facturar a los clientes con las horas que debería trabajar toda la dotación según sus jornadas objetivo.</p>
+      <p><strong>Cómo se calcula:</strong> facturación estimada del mes menos objetivo mensual de dotación.</p>
+      <p>Si el resultado es negativo, tenés más horas de jornada objetivo que horas estimadas para cobrar: existe capacidad laboral que comercialmente todavía no está respaldada por servicios. Si es positivo, las horas estimadas a facturar superan la capacidad objetivo de la dotación y probablemente debas cubrirlas con horas excedidas, reorganización o mayor dotación.</p>
+      <div class="dashboard-help-example">
+        <strong>Ejemplo</strong>
+        <p>Si estimás facturar 2.500 hs y la dotación debería cumplir 2.800 hs, el balance es <strong>-300 hs</strong>: la dotación objetivo está <strong>10,7%</strong> por encima de las horas vendidas.</p>
+      </div>
+      <p>Este indicador es estructural: muestra si la cartera de servicios alcanza para absorber las horas que la empresa debería pagar según las jornadas objetivo, independientemente de cómo estén asignadas hoy.</p>
     `,
   },
 };
@@ -2158,6 +2172,18 @@ function getWorkforceMonthlyBalance(monthKey = getSelectedDashboardMonth(), summ
   const assignmentDifference = Number((totalAssignedFixedHours - totalTargetHours).toFixed(2));
   const commercialDifference = Number((serviceBalance.totalBilledHours - payrollReferenceHours).toFixed(2));
 
+  // Balance estructural cartera vs dotación: compara las horas estimadas a facturar
+  // con las horas que debería cumplir la dotación según su jornada objetivo.
+  // Negativo = hay más horas objetivo de personal que horas vendidas/proyectadas.
+  // Positivo = la demanda facturable supera la capacidad objetivo de la dotación.
+  const billingTargetDifference = Number((serviceBalance.totalBilledHours - totalTargetHours).toFixed(2));
+  const billingTargetDifferencePercent = totalTargetHours > 0
+    ? Number(((Math.abs(billingTargetDifference) / totalTargetHours) * 100).toFixed(2))
+    : null;
+  const billingTargetCoveragePercent = totalTargetHours > 0
+    ? Number(((serviceBalance.totalBilledHours / totalTargetHours) * 100).toFixed(2))
+    : null;
+
   // Balance operativo: compara lo que efectivamente está programado para trabajar la dotación
   // contra lo que se estima facturar a los clientes en el mismo mes.
   const operationalDifference = Number((totalAssignedHours - serviceBalance.totalBilledHours).toFixed(2));
@@ -2207,6 +2233,9 @@ function getWorkforceMonthlyBalance(monthKey = getSelectedDashboardMonth(), summ
     payrollReferenceHours,
     assignmentDifference,
     commercialDifference,
+    billingTargetDifference,
+    billingTargetDifferencePercent,
+    billingTargetCoveragePercent,
     operationalDifference,
     operationalDifferencePercent,
     operationalCoveragePercent,
@@ -2441,6 +2470,23 @@ function renderKpis(summaries, allWorkerSummaries = summaries) {
     commercialFoot = `Balance parcial · ${balance.pending.length} servicio${balance.pending.length === 1 ? '' : 's'} sin proyección`;
   }
 
+  let billingTargetValue = 'Equilibrado · 100%';
+  let billingTargetFoot = `${formatHours(balance.totalBilledHours)} hs facturables = ${formatHours(workforceBalance.totalTargetHours)} hs objetivo`;
+  let billingTargetClass = 'kpi-tone-balanced';
+  if (workforceBalance.billingTargetDifference < -0.01) {
+    billingTargetValue = `Dotación +${formatPercent(workforceBalance.billingTargetDifferencePercent)}`;
+    billingTargetFoot = `${formatHours(Math.abs(workforceBalance.billingTargetDifference))} hs de jornada objetivo por encima de lo estimado a facturar`;
+    billingTargetClass = 'kpi-tone-missing';
+  } else if (workforceBalance.billingTargetDifference > 0.01) {
+    billingTargetValue = `Facturación +${formatPercent(workforceBalance.billingTargetDifferencePercent)}`;
+    billingTargetFoot = `${formatHours(workforceBalance.billingTargetDifference)} hs facturables por encima de la capacidad objetivo de la dotación`;
+    billingTargetClass = 'kpi-tone-warning';
+  }
+
+  if (balance.pending.length) {
+    billingTargetFoot = `Balance parcial · ${balance.pending.length} servicio${balance.pending.length === 1 ? '' : 's'} sin proyección`;
+  }
+
   let targetNetValue = 'Equilibrado';
   let targetNetFoot = `${formatHours(workforceBalance.totalAssignedFixedHours)} hs asignadas sobre ${formatHours(workforceBalance.totalTargetHours)} hs objetivo`;
   let targetNetClass = 'kpi-tone-balanced';
@@ -2463,6 +2509,20 @@ function renderKpis(summaries, allWorkerSummaries = summaries) {
         : `${balance.configured.length} servicios · ${monthLabel}`,
       className: 'kpi-primary',
       helpKey: 'billing',
+    },
+    {
+      label: 'Objetivo mensual de dotación',
+      value: `${formatHours(workforceBalance.totalTargetHours)} hs`,
+      foot: `${workforceBalance.fixedWorkers.length} operario${workforceBalance.fixedWorkers.length === 1 ? '' : 's'} con jornada objetivo · ${monthLabel}`,
+      className: 'kpi-primary',
+      helpKey: 'target',
+    },
+    {
+      label: 'Facturación vs objetivo de dotación',
+      value: billingTargetValue,
+      foot: billingTargetFoot,
+      className: `kpi-primary kpi-strategic ${billingTargetClass}`,
+      helpKey: 'billingTarget',
     },
     {
       label: 'Horas efectivamente asignadas',
@@ -2498,12 +2558,6 @@ function renderKpis(summaries, allWorkerSummaries = summaries) {
       foot: targetNetFoot,
       className: `kpi-primary ${targetNetClass}`,
       helpKey: 'net',
-    },
-    {
-      label: 'Objetivo mensual de dotación',
-      value: `${formatHours(workforceBalance.totalTargetHours)} hs`,
-      foot: `${workforceBalance.fixedWorkers.length} operario${workforceBalance.fixedWorkers.length === 1 ? '' : 's'} con jornada objetivo`,
-      helpKey: 'target',
     },
     {
       label: 'Servicios sin cobertura',
@@ -2552,6 +2606,16 @@ function renderWorkforceMonthlyBalance(summaries = null) {
     assignmentClass = 'status-hours-over';
   }
 
+  let capacityLabel = 'Cartera y dotación equilibradas · 100%';
+  let capacityClass = 'status-balanced';
+  if (balance.billingTargetDifference < -0.01) {
+    capacityLabel = `Dotación +${formatPercent(balance.billingTargetDifferencePercent)} · ${formatHours(Math.abs(balance.billingTargetDifference))} hs sin respaldo comercial`;
+    capacityClass = 'status-hours-missing';
+  } else if (balance.billingTargetDifference > 0.01) {
+    capacityLabel = `Facturación +${formatPercent(balance.billingTargetDifferencePercent)} · ${formatHours(balance.billingTargetDifference)} hs sobre capacidad objetivo`;
+    capacityClass = 'status-hours-pending';
+  }
+
   let commercialLabel = 'Operación y facturación alineadas · 100%';
   let commercialClass = 'status-balanced';
   if (balance.operationalDifference > 0.01) {
@@ -2571,6 +2635,7 @@ function renderWorkforceMonthlyBalance(summaries = null) {
         </div>
         <div class="workforce-balance-statuses">
           <button id="balanceOverviewHelpBtn" class="balance-help-btn" type="button" data-dashboard-help="overview">? Cómo leer este balance</button>
+          <span class="status-pill ${capacityClass}">${capacityLabel}</span>
           <span class="status-pill ${assignmentClass}">${assignmentLabel}</span>
           <span class="status-pill ${commercialClass}">${commercialLabel}</span>
         </div>
@@ -2615,6 +2680,22 @@ function renderWorkforceMonthlyBalance(summaries = null) {
           <strong>${formatHours(balance.serviceBalance.totalBilledHours)} hs</strong>
           <small>Horas que se proyecta cobrar a los clientes durante el mes.</small>
         </div>
+        <div class="hours-balance-metric balance-metric-main balance-metric-strategic ${balance.billingTargetDifference < -0.01 ? 'balance-metric-missing' : balance.billingTargetDifference > 0.01 ? 'balance-metric-warning' : 'balance-metric-balanced'}">
+          <div class="metric-title-row">
+            <span>Facturación vs objetivo de dotación</span>
+            <button class="metric-info-btn" type="button" data-dashboard-help="billingTarget" aria-label="Información sobre Facturación vs objetivo de dotación" title="¿Qué significa?">i</button>
+          </div>
+          <strong>${Math.abs(balance.billingTargetDifference) <= 0.01
+            ? 'Equilibrado · 100%'
+            : balance.billingTargetDifference < 0
+              ? `Dotación +${formatPercent(balance.billingTargetDifferencePercent)}`
+              : `Facturación +${formatPercent(balance.billingTargetDifferencePercent)}`}</strong>
+          <small>${Math.abs(balance.billingTargetDifference) <= 0.01
+            ? `${formatHours(balance.totalTargetHours)} hs objetivo respaldadas por ${formatHours(balance.serviceBalance.totalBilledHours)} hs facturables.`
+            : balance.billingTargetDifference < 0
+              ? `Hay ${formatHours(Math.abs(balance.billingTargetDifference))} hs de jornada objetivo por encima de lo que se estima cobrar.`
+              : `Hay ${formatHours(balance.billingTargetDifference)} hs facturables por encima de la capacidad objetivo de la dotación.`}</small>
+        </div>
         <div class="hours-balance-metric balance-metric-main ${balance.operationalDifference > 0.01 ? 'balance-metric-missing' : balance.operationalDifference < -0.01 ? 'balance-metric-warning' : 'balance-metric-balanced'}">
           <div class="metric-title-row">
             <span>Asignadas vs facturación estimada</span>
@@ -2655,7 +2736,10 @@ function renderWorkforceMonthlyBalance(summaries = null) {
       </div>
 
       <div class="hours-balance-note">
-        Lectura del neto: si 10 operarios tienen 5 hs mensuales sin asignar cada uno, la app muestra 50 hs de jornada sin asignar. Si otros operarios se exceden, ese exceso se informa por separado y también se muestra el neto general. Así un exceso no oculta dónde existe capacidad pagada que todavía no está siendo utilizada. El objetivo mensual se calcula con los días reales de ${escapeHtml(monthLabel)}, no multiplicando siempre por cuatro.
+        <strong>Lectura estructural:</strong> Facturación vs objetivo de dotación responde si las horas que estimás cobrar alcanzan para absorber las horas que debería cumplir la plantilla según sus jornadas. Si la dotación queda por encima, hay capacidad laboral objetivo sin respaldo comercial. Si la facturación queda por encima, la demanda supera la capacidad objetivo y deberá resolverse con reorganización, horas excedidas o mayor dotación.
+      </div>
+      <div class="hours-balance-note">
+        <strong>Lectura operativa:</strong> si 10 operarios tienen 5 hs mensuales sin asignar cada uno, la app muestra 50 hs de jornada sin asignar. Si otros operarios se exceden, ese exceso se informa por separado y también se muestra el neto general. Así un exceso no oculta dónde existe capacidad pagada que todavía no está siendo utilizada. El objetivo mensual se calcula con los días reales de ${escapeHtml(monthLabel)}, no multiplicando siempre por cuatro.
       </div>
 
       ${balance.serviceBalance.pending.length

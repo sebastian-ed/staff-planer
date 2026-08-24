@@ -54,3 +54,13 @@ No requiere cambios en Supabase ni nuevas migraciones.
 Se agregaron botones **i** en los indicadores principales del Dashboard y el botón **“? Cómo leer este balance”**. Cada ayuda explica en lenguaje simple qué significa el indicador, cómo interpretarlo y, cuando corresponde, incluye un ejemplo.
 
 Este cambio es exclusivamente de interfaz y documentación: **no requiere ejecutar SQL ni modifica datos existentes**.
+
+## Actualización: balance facturación vs objetivo de dotación
+
+No requiere SQL ni cambios de esquema.
+
+Se agregó al Dashboard un KPI principal que compara la facturación estimada del mes con el objetivo mensual de la dotación. También se incorporó al balance mensual y a la ayuda contextual (`i` / `? Cómo leer este balance`).
+
+Fórmula: `Facturación estimada - Objetivo mensual de dotación`.
+
+Después de publicar los archivos, realizar una recarga forzada (`Ctrl + F5`). La versión del caché PWA fue incrementada para tomar esta actualización.

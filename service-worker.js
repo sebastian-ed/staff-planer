@@ -1,4 +1,4 @@
-const CACHE_NAME = 'cleanit-staff-planner-v3';
+const CACHE_NAME = 'cleanit-staff-planner-v4';
 const APP_SHELL = [
   './',
   './index.html',

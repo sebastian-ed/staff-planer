@@ -1863,6 +1863,20 @@ select option:disabled {
   font-size: clamp(32px, 3.5vw, 46px);
   line-height: 1.05;
 }
+.kpi-card.kpi-strategic {
+  border-width: 2px;
+  min-height: 174px;
+}
+.kpi-card.kpi-strategic .kpi-value {
+  font-size: clamp(34px, 3.8vw, 50px);
+}
+.workforce-balance-summary-priority .balance-metric-strategic {
+  border-width: 2px;
+  min-height: 160px;
+}
+.workforce-balance-summary-priority .balance-metric-strategic strong {
+  font-size: clamp(30px, 3.2vw, 44px);
+}
 .kpi-card.kpi-tone-missing,
 .hours-balance-metric.balance-metric-missing {
   border-color: rgba(255,124,139,0.34);

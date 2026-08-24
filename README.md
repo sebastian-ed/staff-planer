@@ -265,3 +265,19 @@ El Dashboard diferencia jornada objetivo, horas asignadas y horas estimadas de f
 ### Ayuda rápida del balance mensual
 
 Los KPI principales de jornada, asignación y facturación incluyen un botón de información. También existe un acceso **“Cómo leer este balance”** que resume la lógica completa y explica por qué las horas faltantes y excedidas se muestran por separado.
+
+## Balance cartera vs dotación (actualización)
+
+El Dashboard incorpora el indicador **Facturación vs objetivo de dotación**.
+
+- **Facturación estimada:** horas que se proyecta cobrar a los clientes en el mes seleccionado.
+- **Objetivo mensual de dotación:** horas que debería cumplir la plantilla según la jornada objetivo de cada operario y el calendario real del mes.
+- **Balance facturación vs dotación:** `Facturación estimada - Objetivo mensual de dotación`.
+
+Interpretación:
+
+- Resultado **negativo**: la dotación objetivo supera las horas estimadas a facturar. Hay capacidad laboral objetivo que todavía no está respaldada por horas vendidas.
+- Resultado **positivo**: las horas estimadas a facturar superan la capacidad objetivo de la dotación. La diferencia deberá resolverse con reorganización, horas excedidas o mayor dotación.
+- Resultado **cero**: cartera y dotación objetivo están equilibradas.
+
+El porcentaje de desvío se calcula tomando como base el objetivo mensual de dotación. Este indicador es independiente de **Asignadas vs facturación** y de **Neto de dotación vs jornada**, para evitar mezclar capacidad estructural, utilización real y demanda comercial.
