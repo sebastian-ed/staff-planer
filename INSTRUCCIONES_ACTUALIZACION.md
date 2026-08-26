@@ -33,3 +33,7 @@ Luego del deploy, abrir la aplicación y hacer una recarga forzada una vez (`Ctr
 ## Criterio de optimización
 
 La app usa las coordenadas y los horarios activos de cada servicio en la fecha seleccionada. Prioriza una secuencia cercana que pueda visitarse mientras haya personal en el servicio. La distancia interna es una estimación geográfica/urbana; para navegación vial se incluye **Abrir en Google Maps**.
+
+
+## Selección de servicios
+La sección Recorridos de materiales lista todos los servicios ya cargados en Staff Planner. El usuario puede marcar manualmente cualquiera que tenga coordenadas. Los materiales asociados se muestran como información, pero no condicionan que el servicio aparezca en la lista.

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'staff-planner-v-rutas-materiales-20260826';
+const CACHE_NAME = 'staff-planner-v-rutas-materiales-seleccion-total-20260826';
 const APP_SHELL = [
   './',
   './index.html',

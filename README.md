@@ -322,3 +322,7 @@ La migración es aditiva: crea tablas y funciones nuevas, sin eliminar ni modifi
 ### Precisión del recorrido
 
 La optimización dentro de la app usa distancia geográfica con una corrección urbana y ventanas horarias. No consulta tránsito en vivo. El botón **Abrir en Google Maps** utiliza el orden calculado y permite que Google Maps resuelva el trayecto vial real. Para una segunda etapa se puede conectar Google Routes API si se desea optimización por tiempo real de conducción y tránsito.
+
+
+## Selección de servicios
+La sección Recorridos de materiales lista todos los servicios ya cargados en Staff Planner. El usuario puede marcar manualmente cualquiera que tenga coordenadas. Los materiales asociados se muestran como información, pero no condicionan que el servicio aparezca en la lista.

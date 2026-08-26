@@ -7181,9 +7181,10 @@ function getRouteMaterialNames(serviceId) {
 function getMaterialRouteServices(options = {}) {
   const { applySearch = true, dateKey = getRouteDateKey() } = options;
   const query = applySearch ? normalizeSearchText(el.routeServiceSearch?.value || '') : '';
-  const materialServiceIds = new Set(state.serviceMaterials.map((item) => item.service_id));
+
+  // El selector de recorridos parte de TODOS los servicios ya cargados en la app.
+  // Tener materiales asociados suma información visual, pero no es requisito para poder seleccionarlo.
   return state.services
-    .filter((service) => materialServiceIds.has(service.id))
     .filter((service) => !query || matchesSearchText(`${service.name} ${service.zone || ''} ${service.client_address || ''}`, query))
     .map((service) => {
       const coordinates = getEntityCoordinates(service);
@@ -7194,6 +7195,7 @@ function getMaterialRouteServices(options = {}) {
         coordinates,
         windows,
         materialNames,
+        hasMaterials: Boolean(materialNames.length),
         eligible: Boolean(coordinates),
         availableOnDate: Boolean(windows.length),
       };
@@ -7201,6 +7203,7 @@ function getMaterialRouteServices(options = {}) {
     .sort((a, b) => {
       if (a.availableOnDate !== b.availableOnDate) return a.availableOnDate ? -1 : 1;
       if (a.eligible !== b.eligible) return a.eligible ? -1 : 1;
+      if (a.hasMaterials !== b.hasMaterials) return a.hasMaterials ? -1 : 1;
       return a.service.name.localeCompare(b.service.name, 'es');
     });
 }
@@ -7227,12 +7230,13 @@ function renderRouteServiceSelector() {
   const items = getMaterialRouteServices();
   const selectedCount = state.routeSelectedServiceIds.size;
   const eligibleCount = items.filter((item) => item.eligible && item.availableOnDate).length;
+  const materialCount = items.filter((item) => item.hasMaterials).length;
   const dayLabel = DAYS.find((day) => day.value === getDateKeyDayOfWeek(getRouteDateKey()))?.fullLabel || 'día seleccionado';
 
   if (el.routeSelectionSummary) {
     el.routeSelectionSummary.innerHTML = `
       <strong>${selectedCount} servicio${selectedCount === 1 ? '' : 's'} seleccionado${selectedCount === 1 ? '' : 's'}</strong>
-      <span class="muted">${eligibleCount} disponibles el ${escapeHtml(dayLabel.toLowerCase())}. Los servicios con coordenadas pueden seleccionarse aunque debas buscar otro día.</span>
+      <span class="muted">${items.length} servicios cargados · ${materialCount} con materiales · ${eligibleCount} disponibles el ${escapeHtml(dayLabel.toLowerCase())}. Podés seleccionar cualquier servicio con coordenadas.</span>
     `;
   }
 
@@ -7240,7 +7244,7 @@ function renderRouteServiceSelector() {
     const selectedItems = getRouteSelectedItems();
     const selectedAvailable = selectedItems.filter((item) => item.windows.length).length;
     if (!selectedCount) {
-      el.routeOptimizationHint.textContent = 'Seleccioná servicios con materiales para armar el reparto.';
+      el.routeOptimizationHint.textContent = 'Seleccioná de la lista los servicios que querés incluir en este recorrido.';
     } else if (selectedAvailable === selectedCount) {
       el.routeOptimizationHint.textContent = `Los ${selectedCount} servicios seleccionados tienen presencia operativa el ${dayLabel.toLowerCase()}.`;
     } else {
@@ -7249,7 +7253,7 @@ function renderRouteServiceSelector() {
   }
 
   if (!items.length) {
-    el.routeServicesBoard.innerHTML = '<div class="empty-state">No hay servicios con materiales que coincidan con la búsqueda.</div>';
+    el.routeServicesBoard.innerHTML = '<div class="empty-state">No hay servicios cargados que coincidan con la búsqueda.</div>';
     return;
   }
 
@@ -7274,7 +7278,7 @@ function renderRouteServiceSelector() {
           <span class="muted">${escapeHtml(service.zone || 'Sin zona')} · ${escapeHtml(service.client_address || 'Sin dirección')}</span>
           <span><strong>Horario del día:</strong> ${windows.length ? windows.map(formatRouteWindow).join(' · ') : 'Sin presencia operativa'}</span>
           <span><strong>Frecuencia cargada:</strong> ${escapeHtml(weeklySummary || 'Sin horarios activos')}</span>
-          <span><strong>Materiales:</strong> ${escapeHtml(materialNames.slice(0, 4).join(', ') || 'Material asignado')}${materialNames.length > 4 ? ` +${materialNames.length - 4}` : ''}</span>
+          <span><strong>Materiales:</strong> ${escapeHtml(materialNames.slice(0, 4).join(', ') || 'Sin materiales asignados')}${materialNames.length > 4 ? ` +${materialNames.length - 4}` : ''}</span>
         </span>
       </label>
     `;
