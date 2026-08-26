@@ -151,6 +151,7 @@ const VIEW_IDS = {
   map: 'mapView',
   optimizer: 'optimizerView',
   proximity: 'proximityView',
+  routes: 'routesView',
   absences: 'absencesView',
   materials: 'materialsView',
 };
@@ -213,6 +214,14 @@ const state = {
   materials: [],
   serviceMaterials: [],
   materialConsumptions: [],
+  materialDeliveryRoutes: [],
+  materialDeliveryRouteStops: [],
+  routeSchemaReady: true,
+  routePlan: null,
+  routeDirty: false,
+  routeSelectedServiceIds: new Set(),
+  currentRouteId: null,
+  sharedRoute: null,
   currentView: 'dashboard',
   dashboardMonth: '',
   optimizerResults: null,
@@ -249,6 +258,12 @@ const state = {
 const el = {};
 let supabase;
 let operationsMap = null;
+let deliveryRouteMap = null;
+let deliveryRouteMarkerLayer = null;
+let deliveryRouteLineLayer = null;
+let driverRouteMap = null;
+let driverRouteMarkerLayer = null;
+let driverRouteLineLayer = null;
 let mapMarkerLayer = null;
 let mapConnectionLayer = null;
 const mapMarkers = new Map();
@@ -7074,6 +7089,983 @@ function handleMapPanelClick(event) {
   handleDynamicClicks(event);
 }
 
+// -----------------------------------------------------------------------------
+// Recorridos de materiales
+// -----------------------------------------------------------------------------
+
+function getRouteDateKey() {
+  return el.routeDate?.value || toDateKey(new Date());
+}
+
+function getRouteParameters(dateKeyOverride = null) {
+  const origin = parseCoordinates(el.routeOriginCoordinates?.value || '');
+  return {
+    dateKey: dateKeyOverride || getRouteDateKey(),
+    departureMinutes: timeToMinutes(el.routeDepartureTime?.value || '08:00') ?? 480,
+    stopMinutes: Math.max(0, Number(el.routeStopMinutes?.value || 15)),
+    averageSpeedKmh: Math.max(5, Number(el.routeAverageSpeed?.value || 25)),
+    originCoordinates: origin,
+  };
+}
+
+function formatRouteMinute(totalMinutes) {
+  if (totalMinutes == null || !Number.isFinite(Number(totalMinutes))) return '—';
+  const normalized = Math.max(0, Math.round(Number(totalMinutes)));
+  const dayOffset = Math.floor(normalized / MINUTES_PER_DAY);
+  const minutesOfDay = normalized % MINUTES_PER_DAY;
+  const hours = Math.floor(minutesOfDay / 60);
+  const minutes = minutesOfDay % 60;
+  const base = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+  return dayOffset ? `${base} (+${dayOffset} día${dayOffset === 1 ? '' : 's'})` : base;
+}
+
+function formatRouteWindow(windowItem) {
+  if (!windowItem) return 'Sin horario';
+  return `${formatRouteMinute(windowItem.start)}–${formatRouteMinute(windowItem.end)}`;
+}
+
+function mergeRouteWindows(windows) {
+  const sorted = (windows || [])
+    .filter((item) => item && Number.isFinite(item.start) && Number.isFinite(item.end) && item.end > item.start)
+    .sort((a, b) => a.start - b.start || a.end - b.end);
+  const merged = [];
+  sorted.forEach((item) => {
+    const last = merged[merged.length - 1];
+    if (!last || item.start > last.end) {
+      merged.push({ ...item });
+      return;
+    }
+    last.end = Math.max(last.end, item.end);
+  });
+  return merged;
+}
+
+function getServiceDeliveryWindows(serviceId, dateKey = getRouteDateKey()) {
+  const dayOfWeek = getDateKeyDayOfWeek(dateKey);
+  if (dayOfWeek == null) return [];
+  const previousDay = (dayOfWeek + 6) % 7;
+  const windows = [];
+
+  getServiceAssignments(serviceId).forEach((assignment) => {
+    const assignmentDay = Number(assignment.day_of_week);
+    const start = timeToMinutes(assignment.start_time);
+    const end = timeToMinutes(assignment.end_time);
+    if (start == null || end == null || start === end) return;
+
+    if (assignmentDay === dayOfWeek) {
+      if (end > start) {
+        windows.push({ start, end });
+      } else {
+        // Turno nocturno que comienza en la fecha elegida: se puede entregar hasta medianoche.
+        windows.push({ start, end: MINUTES_PER_DAY });
+      }
+    }
+
+    if (assignmentDay === previousDay && end < start) {
+      // Continuación de un turno nocturno iniciado el día anterior.
+      windows.push({ start: 0, end });
+    }
+  });
+
+  return mergeRouteWindows(windows);
+}
+
+function getRouteMaterialNames(serviceId) {
+  return state.serviceMaterials
+    .filter((item) => item.service_id === serviceId)
+    .map((item) => state.materials.find((material) => material.id === item.material_id)?.name)
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b, 'es'));
+}
+
+function getMaterialRouteServices(options = {}) {
+  const { applySearch = true, dateKey = getRouteDateKey() } = options;
+  const query = applySearch ? normalizeSearchText(el.routeServiceSearch?.value || '') : '';
+  const materialServiceIds = new Set(state.serviceMaterials.map((item) => item.service_id));
+  return state.services
+    .filter((service) => materialServiceIds.has(service.id))
+    .filter((service) => !query || matchesSearchText(`${service.name} ${service.zone || ''} ${service.client_address || ''}`, query))
+    .map((service) => {
+      const coordinates = getEntityCoordinates(service);
+      const windows = getServiceDeliveryWindows(service.id, dateKey);
+      const materialNames = getRouteMaterialNames(service.id);
+      return {
+        service,
+        coordinates,
+        windows,
+        materialNames,
+        eligible: Boolean(coordinates),
+        availableOnDate: Boolean(windows.length),
+      };
+    })
+    .sort((a, b) => {
+      if (a.availableOnDate !== b.availableOnDate) return a.availableOnDate ? -1 : 1;
+      if (a.eligible !== b.eligible) return a.eligible ? -1 : 1;
+      return a.service.name.localeCompare(b.service.name, 'es');
+    });
+}
+
+
+function getServiceWeeklyDeliverySummary(serviceId) {
+  return DAYS.map((day) => {
+    const windows = mergeRouteWindows(getServiceAssignments(serviceId)
+      .filter((assignment) => Number(assignment.day_of_week) === day.value)
+      .map((assignment) => {
+        const start = timeToMinutes(assignment.start_time);
+        const end = timeToMinutes(assignment.end_time);
+        if (start == null || end == null || start === end) return null;
+        return { start, end: end > start ? end : MINUTES_PER_DAY };
+      })
+      .filter(Boolean));
+    if (!windows.length) return null;
+    return `${day.label} ${windows.map(formatRouteWindow).join('/')}`;
+  }).filter(Boolean).join(' · ');
+}
+
+function renderRouteServiceSelector() {
+  if (!el.routeServicesBoard) return;
+  const items = getMaterialRouteServices();
+  const selectedCount = state.routeSelectedServiceIds.size;
+  const eligibleCount = items.filter((item) => item.eligible && item.availableOnDate).length;
+  const dayLabel = DAYS.find((day) => day.value === getDateKeyDayOfWeek(getRouteDateKey()))?.fullLabel || 'día seleccionado';
+
+  if (el.routeSelectionSummary) {
+    el.routeSelectionSummary.innerHTML = `
+      <strong>${selectedCount} servicio${selectedCount === 1 ? '' : 's'} seleccionado${selectedCount === 1 ? '' : 's'}</strong>
+      <span class="muted">${eligibleCount} disponibles el ${escapeHtml(dayLabel.toLowerCase())}. Los servicios con coordenadas pueden seleccionarse aunque debas buscar otro día.</span>
+    `;
+  }
+
+  if (el.routeOptimizationHint) {
+    const selectedItems = getRouteSelectedItems();
+    const selectedAvailable = selectedItems.filter((item) => item.windows.length).length;
+    if (!selectedCount) {
+      el.routeOptimizationHint.textContent = 'Seleccioná servicios con materiales para armar el reparto.';
+    } else if (selectedAvailable === selectedCount) {
+      el.routeOptimizationHint.textContent = `Los ${selectedCount} servicios seleccionados tienen presencia operativa el ${dayLabel.toLowerCase()}.`;
+    } else {
+      el.routeOptimizationHint.textContent = `${selectedAvailable} de ${selectedCount} seleccionados están disponibles el ${dayLabel.toLowerCase()}. Usá “Sugerir mejor día” para buscar una fecha común.`;
+    }
+  }
+
+  if (!items.length) {
+    el.routeServicesBoard.innerHTML = '<div class="empty-state">No hay servicios con materiales que coincidan con la búsqueda.</div>';
+    return;
+  }
+
+  el.routeServicesBoard.innerHTML = items.map((item) => {
+    const { service, windows, coordinates, materialNames, eligible, availableOnDate } = item;
+    const checked = state.routeSelectedServiceIds.has(service.id);
+    const statusText = !coordinates
+      ? 'Faltan coordenadas'
+      : availableOnDate
+        ? `Disponible ${dayLabel}`
+        : `No disponible ${dayLabel}`;
+    const statusClass = !coordinates ? 'status-hours-missing' : availableOnDate ? 'status-balanced' : 'status-warning';
+    const weeklySummary = getServiceWeeklyDeliverySummary(service.id);
+    return `
+      <label class="route-service-card ${checked ? 'selected' : ''} ${eligible ? '' : 'disabled'}">
+        <input type="checkbox" data-route-service-id="${service.id}" ${checked ? 'checked' : ''} ${eligible ? '' : 'disabled'} />
+        <span class="route-service-card-body">
+          <span class="route-service-title-row">
+            <strong>${escapeHtml(service.name)}</strong>
+            <span class="status-pill ${statusClass}">${escapeHtml(statusText)}</span>
+          </span>
+          <span class="muted">${escapeHtml(service.zone || 'Sin zona')} · ${escapeHtml(service.client_address || 'Sin dirección')}</span>
+          <span><strong>Horario del día:</strong> ${windows.length ? windows.map(formatRouteWindow).join(' · ') : 'Sin presencia operativa'}</span>
+          <span><strong>Frecuencia cargada:</strong> ${escapeHtml(weeklySummary || 'Sin horarios activos')}</span>
+          <span><strong>Materiales:</strong> ${escapeHtml(materialNames.slice(0, 4).join(', ') || 'Material asignado')}${materialNames.length > 4 ? ` +${materialNames.length - 4}` : ''}</span>
+        </span>
+      </label>
+    `;
+  }).join('');
+}
+
+function getRouteSelectedItems(dateKey = getRouteDateKey()) {
+  const selected = state.routeSelectedServiceIds;
+  return getMaterialRouteServices({ applySearch: false, dateKey }).filter((item) => selected.has(item.service.id) && item.eligible);
+}
+
+
+function getRouteStepMetrics(item, currentCoordinates, currentMinutes, params, isFirstWithoutOrigin = false) {
+  const directDistance = currentCoordinates && !isFirstWithoutOrigin
+    ? haversineDistanceKm(currentCoordinates, item.coordinates)
+    : 0;
+  const roadDistance = Number(((directDistance || 0) * 1.25).toFixed(2));
+  const travelMinutes = Math.ceil((roadDistance / params.averageSpeedKmh) * 60);
+  const rawArrival = currentMinutes + travelMinutes;
+
+  let selectedWindow = null;
+  let serviceStart = rawArrival;
+  for (const windowItem of item.windows) {
+    const candidateStart = Math.max(rawArrival, windowItem.start);
+    if ((candidateStart + params.stopMinutes) <= windowItem.end) {
+      selectedWindow = windowItem;
+      serviceStart = candidateStart;
+      break;
+    }
+  }
+
+  let risk = false;
+  if (!selectedWindow) {
+    risk = true;
+    const nextWindow = item.windows.find((windowItem) => windowItem.end >= rawArrival) || item.windows[item.windows.length - 1];
+    if (nextWindow) {
+      selectedWindow = nextWindow;
+      serviceStart = Math.max(rawArrival, nextWindow.start);
+    }
+  }
+
+  const waitingMinutes = Math.max(0, serviceStart - rawArrival);
+  const departure = serviceStart + params.stopMinutes;
+  return {
+    distanceKm: roadDistance,
+    directDistanceKm: directDistance || 0,
+    travelMinutes,
+    rawArrival,
+    arrivalMinutes: serviceStart,
+    departureMinutes: departure,
+    waitingMinutes,
+    window: selectedWindow,
+    risk,
+  };
+}
+
+function buildGreedyRoute(items, params, forcedFirstId = null) {
+  const remaining = [...items];
+  const stops = [];
+  let currentCoordinates = params.originCoordinates;
+  let currentMinutes = params.departureMinutes;
+  let totalDistanceKm = 0;
+  let totalWaitingMinutes = 0;
+  let risks = 0;
+
+  while (remaining.length) {
+    let candidates = remaining;
+    if (!stops.length && forcedFirstId) {
+      candidates = remaining.filter((item) => item.service.id === forcedFirstId);
+    }
+
+    let best = null;
+    candidates.forEach((item) => {
+      const metrics = getRouteStepMetrics(
+        item,
+        currentCoordinates,
+        currentMinutes,
+        params,
+        !currentCoordinates && stops.length === 0
+      );
+      // Un horario imposible tiene una penalización fuerte. La espera pesa más que unos pocos km,
+      // para aprovechar primero los servicios que están abiertos sin perder la lógica de cercanía.
+      const score = (metrics.risk ? 10000 : 0) + metrics.distanceKm + (metrics.waitingMinutes / 12);
+      if (!best || score < best.score) best = { item, metrics, score };
+    });
+
+    if (!best) break;
+    const index = remaining.findIndex((item) => item.service.id === best.item.service.id);
+    remaining.splice(index, 1);
+    const stop = {
+      serviceId: best.item.service.id,
+      serviceName: best.item.service.name,
+      address: best.item.service.client_address || '',
+      zone: best.item.service.zone || '',
+      latitude: best.item.coordinates.latitude,
+      longitude: best.item.coordinates.longitude,
+      materialNames: best.item.materialNames,
+      windows: best.item.windows,
+      ...best.metrics,
+    };
+    stops.push(stop);
+    totalDistanceKm += best.metrics.distanceKm;
+    totalWaitingMinutes += best.metrics.waitingMinutes;
+    risks += best.metrics.risk ? 1 : 0;
+    currentCoordinates = best.item.coordinates;
+    currentMinutes = best.metrics.departureMinutes;
+  }
+
+  const finishMinutes = stops.length ? stops[stops.length - 1].departureMinutes : params.departureMinutes;
+  return {
+    dateKey: params.dateKey,
+    departureMinutes: params.departureMinutes,
+    stopMinutes: params.stopMinutes,
+    averageSpeedKmh: params.averageSpeedKmh,
+    originCoordinates: params.originCoordinates,
+    stops,
+    totalDistanceKm: Number(totalDistanceKm.toFixed(2)),
+    totalWaitingMinutes,
+    riskCount: risks,
+    finishMinutes,
+    durationMinutes: Math.max(0, finishMinutes - params.departureMinutes),
+  };
+}
+
+function calculateBestMaterialRoutePlan(items, params) {
+  if (!items.length) return null;
+  const plans = params.originCoordinates
+    ? [buildGreedyRoute(items, params)]
+    : items.map((item) => buildGreedyRoute(items, params, item.service.id));
+  plans.sort((a, b) => {
+    const scoreA = (a.riskCount * 100000) + (a.totalWaitingMinutes * 2) + (a.totalDistanceKm * 10) + a.durationMinutes;
+    const scoreB = (b.riskCount * 100000) + (b.totalWaitingMinutes * 2) + (b.totalDistanceKm * 10) + b.durationMinutes;
+    return scoreA - scoreB;
+  });
+  return plans[0] || null;
+}
+
+function findBestMaterialRouteDate() {
+  if (!state.routeSelectedServiceIds.size) {
+    alert('Primero seleccioná los servicios que querés incluir en el recorrido.');
+    return;
+  }
+  const startDate = parseDateKeyToLocalDate(getRouteDateKey()) || new Date();
+  const selectedCount = state.routeSelectedServiceIds.size;
+  const candidates = [];
+
+  for (let offset = 0; offset < 14; offset += 1) {
+    const date = new Date(startDate);
+    date.setDate(startDate.getDate() + offset);
+    const dateKey = toDateKey(date);
+    const items = getRouteSelectedItems(dateKey);
+    if (!items.length) continue;
+    const params = getRouteParameters(dateKey);
+    const plan = calculateBestMaterialRoutePlan(items, params);
+    if (!plan) continue;
+    const availableCount = items.filter((item) => item.windows.length).length;
+    candidates.push({ dateKey, plan, availableCount, selectedCount: items.length });
+  }
+
+  if (!candidates.length) {
+    alert('No hay servicios seleccionados con coordenadas válidas para analizar.');
+    return;
+  }
+
+  candidates.sort((a, b) => {
+    if (a.plan.riskCount !== b.plan.riskCount) return a.plan.riskCount - b.plan.riskCount;
+    if (a.availableCount !== b.availableCount) return b.availableCount - a.availableCount;
+    if (a.plan.totalDistanceKm !== b.plan.totalDistanceKm) return a.plan.totalDistanceKm - b.plan.totalDistanceKm;
+    return a.dateKey.localeCompare(b.dateKey);
+  });
+
+  const best = candidates[0];
+  if (el.routeDate) el.routeDate.value = best.dateKey;
+  state.routePlan = best.plan;
+  state.currentRouteId = null;
+  state.routeDirty = false;
+  renderRouteServiceSelector();
+  renderRouteResult();
+
+  const dayLabel = DAYS.find((day) => day.value === getDateKeyDayOfWeek(best.dateKey))?.fullLabel || '';
+  if (best.plan.riskCount > 0) {
+    alert(`La mejor alternativa encontrada es ${dayLabel} ${formatDateLabel(best.dateKey)}, pero ${best.plan.riskCount} parada(s) no entran completamente en los horarios cargados. Conviene dividir el reparto o revisar esas ventanas.`);
+  } else if (best.availableCount === selectedCount) {
+    alert(`Mejor día encontrado: ${dayLabel} ${formatDateLabel(best.dateKey)}. Todos los servicios seleccionados tienen presencia operativa compatible.`);
+  }
+}
+
+function optimizeMaterialDeliveryRoute() {
+  const items = getRouteSelectedItems();
+  if (!items.length) {
+    alert('Seleccioná al menos un servicio disponible para la fecha elegida.');
+    return;
+  }
+  const params = getRouteParameters();
+  if (!params.dateKey) {
+    alert('Elegí la fecha del recorrido.');
+    return;
+  }
+
+  state.routePlan = calculateBestMaterialRoutePlan(items, params);
+  state.currentRouteId = null;
+  state.routeDirty = false;
+  renderRouteResult();
+}
+
+function recomputeRouteForFixedOrder(stops) {
+  const params = getRouteParameters();
+  const items = stops.map((stop) => {
+    const service = state.services.find((item) => item.id === stop.serviceId) || {
+      id: stop.serviceId,
+      name: stop.serviceName,
+      client_address: stop.address,
+      zone: stop.zone,
+      latitude: stop.latitude,
+      longitude: stop.longitude,
+    };
+    return {
+      service,
+      coordinates: { latitude: Number(stop.latitude), longitude: Number(stop.longitude) },
+      windows: getServiceDeliveryWindows(stop.serviceId, params.dateKey).length
+        ? getServiceDeliveryWindows(stop.serviceId, params.dateKey)
+        : (stop.windows || []),
+      materialNames: getRouteMaterialNames(stop.serviceId).length ? getRouteMaterialNames(stop.serviceId) : (stop.materialNames || []),
+    };
+  });
+
+  let currentCoordinates = params.originCoordinates;
+  let currentMinutes = params.departureMinutes;
+  let totalDistanceKm = 0;
+  let totalWaitingMinutes = 0;
+  let riskCount = 0;
+  const computedStops = items.map((item, index) => {
+    const metrics = getRouteStepMetrics(item, currentCoordinates, currentMinutes, params, !currentCoordinates && index === 0);
+    currentCoordinates = item.coordinates;
+    currentMinutes = metrics.departureMinutes;
+    totalDistanceKm += metrics.distanceKm;
+    totalWaitingMinutes += metrics.waitingMinutes;
+    riskCount += metrics.risk ? 1 : 0;
+    return {
+      serviceId: item.service.id,
+      serviceName: item.service.name,
+      address: item.service.client_address || '',
+      zone: item.service.zone || '',
+      latitude: item.coordinates.latitude,
+      longitude: item.coordinates.longitude,
+      materialNames: item.materialNames,
+      windows: item.windows,
+      ...metrics,
+    };
+  });
+
+  state.routePlan = {
+    dateKey: params.dateKey,
+    departureMinutes: params.departureMinutes,
+    stopMinutes: params.stopMinutes,
+    averageSpeedKmh: params.averageSpeedKmh,
+    originCoordinates: params.originCoordinates,
+    stops: computedStops,
+    totalDistanceKm: Number(totalDistanceKm.toFixed(2)),
+    totalWaitingMinutes,
+    riskCount,
+    finishMinutes: currentMinutes,
+    durationMinutes: Math.max(0, currentMinutes - params.departureMinutes),
+  };
+}
+
+function initDeliveryRouteMap() {
+  if (deliveryRouteMap || !el.deliveryRouteMap || !window.L) return deliveryRouteMap;
+  deliveryRouteMap = window.L.map(el.deliveryRouteMap, { zoomControl: true }).setView(DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM);
+  window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap',
+  }).addTo(deliveryRouteMap);
+  deliveryRouteMarkerLayer = window.L.layerGroup().addTo(deliveryRouteMap);
+  deliveryRouteLineLayer = window.L.layerGroup().addTo(deliveryRouteMap);
+  return deliveryRouteMap;
+}
+
+function renderDeliveryRouteMap() {
+  const map = initDeliveryRouteMap();
+  if (!map || !deliveryRouteMarkerLayer || !deliveryRouteLineLayer) return;
+  deliveryRouteMarkerLayer.clearLayers();
+  deliveryRouteLineLayer.clearLayers();
+  const stops = state.routePlan?.stops || [];
+  el.routeMapEmpty?.classList.toggle('hidden', Boolean(stops.length));
+  if (!stops.length) return;
+
+  const latLngs = [];
+  if (state.routePlan.originCoordinates) {
+    const origin = state.routePlan.originCoordinates;
+    latLngs.push([origin.latitude, origin.longitude]);
+    window.L.circleMarker([origin.latitude, origin.longitude], {
+      radius: 8, weight: 2, color: '#93c5fd', fillColor: '#1d4ed8', fillOpacity: 1,
+    }).bindTooltip('Salida', { permanent: false }).addTo(deliveryRouteMarkerLayer);
+  }
+
+  stops.forEach((stop, index) => {
+    const latLng = [Number(stop.latitude), Number(stop.longitude)];
+    latLngs.push(latLng);
+    const color = stop.risk ? '#ef4444' : '#7c3aed';
+    window.L.circleMarker(latLng, {
+      radius: 11, weight: 3, color: '#ffffff', fillColor: color, fillOpacity: 1,
+    })
+      .bindTooltip(`${index + 1}. ${stop.serviceName}`, { permanent: false })
+      .bindPopup(`<strong>${escapeHtml(stop.serviceName)}</strong><br>${escapeHtml(stop.address || '')}<br>ETA: ${escapeHtml(formatRouteMinute(stop.arrivalMinutes))}`)
+      .addTo(deliveryRouteMarkerLayer);
+  });
+
+  if (latLngs.length > 1) {
+    window.L.polyline(latLngs, { color: '#8b5cf6', weight: 5, opacity: 0.82 }).addTo(deliveryRouteLineLayer);
+  }
+  window.setTimeout(() => {
+    map.invalidateSize();
+    if (latLngs.length === 1) map.setView(latLngs[0], 14);
+    else map.fitBounds(window.L.latLngBounds(latLngs).pad(0.15), { maxZoom: 15 });
+  }, 60);
+}
+
+function buildRouteGoogleMapsUrl(stops, originCoordinates = null) {
+  const usableStops = (stops || []).filter((stop) => Number.isFinite(Number(stop.latitude)) && Number.isFinite(Number(stop.longitude)));
+  if (!usableStops.length) return '';
+  const point = (item) => `${Number(item.latitude)},${Number(item.longitude)}`;
+  const url = new URL('https://www.google.com/maps/dir/');
+  url.searchParams.set('api', '1');
+  const origin = originCoordinates
+    ? `${originCoordinates.latitude},${originCoordinates.longitude}`
+    : point(usableStops[0]);
+  url.searchParams.set('origin', origin);
+  url.searchParams.set('destination', point(usableStops[usableStops.length - 1]));
+  const waypoints = originCoordinates ? usableStops.slice(0, -1) : usableStops.slice(1, -1);
+  if (waypoints.length) url.searchParams.set('waypoints', waypoints.map(point).join('|'));
+  url.searchParams.set('travelmode', 'driving');
+  return url.toString();
+}
+
+function renderRouteResult() {
+  const plan = state.routePlan;
+  const hasPlan = Boolean(plan?.stops?.length);
+  if (el.routeSaveBtn) el.routeSaveBtn.disabled = !hasPlan || !state.routeSchemaReady;
+  if (el.routeShareBtn) el.routeShareBtn.disabled = !state.currentRouteId || state.routeDirty;
+  if (el.routeOpenGoogleMapsBtn) el.routeOpenGoogleMapsBtn.disabled = !hasPlan;
+
+  if (el.routeKpis) {
+    el.routeKpis.innerHTML = hasPlan ? `
+      <div class="mini-kpi"><span>Paradas</span><strong>${plan.stops.length}</strong></div>
+      <div class="mini-kpi"><span>Distancia estimada</span><strong>${formatNumber(plan.totalDistanceKm)} km</strong></div>
+      <div class="mini-kpi"><span>Fin estimado</span><strong>${formatRouteMinute(plan.finishMinutes)}</strong></div>
+      <div class="mini-kpi ${plan.riskCount ? 'route-risk-kpi' : ''}"><span>Riesgos horarios</span><strong>${plan.riskCount}</strong></div>
+    ` : '';
+  }
+
+  if (el.routeSequenceBoard) {
+    if (!hasPlan) {
+      el.routeSequenceBoard.innerHTML = '<div class="empty-state">Todavía no hay un recorrido calculado.</div>';
+    } else {
+      el.routeSequenceBoard.innerHTML = plan.stops.map((stop, index) => `
+        <article class="route-stop-card ${stop.risk ? 'route-stop-risk' : ''}" data-route-stop-index="${index}">
+          <div class="route-stop-number">${index + 1}</div>
+          <div class="route-stop-main">
+            <div class="route-stop-title-row">
+              <strong>${escapeHtml(stop.serviceName)}</strong>
+              <span class="status-pill ${stop.risk ? 'status-hours-missing' : 'status-balanced'}">${stop.risk ? 'Revisar horario' : `ETA ${escapeHtml(formatRouteMinute(stop.arrivalMinutes))}`}</span>
+            </div>
+            <span class="muted">${escapeHtml(stop.address || stop.zone || 'Sin dirección')}</span>
+            <span><strong>Ventana:</strong> ${stop.window ? escapeHtml(formatRouteWindow(stop.window)) : 'Sin ventana compatible'} · <strong>Salida:</strong> ${escapeHtml(formatRouteMinute(stop.departureMinutes))}</span>
+            <span><strong>Desde parada anterior:</strong> ${formatNumber(stop.distanceKm)} km · ${stop.travelMinutes} min${stop.waitingMinutes ? ` · espera ${stop.waitingMinutes} min` : ''}</span>
+            <span class="route-materials-line"><strong>Materiales:</strong> ${escapeHtml((stop.materialNames || []).join(', ') || 'Material asignado')}</span>
+          </div>
+          <div class="route-stop-actions">
+            <button class="icon-btn" type="button" data-route-action="up" data-route-index="${index}" ${index === 0 ? 'disabled' : ''} title="Subir parada">↑</button>
+            <button class="icon-btn" type="button" data-route-action="down" data-route-index="${index}" ${index === plan.stops.length - 1 ? 'disabled' : ''} title="Bajar parada">↓</button>
+            <button class="icon-btn route-remove-btn" type="button" data-route-action="remove" data-route-index="${index}" title="Quitar parada">✕</button>
+          </div>
+        </article>
+      `).join('');
+    }
+  }
+  renderDeliveryRouteMap();
+}
+
+function handleRouteSequenceClick(event) {
+  const button = event.target.closest('[data-route-action]');
+  if (!button || !state.routePlan?.stops?.length) return;
+  const index = Number(button.dataset.routeIndex);
+  const action = button.dataset.routeAction;
+  const stops = [...state.routePlan.stops];
+  if (action === 'up' && index > 0) [stops[index - 1], stops[index]] = [stops[index], stops[index - 1]];
+  if (action === 'down' && index < stops.length - 1) [stops[index + 1], stops[index]] = [stops[index], stops[index + 1]];
+  if (action === 'remove') {
+    const [removed] = stops.splice(index, 1);
+    if (removed) state.routeSelectedServiceIds.delete(removed.serviceId);
+    renderRouteServiceSelector();
+  }
+  recomputeRouteForFixedOrder(stops);
+  if (state.currentRouteId) state.routeDirty = true;
+  renderRouteResult();
+}
+
+function handleRouteServiceSelection(event) {
+  const input = event.target.closest('[data-route-service-id]');
+  if (!input) return;
+  if (input.checked) state.routeSelectedServiceIds.add(input.dataset.routeServiceId);
+  else state.routeSelectedServiceIds.delete(input.dataset.routeServiceId);
+  state.routePlan = null;
+  state.currentRouteId = null;
+  state.routeDirty = false;
+  renderRouteServiceSelector();
+  renderRouteResult();
+}
+
+function resetRoutePlanningForDate() {
+  const eligibleIds = new Set(getMaterialRouteServices({ applySearch: false }).filter((item) => item.eligible).map((item) => item.service.id));
+  state.routeSelectedServiceIds = new Set([...state.routeSelectedServiceIds].filter((id) => eligibleIds.has(id)));
+  state.routePlan = null;
+  state.currentRouteId = null;
+  state.routeDirty = false;
+  renderRouteServiceSelector();
+  renderRouteResult();
+}
+
+async function loadMaterialDeliveryRouteData() {
+  const [routesRes, stopsRes] = await Promise.all([
+    supabase.from('material_delivery_routes').select('*').order('route_date', { ascending: false }).order('created_at', { ascending: false }),
+    supabase.from('material_delivery_route_stops').select('*').order('sequence_no'),
+  ]);
+  state.routeSchemaReady = !routesRes.error && !stopsRes.error;
+  state.materialDeliveryRoutes = routesRes.error ? [] : (routesRes.data || []);
+  state.materialDeliveryRouteStops = stopsRes.error ? [] : (stopsRes.data || []);
+  return state.routeSchemaReady;
+}
+
+function buildSharedRouteUrl(token) {
+  if (!token) return '';
+  const url = new URL(window.location.href);
+  url.search = '';
+  url.hash = '';
+  url.searchParams.set('route', token);
+  return url.toString();
+}
+
+async function copyTextToClipboard(text) {
+  if (!text) return false;
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (error) {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    const ok = document.execCommand('copy');
+    textarea.remove();
+    return ok;
+  }
+}
+
+async function saveMaterialDeliveryRoute() {
+  if (!state.routePlan?.stops?.length) return;
+  if (!state.routeSchemaReady) {
+    alert('Primero ejecutá la migración de recorridos en Supabase.');
+    return;
+  }
+  try {
+    await ensureWriteSession();
+    const plan = state.routePlan;
+    const routePayload = {
+      route_date: plan.dateKey,
+      route_name: `Recorrido materiales · ${formatDateLabel(plan.dateKey)}`,
+      departure_time: `${formatRouteMinute(plan.departureMinutes).slice(0, 5)}:00`,
+      origin_latitude: plan.originCoordinates?.latitude ?? null,
+      origin_longitude: plan.originCoordinates?.longitude ?? null,
+      average_speed_kmh: plan.averageSpeedKmh,
+      stop_minutes: plan.stopMinutes,
+      status: 'planned',
+    };
+
+    let routeRecord;
+    if (state.currentRouteId) {
+      const updateRes = await supabase.from('material_delivery_routes').update(routePayload).eq('id', state.currentRouteId).select('*').single();
+      if (updateRes.error) throw updateRes.error;
+      routeRecord = updateRes.data;
+      const deleteRes = await supabase.from('material_delivery_route_stops').delete().eq('route_id', state.currentRouteId);
+      if (deleteRes.error) throw deleteRes.error;
+    } else {
+      const insertRes = await supabase.from('material_delivery_routes').insert(routePayload).select('*').single();
+      if (insertRes.error) throw insertRes.error;
+      routeRecord = insertRes.data;
+      state.currentRouteId = routeRecord.id;
+    }
+
+    const stopRows = plan.stops.map((stop, index) => ({
+      route_id: routeRecord.id,
+      service_id: stop.serviceId,
+      service_name: stop.serviceName,
+      address: stop.address || null,
+      latitude: stop.latitude,
+      longitude: stop.longitude,
+      sequence_no: index + 1,
+      window_start: stop.window ? `${formatRouteMinute(stop.window.start).slice(0, 5)}:00` : null,
+      window_end: stop.window ? `${formatRouteMinute(stop.window.end % MINUTES_PER_DAY).slice(0, 5)}:00` : null,
+      estimated_arrival: `${formatRouteMinute(stop.arrivalMinutes % MINUTES_PER_DAY).slice(0, 5)}:00`,
+      estimated_departure: `${formatRouteMinute(stop.departureMinutes % MINUTES_PER_DAY).slice(0, 5)}:00`,
+      distance_from_previous_km: stop.distanceKm,
+      materials_summary: (stop.materialNames || []).join(', '),
+      status: 'pending',
+    }));
+    const stopsInsert = await supabase.from('material_delivery_route_stops').insert(stopRows);
+    if (stopsInsert.error) throw stopsInsert.error;
+
+    await loadMaterialDeliveryRouteData();
+    state.currentRouteId = routeRecord.id;
+    state.routeDirty = false;
+    renderSavedRoutes();
+    renderRouteResult();
+    alert('Recorrido guardado. Ya podés copiar el link para el fletero.');
+  } catch (error) {
+    console.error('No se pudo guardar el recorrido.', error);
+    alert(`No se pudo guardar el recorrido: ${error.message}`);
+  }
+}
+
+function getSavedRouteStops(routeId) {
+  return state.materialDeliveryRouteStops
+    .filter((stop) => stop.route_id === routeId)
+    .sort((a, b) => Number(a.sequence_no) - Number(b.sequence_no));
+}
+
+function parseStoredRouteWindow(startTime, endTime) {
+  const start = timeToMinutes(startTime);
+  const end = timeToMinutes(endTime);
+  if (start == null || end == null) return null;
+  return { start, end: end > start ? end : (end === 0 ? MINUTES_PER_DAY : end) };
+}
+
+function loadSavedRouteForEditing(routeId) {
+  const route = state.materialDeliveryRoutes.find((item) => item.id === routeId);
+  if (!route) return;
+  const storedStops = getSavedRouteStops(routeId);
+  if (!storedStops.length) return;
+  state.currentRouteId = route.id;
+  if (el.routeDate) el.routeDate.value = route.route_date;
+  if (el.routeDepartureTime) el.routeDepartureTime.value = String(route.departure_time || '08:00').slice(0, 5);
+  if (el.routeStopMinutes) el.routeStopMinutes.value = route.stop_minutes ?? 15;
+  if (el.routeAverageSpeed) el.routeAverageSpeed.value = route.average_speed_kmh ?? 25;
+  if (el.routeOriginCoordinates) {
+    el.routeOriginCoordinates.value = route.origin_latitude != null && route.origin_longitude != null
+      ? `${route.origin_latitude}, ${route.origin_longitude}`
+      : '';
+  }
+  state.routeSelectedServiceIds = new Set(storedStops.map((stop) => stop.service_id).filter(Boolean));
+  const draftStops = storedStops.map((stop) => ({
+    serviceId: stop.service_id,
+    serviceName: stop.service_name,
+    address: stop.address || '',
+    zone: state.services.find((service) => service.id === stop.service_id)?.zone || '',
+    latitude: Number(stop.latitude),
+    longitude: Number(stop.longitude),
+    materialNames: String(stop.materials_summary || '').split(',').map((item) => item.trim()).filter(Boolean),
+    windows: [parseStoredRouteWindow(stop.window_start, stop.window_end)].filter(Boolean),
+  }));
+  recomputeRouteForFixedOrder(draftStops);
+  state.currentRouteId = route.id;
+  state.routeDirty = false;
+  renderRouteServiceSelector();
+  renderRouteResult();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+async function shareCurrentMaterialRoute(routeId = state.currentRouteId) {
+  if (routeId === state.currentRouteId && state.routeDirty) {
+    alert('Guardá los cambios del recorrido antes de copiar el link.');
+    return;
+  }
+  const route = state.materialDeliveryRoutes.find((item) => item.id === routeId);
+  if (!route?.share_token) {
+    alert('Guardá primero el recorrido para generar un link compartible.');
+    return;
+  }
+  const url = buildSharedRouteUrl(route.share_token);
+  const ok = await copyTextToClipboard(url);
+  alert(ok ? 'Link copiado. Podés enviárselo al fletero.' : url);
+}
+
+function renderSavedRoutes() {
+  if (!el.savedRoutesBoard) return;
+  if (!state.routeSchemaReady) {
+    el.savedRoutesBoard.innerHTML = '<div class="empty-state">Ejecutá la migración SQL de recorridos para guardar y compartir rutas.</div>';
+    return;
+  }
+  const routes = state.materialDeliveryRoutes.slice(0, 30);
+  if (!routes.length) {
+    el.savedRoutesBoard.innerHTML = '<div class="empty-state">Todavía no hay recorridos guardados.</div>';
+    return;
+  }
+  el.savedRoutesBoard.innerHTML = routes.map((route) => {
+    const stops = getSavedRouteStops(route.id);
+    const completed = stops.filter((stop) => stop.status === 'completed').length;
+    const statusLabel = route.status === 'completed' ? 'Completado' : route.status === 'in_progress' ? 'En curso' : 'Planificado';
+    return `
+      <article class="saved-route-row">
+        <div>
+          <strong>${escapeHtml(route.route_name || `Recorrido ${formatDateLabel(route.route_date)}`)}</strong>
+          <span class="muted">${escapeHtml(formatDateLabel(route.route_date))} · ${stops.length} paradas · ${completed}/${stops.length} realizadas · ${escapeHtml(statusLabel)}</span>
+        </div>
+        <div class="inline-actions">
+          <button class="btn btn-secondary btn-sm" type="button" data-saved-route-action="edit" data-route-id="${route.id}">Editar</button>
+          <button class="btn btn-secondary btn-sm" type="button" data-saved-route-action="copy" data-route-id="${route.id}">Copiar link</button>
+          <button class="btn btn-ghost btn-sm" type="button" data-saved-route-action="open" data-route-id="${route.id}">Ver fletero</button>
+        </div>
+      </article>
+    `;
+  }).join('');
+}
+
+function handleSavedRoutesClick(event) {
+  const button = event.target.closest('[data-saved-route-action]');
+  if (!button) return;
+  const routeId = button.dataset.routeId;
+  const action = button.dataset.savedRouteAction;
+  if (action === 'edit') loadSavedRouteForEditing(routeId);
+  if (action === 'copy') shareCurrentMaterialRoute(routeId);
+  if (action === 'open') {
+    const route = state.materialDeliveryRoutes.find((item) => item.id === routeId);
+    if (route?.share_token) window.open(buildSharedRouteUrl(route.share_token), '_blank', 'noopener');
+  }
+}
+
+function renderMaterialRoutes() {
+  if (el.routeSchemaNotice) {
+    el.routeSchemaNotice.classList.toggle('hidden', state.routeSchemaReady);
+    el.routeSchemaNotice.innerHTML = state.routeSchemaReady ? '' : '<strong>Falta preparar Supabase.</strong> Ejecutá <code>sql/migration_add_material_delivery_routes.sql</code> para guardar recorridos y generar links para el fletero.';
+  }
+  renderRouteServiceSelector();
+  renderRouteResult();
+  renderSavedRoutes();
+}
+
+function initDriverMap() {
+  if (driverRouteMap || !el.driverRouteMap || !window.L) return driverRouteMap;
+  driverRouteMap = window.L.map(el.driverRouteMap, { zoomControl: true }).setView(DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM);
+  window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap',
+  }).addTo(driverRouteMap);
+  driverRouteMarkerLayer = window.L.layerGroup().addTo(driverRouteMap);
+  driverRouteLineLayer = window.L.layerGroup().addTo(driverRouteMap);
+  return driverRouteMap;
+}
+
+function getSharedRoutePendingStops() {
+  const stops = state.sharedRoute?.stops || [];
+  return stops.filter((stop) => stop.status !== 'completed' && stop.status !== 'skipped');
+}
+
+function renderDriverRouteMap() {
+  const map = initDriverMap();
+  if (!map || !driverRouteMarkerLayer || !driverRouteLineLayer || !state.sharedRoute) return;
+  driverRouteMarkerLayer.clearLayers();
+  driverRouteLineLayer.clearLayers();
+  const stops = state.sharedRoute.stops || [];
+  const latLngs = [];
+
+  stops.forEach((stop, index) => {
+    const latLng = [Number(stop.latitude), Number(stop.longitude)];
+    latLngs.push(latLng);
+    const completed = stop.status === 'completed';
+    const skipped = stop.status === 'skipped';
+    const firstPending = !completed && !skipped && getSharedRoutePendingStops()[0]?.id === stop.id;
+    const color = completed ? '#10b981' : skipped ? '#64748b' : firstPending ? '#f59e0b' : '#7c3aed';
+    window.L.circleMarker(latLng, { radius: 12, weight: 3, color: '#fff', fillColor: color, fillOpacity: 1 })
+      .bindTooltip(`${index + 1}. ${stop.service_name}`, { permanent: false })
+      .addTo(driverRouteMarkerLayer);
+  });
+
+  for (let i = 1; i < stops.length; i += 1) {
+    const previous = stops[i - 1];
+    const current = stops[i];
+    const completedSegment = previous.status === 'completed' && current.status === 'completed';
+    window.L.polyline(
+      [[Number(previous.latitude), Number(previous.longitude)], [Number(current.latitude), Number(current.longitude)]],
+      { color: completedSegment ? '#10b981' : '#8b5cf6', weight: 5, opacity: completedSegment ? 0.9 : 0.7 }
+    ).addTo(driverRouteLineLayer);
+  }
+
+  window.setTimeout(() => {
+    map.invalidateSize();
+    if (latLngs.length === 1) map.setView(latLngs[0], 14);
+    else if (latLngs.length > 1) map.fitBounds(window.L.latLngBounds(latLngs).pad(0.15), { maxZoom: 15 });
+  }, 80);
+}
+
+function renderSharedDriverRoute() {
+  const payload = state.sharedRoute;
+  if (!payload) return;
+  const route = payload.route || {};
+  const stops = (payload.stops || []).sort((a, b) => Number(a.sequence_no) - Number(b.sequence_no));
+  state.sharedRoute.stops = stops;
+  const completed = stops.filter((stop) => stop.status === 'completed').length;
+  const skipped = stops.filter((stop) => stop.status === 'skipped').length;
+  const totalEffective = Math.max(1, stops.length - skipped);
+  const percent = Math.min(100, Math.round((completed / totalEffective) * 100));
+
+  if (el.driverRouteTitle) el.driverRouteTitle.textContent = route.route_name || `Recorrido ${formatDateLabel(route.route_date)}`;
+  if (el.driverRouteMeta) el.driverRouteMeta.textContent = `${formatDateLabel(route.route_date)} · salida ${String(route.departure_time || '').slice(0, 5)} · ${stops.length} paradas`;
+  if (el.driverProgressText) el.driverProgressText.textContent = `${completed} realizadas · ${stops.length - completed - skipped} pendientes${skipped ? ` · ${skipped} omitidas` : ''}`;
+  if (el.driverProgressBar) el.driverProgressBar.style.width = `${percent}%`;
+
+  if (el.driverStopsBoard) {
+    el.driverStopsBoard.innerHTML = stops.map((stop, index) => {
+      const completedStop = stop.status === 'completed';
+      const skippedStop = stop.status === 'skipped';
+      const nextPending = !completedStop && !skippedStop && getSharedRoutePendingStops()[0]?.id === stop.id;
+      return `
+        <article class="driver-stop-card ${completedStop ? 'completed' : ''} ${skippedStop ? 'skipped' : ''} ${nextPending ? 'next' : ''}">
+          <div class="driver-stop-sequence">${completedStop ? '✓' : index + 1}</div>
+          <div class="driver-stop-main">
+            <div class="route-stop-title-row">
+              <strong>${escapeHtml(stop.service_name)}</strong>
+              <span class="status-pill ${completedStop ? 'status-hours-over' : skippedStop ? 'status-neutral' : nextPending ? 'status-warning' : 'status-balanced'}">${completedStop ? 'Entregado' : skippedStop ? 'Omitido' : nextPending ? 'Siguiente' : 'Pendiente'}</span>
+            </div>
+            <span class="muted">${escapeHtml(stop.address || '')}</span>
+            <span><strong>Horario estimado:</strong> ${escapeHtml(String(stop.estimated_arrival || '').slice(0, 5) || '—')} · <strong>Ventana:</strong> ${escapeHtml(String(stop.window_start || '').slice(0, 5) || '—')}–${escapeHtml(String(stop.window_end || '').slice(0, 5) || '—')}</span>
+            <span><strong>Materiales:</strong> ${escapeHtml(stop.materials_summary || 'Material asignado')}</span>
+            <div class="inline-actions driver-stop-actions">
+              <a class="btn btn-secondary btn-sm" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${stop.latitude},${stop.longitude}`)}">Mapa</a>
+              ${completedStop
+                ? `<button class="btn btn-ghost btn-sm" type="button" data-driver-stop-id="${stop.id}" data-driver-status="pending">Reabrir</button>`
+                : `<button class="btn btn-primary btn-sm" type="button" data-driver-stop-id="${stop.id}" data-driver-status="completed">Marcar entregado</button>
+                   <button class="btn btn-ghost btn-sm" type="button" data-driver-stop-id="${stop.id}" data-driver-status="skipped">Omitir</button>`}
+            </div>
+          </div>
+        </article>
+      `;
+    }).join('');
+  }
+  renderDriverRouteMap();
+}
+
+function isUuidLike(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''));
+}
+
+async function loadSharedMaterialRoute(token) {
+  if (!token || !isUuidLike(token)) throw new Error('El link del recorrido no es válido.');
+  const { data, error } = await supabase.rpc('get_shared_material_route', { p_token: token });
+  if (error) throw error;
+  if (!data || !data.route) throw new Error('No se encontró este recorrido o el link dejó de estar disponible.');
+  state.sharedRoute = data;
+  renderSharedDriverRoute();
+}
+
+async function updateSharedDriverStop(stopId, status) {
+  const token = new URLSearchParams(window.location.search).get('route');
+  try {
+    const { error } = await supabase.rpc('update_shared_material_route_stop', {
+      p_token: token,
+      p_stop_id: stopId,
+      p_status: status,
+    });
+    if (error) throw error;
+    await loadSharedMaterialRoute(token);
+  } catch (error) {
+    alert(`No se pudo actualizar la parada: ${error.message}`);
+  }
+}
+
+function handleDriverStopsClick(event) {
+  const button = event.target.closest('[data-driver-stop-id]');
+  if (!button) return;
+  updateSharedDriverStop(button.dataset.driverStopId, button.dataset.driverStatus);
+}
+
+async function initSharedRouteMode(token) {
+  el.authView?.classList.add('hidden');
+  el.mainView?.classList.add('hidden');
+  el.driverRouteView?.classList.remove('hidden');
+  document.body.classList.add('shared-route-mode');
+  try {
+    await loadSharedMaterialRoute(token);
+  } catch (error) {
+    console.error('No se pudo abrir el recorrido compartido.', error);
+    if (el.driverRouteError) {
+      el.driverRouteError.classList.remove('hidden');
+      el.driverRouteError.textContent = error.message;
+    }
+  }
+}
+
+
 function renderMaterials() {
   renderMaterialsKpis();
   renderServiceMaterialsBoard();
@@ -7129,6 +8121,9 @@ function renderCurrentView() {
       break;
     case 'proximity':
       renderProximityOptimizer();
+      break;
+    case 'routes':
+      renderMaterialRoutes();
       break;
     case 'absences':
       renderAbsences();
@@ -7438,6 +8433,8 @@ async function loadAllData() {
     materialsRes,
     serviceMaterialsRes,
     materialConsumptionsRes,
+    materialDeliveryRoutesRes,
+    materialDeliveryRouteStopsRes,
   ] = await withTimeout(
     Promise.all([
       supabase.from('workers').select('*').order('name'),
@@ -7450,6 +8447,8 @@ async function loadAllData() {
       supabase.from('materials').select('*').order('name'),
       supabase.from('service_materials').select('*').order('created_at', { ascending: false }),
       supabase.from('material_consumptions').select('*').order('consumption_date', { ascending: false }).order('created_at', { ascending: false }),
+      supabase.from('material_delivery_routes').select('*').order('route_date', { ascending: false }).order('created_at', { ascending: false }),
+      supabase.from('material_delivery_route_stops').select('*').order('sequence_no'),
     ]),
     12000,
     'La actualización de datos tardó demasiado.'
@@ -7470,6 +8469,9 @@ async function loadAllData() {
   state.materials = materialsRes.error ? [] : (materialsRes.data || []);
   state.serviceMaterials = serviceMaterialsRes.error ? [] : (serviceMaterialsRes.data || []);
   state.materialConsumptions = materialConsumptionsRes.error ? [] : (materialConsumptionsRes.data || []);
+  state.materialDeliveryRoutes = materialDeliveryRoutesRes.error ? [] : (materialDeliveryRoutesRes.data || []);
+  state.materialDeliveryRouteStops = materialDeliveryRouteStopsRes.error ? [] : (materialDeliveryRouteStopsRes.data || []);
+  state.routeSchemaReady = !materialDeliveryRoutesRes.error && !materialDeliveryRouteStopsRes.error;
   state.optimizerResults = null;
   state.proximityResults = null;
 
@@ -7490,6 +8492,9 @@ async function loadAllData() {
   }
   if (materialConsumptionsRes.error) {
     console.warn('La tabla de consumos de materiales todavía no está disponible o devolvió error.', materialConsumptionsRes.error);
+  }
+  if (materialDeliveryRoutesRes.error || materialDeliveryRouteStopsRes.error) {
+    console.warn('Las tablas de recorridos de materiales todavía no están disponibles. Ejecutá la migración correspondiente.', materialDeliveryRoutesRes.error || materialDeliveryRouteStopsRes.error);
   }
 
   state.hasLoadedOnce = true;
@@ -7590,6 +8595,12 @@ function subscribeRealtime() {
     channel = channel
       .on('postgres_changes', { event: '*', schema: 'public', table: 'service_billing_rules' }, scheduleRealtimeRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'service_billing_adjustments' }, scheduleRealtimeRefresh);
+  }
+
+  if (state.routeSchemaReady) {
+    channel = channel
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'material_delivery_routes' }, scheduleRealtimeRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'material_delivery_route_stops' }, scheduleRealtimeRefresh);
   }
 
   state.realtimeChannel = channel.subscribe();
@@ -10159,6 +11170,49 @@ function buildProximityExportData() {
   };
 }
 
+function buildRoutesExportData() {
+  const currentStops = state.routePlan?.stops || [];
+  return {
+    sheets: [
+      {
+        name: 'Recorrido actual',
+        rows: [
+          ['Orden', 'Servicio', 'Dirección', 'Zona', 'ETA', 'Salida', 'Ventana', 'Km desde anterior', 'Materiales', 'Riesgo horario'],
+          ...currentStops.map((stop, index) => [
+            index + 1,
+            stop.serviceName,
+            stop.address,
+            stop.zone,
+            formatRouteMinute(stop.arrivalMinutes),
+            formatRouteMinute(stop.departureMinutes),
+            stop.window ? formatRouteWindow(stop.window) : 'Sin ventana compatible',
+            stop.distanceKm,
+            (stop.materialNames || []).join(', '),
+            stop.risk ? 'Sí' : 'No',
+          ]),
+        ],
+      },
+      {
+        name: 'Recorridos guardados',
+        rows: [
+          ['Fecha', 'Nombre', 'Estado', 'Paradas', 'Completadas', 'Link'],
+          ...state.materialDeliveryRoutes.map((route) => {
+            const stops = getSavedRouteStops(route.id);
+            return [
+              route.route_date,
+              route.route_name,
+              route.status,
+              stops.length,
+              stops.filter((stop) => stop.status === 'completed').length,
+              buildSharedRouteUrl(route.share_token),
+            ];
+          }),
+        ],
+      },
+    ],
+  };
+}
+
 function buildCurrentExportData() {
   switch (state.currentView) {
     case 'workers':
@@ -10175,6 +11229,8 @@ function buildCurrentExportData() {
       return buildOptimizerExportData();
     case 'proximity':
       return buildProximityExportData();
+    case 'routes':
+      return buildRoutesExportData();
     case 'absences':
       return buildAbsencesExportData();
     case 'materials':
@@ -10380,6 +11436,69 @@ function bindEvents() {
   el.operationsMap?.addEventListener('click', handleMapPanelClick);
   el.mapSelectionPanel?.addEventListener('click', handleMapPanelClick);
   el.mapMissingLocations?.addEventListener('click', handleMapPanelClick);
+  el.routeDate?.addEventListener('change', resetRoutePlanningForDate);
+  el.routeFindBestDateBtn?.addEventListener('click', findBestMaterialRouteDate);
+  el.routeDepartureTime?.addEventListener('change', () => {
+    if (state.routePlan?.stops?.length) recomputeRouteForFixedOrder(state.routePlan.stops);
+    if (state.currentRouteId) state.routeDirty = true;
+    renderRouteResult();
+  });
+  el.routeStopMinutes?.addEventListener('change', () => {
+    if (state.routePlan?.stops?.length) recomputeRouteForFixedOrder(state.routePlan.stops);
+    if (state.currentRouteId) state.routeDirty = true;
+    renderRouteResult();
+  });
+  el.routeAverageSpeed?.addEventListener('change', () => {
+    if (state.routePlan?.stops?.length) recomputeRouteForFixedOrder(state.routePlan.stops);
+    if (state.currentRouteId) state.routeDirty = true;
+    renderRouteResult();
+  });
+  el.routeOriginCoordinates?.addEventListener('change', () => {
+    if (state.routePlan?.stops?.length) recomputeRouteForFixedOrder(state.routePlan.stops);
+    if (state.currentRouteId) state.routeDirty = true;
+    renderRouteResult();
+  });
+  el.routeServiceSearch?.addEventListener('input', debounce(renderRouteServiceSelector, 120));
+  el.routeServicesBoard?.addEventListener('change', handleRouteServiceSelection);
+  el.routeSelectEligibleBtn?.addEventListener('click', () => {
+    state.routeSelectedServiceIds = new Set(getMaterialRouteServices().filter((item) => item.eligible && item.availableOnDate).map((item) => item.service.id));
+    state.routePlan = null;
+    state.currentRouteId = null;
+    state.routeDirty = false;
+    renderRouteServiceSelector();
+    renderRouteResult();
+  });
+  el.routeClearSelectionBtn?.addEventListener('click', () => {
+    state.routeSelectedServiceIds.clear();
+    state.routePlan = null;
+    state.currentRouteId = null;
+    state.routeDirty = false;
+    renderRouteServiceSelector();
+    renderRouteResult();
+  });
+  el.routeOptimizeBtn?.addEventListener('click', optimizeMaterialDeliveryRoute);
+  el.routeSequenceBoard?.addEventListener('click', handleRouteSequenceClick);
+  el.routeSaveBtn?.addEventListener('click', saveMaterialDeliveryRoute);
+  el.routeShareBtn?.addEventListener('click', () => shareCurrentMaterialRoute());
+  el.routeOpenGoogleMapsBtn?.addEventListener('click', () => {
+    const url = buildRouteGoogleMapsUrl(state.routePlan?.stops || [], state.routePlan?.originCoordinates || null);
+    if (url) window.open(url, '_blank', 'noopener');
+  });
+  el.savedRoutesBoard?.addEventListener('click', handleSavedRoutesClick);
+  el.driverStopsBoard?.addEventListener('click', handleDriverStopsClick);
+  el.driverRefreshBtn?.addEventListener('click', () => {
+    const token = new URLSearchParams(window.location.search).get('route');
+    if (token) loadSharedMaterialRoute(token).catch((error) => alert(error.message));
+  });
+  el.driverGoogleMapsBtn?.addEventListener('click', () => {
+    const pendingStops = getSharedRoutePendingStops();
+    const route = state.sharedRoute?.route || {};
+    const origin = route.origin_latitude != null && route.origin_longitude != null
+      ? { latitude: Number(route.origin_latitude), longitude: Number(route.origin_longitude) }
+      : null;
+    const url = buildRouteGoogleMapsUrl(pendingStops.length ? pendingStops : (state.sharedRoute?.stops || []), origin);
+    if (url) window.open(url, '_blank', 'noopener');
+  });
   el.printViewBtn?.addEventListener('click', printCurrentView);
   el.exportExcelBtn?.addEventListener('click', exportCurrentViewToExcel);
   el.exportPdfBtn?.addEventListener('click', exportCurrentViewToPdf);
@@ -10630,6 +11749,38 @@ function boot() {
       proximityRelocations: $('proximityRelocations'),
       proximitySwaps: $('proximitySwaps'),
       proximityDataQuality: $('proximityDataQuality'),
+      routeDate: $('routeDate'),
+      routeDepartureTime: $('routeDepartureTime'),
+      routeFindBestDateBtn: $('routeFindBestDateBtn'),
+      routeStopMinutes: $('routeStopMinutes'),
+      routeAverageSpeed: $('routeAverageSpeed'),
+      routeOriginCoordinates: $('routeOriginCoordinates'),
+      routeServiceSearch: $('routeServiceSearch'),
+      routeSelectEligibleBtn: $('routeSelectEligibleBtn'),
+      routeClearSelectionBtn: $('routeClearSelectionBtn'),
+      routeSelectionSummary: $('routeSelectionSummary'),
+      routeServicesBoard: $('routeServicesBoard'),
+      routeOptimizationHint: $('routeOptimizationHint'),
+      routeOptimizeBtn: $('routeOptimizeBtn'),
+      routeSchemaNotice: $('routeSchemaNotice'),
+      deliveryRouteMap: $('deliveryRouteMap'),
+      routeMapEmpty: $('routeMapEmpty'),
+      routeOpenGoogleMapsBtn: $('routeOpenGoogleMapsBtn'),
+      routeKpis: $('routeKpis'),
+      routeSequenceBoard: $('routeSequenceBoard'),
+      routeSaveBtn: $('routeSaveBtn'),
+      routeShareBtn: $('routeShareBtn'),
+      savedRoutesBoard: $('savedRoutesBoard'),
+      driverRouteView: $('driverRouteView'),
+      driverRouteTitle: $('driverRouteTitle'),
+      driverRouteMeta: $('driverRouteMeta'),
+      driverProgressText: $('driverProgressText'),
+      driverProgressBar: $('driverProgressBar'),
+      driverRouteMap: $('driverRouteMap'),
+      driverStopsBoard: $('driverStopsBoard'),
+      driverRefreshBtn: $('driverRefreshBtn'),
+      driverGoogleMapsBtn: $('driverGoogleMapsBtn'),
+      driverRouteError: $('driverRouteError'),
       absenceFilterMode: $('absenceFilterMode'),
       absenceApplyFilterBtn: $('absenceApplyFilterBtn'),
       absenceDateFilter: $('absenceDateFilter'),
@@ -10705,6 +11856,7 @@ function boot() {
     }
 
     initializeDashboardMonth();
+    if (el.routeDate && !el.routeDate.value) el.routeDate.value = toDateKey(new Date());
     state.billingMonth = state.dashboardMonth;
     if (el.billingMonthFilter) el.billingMonthFilter.value = state.billingMonth;
     if (el.optimizerMonth) el.optimizerMonth.value = state.dashboardMonth;
@@ -10714,6 +11866,11 @@ function boot() {
     bindEvents();
     syncPwaInstallButton();
     syncAbsencePeriodControls();
+    const sharedRouteToken = new URLSearchParams(window.location.search).get('route');
+    if (sharedRouteToken) {
+      initSharedRouteMode(sharedRouteToken);
+      return;
+    }
     initAuth();
   } catch (error) {
     console.error('Error en boot():', error);

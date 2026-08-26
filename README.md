@@ -292,3 +292,33 @@ Los indicadores del Control mensual de horas, Estado de la dotación y balances 
 
 ### Scroll en detalle de indicadores
 Los listados abiertos desde los KPI del Dashboard tienen scroll vertical interno para poder visualizar todos los operarios/servicios incluidos en cada indicador, manteniendo visibles el encabezado y las acciones del modal.
+
+## Recorridos de materiales
+
+La sección **Recorridos de materiales** permite seleccionar únicamente servicios que tienen materiales asignados y generar una secuencia logística para una fecha concreta.
+
+El cálculo considera:
+
+- coordenadas del servicio;
+- presencia de operarios según las asignaciones activas del día elegido;
+- turnos nocturnos que continúan desde el día anterior;
+- hora de salida;
+- tiempo estimado por entrega;
+- velocidad urbana media configurable;
+- distancia aproximada entre puntos.
+
+El botón **Sugerir mejor día** revisa las próximas dos semanas para encontrar una fecha en la que la mayor cantidad posible de los servicios seleccionados tenga personal presente. La secuencia puede editarse manualmente (subir, bajar o quitar paradas), visualizarse en el mapa y abrirse en Google Maps para navegación vial.
+
+Los recorridos guardados generan un enlace compartible para el fletero. Ese enlace no requiere iniciar sesión y permite marcar cada parada como **Entregada**, **Pendiente** u **Omitida**. El progreso se guarda en Supabase y se representa con colores diferentes en el mapa.
+
+### Migración requerida
+
+Ejecutar una sola vez en Supabase SQL Editor:
+
+`sql/migration_add_material_delivery_routes.sql`
+
+La migración es aditiva: crea tablas y funciones nuevas, sin eliminar ni modificar operarios, servicios, asignaciones o materiales existentes.
+
+### Precisión del recorrido
+
+La optimización dentro de la app usa distancia geográfica con una corrección urbana y ventanas horarias. No consulta tránsito en vivo. El botón **Abrir en Google Maps** utiliza el orden calculado y permite que Google Maps resuelva el trayecto vial real. Para una segunda etapa se puede conectar Google Routes API si se desea optimización por tiempo real de conducción y tránsito.

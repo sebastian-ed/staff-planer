@@ -1,88 +1,35 @@
-# Actualización — PWA + balance operativo porcentual
+# Actualización · Recorridos de materiales
 
-Esta versión agrega únicamente:
+## 1. Ejecutar la migración en Supabase
 
-1. Instalación como PWA en navegadores compatibles.
-2. Balance entre **horas operativas asignadas del mes** y **facturación estimada del mes**, incluyendo diferencia en horas y porcentaje.
+Abrir **Supabase → SQL Editor** y ejecutar:
 
-## Actualización
+`sql/migration_add_material_delivery_routes.sql`
 
-1. Conservá tu `supabase-config.js` actual.
-2. Reemplazá los archivos del repositorio por los de esta carpeta.
-3. Subí también `manifest.webmanifest`, `service-worker.js` y los nuevos íconos de `assets/`.
-4. No hay que ejecutar SQL.
-5. Después del deploy, hacé una recarga forzada una vez (`Ctrl + F5`).
+Esta migración crea exclusivamente la infraestructura de recorridos y seguimiento del fletero. No elimina ni modifica los datos existentes de operarios, servicios, asignaciones, materiales, facturación, ausencias o tardanzas.
 
-## Criterio del porcentaje
+## 2. Publicar los archivos
 
-- Si horas operativas > horas facturables: **Pasados X%**.
-- Si horas operativas < horas facturables: **Faltan X%**.
-- Si coinciden: **Equilibrado · 100%**.
+Reemplazar los archivos de la aplicación en el repositorio de GitHub Pages por los incluidos en este paquete.
 
-El porcentaje de desvío se calcula sobre las horas facturables estimadas del mes.
+Conservar el `supabase-config.js` que ya utiliza la instalación actual si contiene las credenciales correctas del proyecto.
 
-## Balance global de dotación (actualización)
+## 3. Forzar la actualización de la PWA
 
-Esta versión agrega al Dashboard una lectura global separando tres conceptos:
+Luego del deploy, abrir la aplicación y hacer una recarga forzada una vez (`Ctrl + F5`). Se cambió la versión de caché del service worker para tomar los archivos nuevos.
 
-- **Horas objetivo de la dotación:** lo que deberían cumplir los operarios según su jornada y el calendario real del mes.
-- **Horas efectivamente asignadas:** lo que el cronograma activo les está asignando realmente.
-- **Facturación estimada:** las horas proyectadas para cobrar a los clientes.
+## 4. Uso
 
-También muestra de forma destacada:
+1. Entrar a **Recorridos de materiales**.
+2. Elegir la fecha y hora de salida.
+3. Seleccionar los servicios con materiales que se desean visitar.
+4. Si no sabés qué día conviene, usar **Sugerir mejor día**: analiza las próximas dos semanas y busca la fecha con mejor compatibilidad horaria.
+5. Tocar **Calcular ruta óptima**.
+5. Revisar el mapa y la secuencia. Se pueden subir, bajar o quitar paradas.
+6. Tocar **Guardar recorrido**.
+7. Tocar **Copiar link** y enviarlo al fletero.
+8. El fletero abre el enlace sin login, consulta el mapa y va marcando cada entrega como realizada.
 
-- horas de jornada sin asignar;
-- horas excedidas sobre la jornada objetivo;
-- neto de dotación contra jornada;
-- diferencia y porcentaje entre horas asignadas y facturación estimada.
+## Criterio de optimización
 
-Los déficits y excesos individuales se suman por separado para evitar que un operario excedido oculte a otro que todavía tiene horas de jornada sin utilizar.
-
-### Facturación estimada
-
-Para que la comparación comercial sea independiente de la asignación del personal, la proyección usa esta prioridad:
-
-1. cobertura facturable configurada por días, horarios y puestos;
-2. referencia mensual manual del servicio;
-3. si no existe ninguna de las anteriores, horas operativas actuales como estimación provisional.
-
-No requiere cambios en Supabase ni nuevas migraciones.
-
-
-## Ayuda contextual del balance
-
-Se agregaron botones **i** en los indicadores principales del Dashboard y el botón **“? Cómo leer este balance”**. Cada ayuda explica en lenguaje simple qué significa el indicador, cómo interpretarlo y, cuando corresponde, incluye un ejemplo.
-
-Este cambio es exclusivamente de interfaz y documentación: **no requiere ejecutar SQL ni modifica datos existentes**.
-
-## Actualización: balance facturación vs objetivo de dotación
-
-No requiere SQL ni cambios de esquema.
-
-Se agregó al Dashboard un KPI principal que compara la facturación estimada del mes con el objetivo mensual de la dotación. También se incorporó al balance mensual y a la ayuda contextual (`i` / `? Cómo leer este balance`).
-
-Fórmula: `Facturación estimada - Objetivo mensual de dotación`.
-
-Después de publicar los archivos, realizar una recarga forzada (`Ctrl + F5`). La versión del caché PWA fue incrementada para tomar esta actualización.
-
-## Actualización: conteo y estado de dotación
-
-Se agregó al Dashboard un bloque "Estado de la dotación" que contabiliza automáticamente, para el mes seleccionado:
-
-- Operarios totales cargados.
-- Operarios con jornada objetivo y porcentaje sobre la dotación total.
-- Operarios sin jornada objetivo y porcentaje sobre la dotación total.
-- Operarios equilibrados, por debajo y por encima de su jornada.
-- Porcentajes de equilibrio/déficit/exceso calculados sobre los operarios que sí tienen jornada objetivo.
-
-No requiere cambios de base de datos ni ejecutar SQL. La PWA actualiza su caché automáticamente a una nueva versión al publicar estos archivos.
-
-
-## Detalle interactivo de indicadores
-Los indicadores del Control mensual de horas, Estado de la dotación y balances mensuales ahora son clickeables. Al seleccionar un KPI se abre un detalle con los operarios o servicios que forman ese número. No requiere cambios de base de datos ni SQL adicional.
-
-## Ajuste de visualización del detalle por clic
-
-El modal **Detalle del indicador** ahora tiene scroll vertical interno permanente. El encabezado y el botón **Cerrar** permanecen visibles, mientras que la lista de operarios o servicios puede recorrerse completa con la rueda del mouse, touchpad o barra lateral.
-
-No requiere SQL y no modifica datos ni cálculos.
+La app usa las coordenadas y los horarios activos de cada servicio en la fecha seleccionada. Prioriza una secuencia cercana que pueda visitarse mientras haya personal en el servicio. La distancia interna es una estimación geográfica/urbana; para navegación vial se incluye **Abrir en Google Maps**.

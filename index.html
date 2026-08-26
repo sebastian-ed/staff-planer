@@ -80,6 +80,7 @@
             <button class="nav-tab" data-view="map">Mapa</button>
             <button class="nav-tab" data-view="optimizer">Optimizador</button>
             <button class="nav-tab" data-view="proximity">Optimizador de cercanía</button>
+            <button class="nav-tab" data-view="routes">Recorridos de materiales</button>
             <button class="nav-tab" data-view="absences">Ausencias</button>
             <button class="nav-tab" data-view="materials">Materiales</button>
           </nav>
@@ -582,6 +583,115 @@
             </article>
           </section>
 
+
+          <section id="routesView" class="view hidden stack-lg">
+            <article class="card optimizer-intro route-intro">
+              <div>
+                <span class="eyebrow">Logística de materiales</span>
+                <h3>Recorridos de materiales</h3>
+                <p class="muted">Seleccioná servicios con materiales, elegí la fecha y la app arma un recorrido priorizando cercanía y ventanas horarias en las que hay personal en el servicio.</p>
+              </div>
+              <div class="optimizer-method-note route-method-note">
+                <strong>Optimización operativa</strong>
+                <span>La secuencia usa coordenadas, horarios activos del servicio y una estimación de traslado. Podés reordenarla manualmente antes de compartirla.</span>
+              </div>
+            </article>
+
+            <article class="card">
+              <div class="section-head with-action section-head-stack-mobile">
+                <div>
+                  <h3>1. Preparar recorrido</h3>
+                  <span class="muted">Elegí el día, la hora de salida y los servicios que necesitan entrega.</span>
+                </div>
+                <div class="inline-actions section-actions-mobile">
+                  <button id="routeSelectEligibleBtn" class="btn btn-secondary" type="button">Seleccionar disponibles</button>
+                  <button id="routeClearSelectionBtn" class="btn btn-ghost" type="button">Limpiar selección</button>
+                </div>
+              </div>
+
+              <div id="routeSchemaNotice" class="notice notice-warning hidden"></div>
+
+              <div class="route-controls-grid">
+                <div class="field">
+                  <label for="routeDate">Fecha del recorrido</label>
+                  <input id="routeDate" type="date" />
+                  <button id="routeFindBestDateBtn" class="btn btn-ghost btn-sm route-best-date-btn" type="button">Sugerir mejor día</button>
+                </div>
+                <div class="field">
+                  <label for="routeDepartureTime">Hora de salida</label>
+                  <input id="routeDepartureTime" type="time" value="08:00" />
+                </div>
+                <div class="field">
+                  <label for="routeStopMinutes">Minutos por entrega</label>
+                  <input id="routeStopMinutes" type="number" min="0" step="5" value="15" />
+                </div>
+                <div class="field">
+                  <label for="routeAverageSpeed">Velocidad urbana estimada</label>
+                  <div class="input-suffix">
+                    <input id="routeAverageSpeed" type="number" min="5" max="80" step="1" value="25" />
+                    <span>km/h</span>
+                  </div>
+                </div>
+                <div class="field route-origin-field">
+                  <label for="routeOriginCoordinates">Punto de salida · coordenadas (opcional)</label>
+                  <input id="routeOriginCoordinates" type="text" placeholder="-34.60, -58.45" />
+                  <small class="muted">Si lo dejás vacío, la app prueba distintos puntos de inicio y elige la secuencia más eficiente.</small>
+                </div>
+                <div class="field">
+                  <label for="routeServiceSearch">Buscar servicio</label>
+                  <input id="routeServiceSearch" type="search" placeholder="Nombre, zona o dirección" autocomplete="off" />
+                </div>
+              </div>
+
+              <div id="routeSelectionSummary" class="route-selection-summary"></div>
+              <div id="routeServicesBoard" class="route-services-grid"></div>
+
+              <div class="route-action-bar">
+                <div id="routeOptimizationHint" class="muted">Seleccioná al menos 2 servicios para optimizar el recorrido.</div>
+                <button id="routeOptimizeBtn" class="btn btn-primary" type="button">Calcular ruta óptima</button>
+              </div>
+            </article>
+
+            <div class="split-grid route-result-grid">
+              <article class="card">
+                <div class="section-head with-action">
+                  <div>
+                    <h3>2. Mapa del recorrido</h3>
+                    <span class="muted">La línea sigue el orden propuesto. Para navegación vial podés abrir la secuencia en Google Maps.</span>
+                  </div>
+                  <button id="routeOpenGoogleMapsBtn" class="btn btn-secondary" type="button" disabled>Abrir en Google Maps</button>
+                </div>
+                <div id="deliveryRouteMap" class="delivery-route-map" aria-label="Mapa del recorrido de materiales"></div>
+                <div id="routeMapEmpty" class="map-empty-overlay">Calculá un recorrido para verlo en el mapa.</div>
+              </article>
+
+              <article class="card">
+                <div class="section-head with-action section-head-stack-mobile">
+                  <div>
+                    <h3>3. Secuencia para el fletero</h3>
+                    <span class="muted">Podés subir, bajar o quitar paradas antes de guardar.</span>
+                  </div>
+                  <div class="inline-actions">
+                    <button id="routeSaveBtn" class="btn btn-primary" type="button" disabled>Guardar recorrido</button>
+                    <button id="routeShareBtn" class="btn btn-secondary" type="button" disabled>Copiar link</button>
+                  </div>
+                </div>
+                <div id="routeKpis" class="cards-grid route-kpis"></div>
+                <div id="routeSequenceBoard" class="route-sequence-board"></div>
+              </article>
+            </div>
+
+            <article class="card">
+              <div class="section-head">
+                <div>
+                  <h3>Recorridos guardados</h3>
+                  <span class="muted">Abrí un recorrido para editarlo o copiá el link que recibe el fletero.</span>
+                </div>
+              </div>
+              <div id="savedRoutesBoard" class="stack-list"></div>
+            </article>
+          </section>
+
           <section id="absencesView" class="view hidden stack-lg">
             <article class="card">
               <div class="section-head with-action section-head-stack-mobile">
@@ -805,6 +915,47 @@
       </main>
     </section>
   </div>
+
+
+  <section id="driverRouteView" class="driver-route-view hidden">
+    <header class="driver-route-header">
+      <div>
+        <span class="eyebrow">Clean It · Entrega de materiales</span>
+        <h2 id="driverRouteTitle">Recorrido</h2>
+        <p id="driverRouteMeta" class="muted"></p>
+      </div>
+      <div class="inline-actions">
+        <button id="driverRefreshBtn" class="btn btn-secondary" type="button">Actualizar</button>
+        <button id="driverGoogleMapsBtn" class="btn btn-primary" type="button">Abrir ruta en Google Maps</button>
+      </div>
+    </header>
+    <main class="driver-route-main">
+      <article class="card">
+        <div class="section-head">
+          <div>
+            <h3>Progreso</h3>
+            <span id="driverProgressText" class="muted"></span>
+          </div>
+        </div>
+        <div class="driver-progress-track"><div id="driverProgressBar" class="driver-progress-bar"></div></div>
+      </article>
+      <div class="split-grid driver-route-grid">
+        <article class="card">
+          <div id="driverRouteMap" class="delivery-route-map driver-map" aria-label="Mapa compartido del recorrido"></div>
+        </article>
+        <article class="card">
+          <div class="section-head">
+            <div>
+              <h3>Paradas</h3>
+              <span class="muted">Marcá cada entrega a medida que la completás.</span>
+            </div>
+          </div>
+          <div id="driverStopsBoard" class="driver-stops-board"></div>
+        </article>
+      </div>
+      <div id="driverRouteError" class="notice notice-warning hidden"></div>
+    </main>
+  </section>
 
 
   <dialog id="dashboardHelpDialog" class="modal dashboard-help-dialog">
